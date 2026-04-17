@@ -14,7 +14,7 @@ Compatible with TopBand-based batteries including EET, Power Queen, and others u
 
 Dashboard with live SOC, power, voltage, cell balance bars, and 48-hour history charts. Glassmorphism UI with light and dark mode.
 
-A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it directly in any browser to preview the dashboard with synthetic data (no hardware needed). Useful for UI previews, documentation screenshots, or demonstrations.
+A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it directly in any browser to preview the dashboard with synthetic data (no hardware needed). Useful for UI previews.
 
 ## Features
 
