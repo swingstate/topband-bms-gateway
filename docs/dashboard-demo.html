@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TopBand BMS Gateway - Demo Dashboard</title>
+<style>
+/* Design tokens from V2.63 */
+:root{
+--bg:#f0f2f5;--bg2:#ffffff;--bg3:#f8f9fb;
+--tx:#0f172a;--tx2:#64748b;--tx3:#94a3b8;
+--bd:rgba(0,0,0,0.07);--bd2:rgba(0,0,0,0.15);
+--acc:#059669;--acc2:#047857;--accbg:#ecfdf5;--acctx:#065f46;
+--red:#ef4444;--redbg:#fef2f2;--redtx:#991b1b;--redbd:#fca5a5;
+--amber:#f59e0b;--amberbg:#fffbeb;--ambertx:#92400e;--amberbd:#fcd34d;
+--blue:#3b82f6;--bluebg:#eff6ff;--bluetx:#1e40af;
+--glass:rgba(255,255,255,0.75);--blur:blur(14px);
+--sh:0 1px 4px rgba(0,0,0,0.05);--sh2:0 6px 20px rgba(0,0,0,0.07);
+--nav:#0e1726;--navtx:rgba(255,255,255,0.55);--navhi:#fff;
+--r:10px;--r2:14px;--mono:ui-monospace,'SF Mono',Consolas,monospace}
+
+:root.dk{
+--bg:#080e1a;--bg2:rgba(15,23,42,0.65);--bg3:rgba(22,33,55,0.5);
+--tx:#e2e8f0;--tx2:#94a3b8;--tx3:#64748b;
+--bd:rgba(255,255,255,0.06);--bd2:rgba(255,255,255,0.12);
+--glass:rgba(15,23,42,0.55);
+--accbg:rgba(5,150,105,0.15);--acctx:#34d399;
+--redbg:rgba(239,68,68,0.12);--redtx:#fca5a5;--redbd:rgba(239,68,68,0.35);
+--amberbg:rgba(245,158,11,0.12);--ambertx:#fcd34d;--amberbd:rgba(245,158,11,0.35);
+--bluebg:rgba(59,130,246,0.12);--bluetx:#93c5fd;
+--sh:0 1px 4px rgba(0,0,0,0.3);--sh2:0 6px 24px rgba(0,0,0,0.3);
+--nav:#060b14;--navtx:rgba(255,255,255,0.4)}
+
+/* Background gradient for glass effect */
+body{min-height:100vh;background:
+  radial-gradient(circle at 10% 20%,rgba(5,150,105,0.08) 0%,transparent 40%),
+  radial-gradient(circle at 90% 80%,rgba(59,130,246,0.08) 0%,transparent 40%),
+  var(--bg)}
+:root.dk body{background:
+  radial-gradient(circle at 10% 20%,rgba(5,150,105,0.15) 0%,transparent 40%),
+  radial-gradient(circle at 90% 80%,rgba(59,130,246,0.12) 0%,transparent 40%),
+  var(--bg)}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;color:var(--tx)}
+
+.app{display:grid;grid-template-columns:56px 1fr;min-height:100vh}
+@media(max-width:768px){.app{grid-template-columns:1fr;grid-template-rows:auto 1fr}}
+
+.nav{background:var(--nav);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:4px;border-right:1px solid rgba(255,255,255,0.06);z-index:10}
+@media(max-width:768px){.nav{flex-direction:row;justify-content:space-around;order:1;padding:env(safe-area-inset-top,0) 8px 0;border-right:none;border-bottom:1px solid rgba(255,255,255,0.06);position:sticky;top:0}}
+.nav .logo{width:32px;height:32px;margin-bottom:12px;opacity:0.7}
+@media(max-width:768px){.nav .logo{display:none}}
+.ni{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 0;width:100%;cursor:pointer;color:var(--navtx);transition:color 0.15s;text-decoration:none;position:relative}
+.ni svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.ni span{font-size:8px;letter-spacing:0.04em;text-transform:uppercase;font-weight:500}
+.ni:hover,.ni.on{color:var(--navhi)}
+.ni.on::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--acc);border-radius:0 2px 2px 0}
+@media(max-width:768px){.ni.on::before{left:8px;right:8px;top:0;bottom:auto;width:auto;height:2px;border-radius:0 0 2px 2px}}
+
+.main{overflow-y:auto;max-height:100vh}
+@media(max-width:768px){.main{max-height:none;overflow:visible}}
+
+.top{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--glass);backdrop-filter:var(--blur);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5;flex-wrap:wrap;gap:6px}
+.top h1{font-size:13px;font-weight:600;letter-spacing:-0.01em}
+.top .v{font-size:10px;color:var(--tx3);margin-left:6px;font-weight:400}
+.top .rt{display:flex;align-items:center;gap:8px}
+.clock{font-size:11px;color:var(--tx3);font-family:var(--mono)}
+.thm{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;color:var(--tx2);line-height:1}
+.thm:hover{background:var(--bd)}
+.pls{display:flex;gap:3px}
+.pl{font-size:9px;padding:2px 7px;border-radius:8px;font-weight:600;letter-spacing:0.02em}
+.pl-g{background:var(--accbg);color:var(--acctx)}
+.pl-y{background:var(--amberbg);color:var(--ambertx)}
+
+.pg{padding:20px;max-width:1400px}
+
+.mc{background:var(--glass);backdrop-filter:var(--blur);border-radius:var(--r);padding:14px 16px;border:1px solid var(--bd);box-shadow:var(--sh);transition:box-shadow 0.2s,transform 0.15s}
+.mc:hover{box-shadow:var(--sh2);transform:translateY(-1px)}
+.mc .l{font-size:9px;color:var(--tx3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;font-weight:600}
+.mc .n{font-size:22px;font-weight:600;letter-spacing:-0.02em}.mc .n.sm{font-size:15px;font-weight:500}
+.mc .s{font-size:10px;color:var(--tx2);margin-top:3px}
+
+.mg{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px}
+.mg5{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}
+@media(max-width:700px){.mg,.mg5{grid-template-columns:repeat(2,1fr)}.mc-w{grid-column:span 2}}
+
+.sl{font-size:9px;color:var(--tx3);text-transform:uppercase;letter-spacing:0.08em;margin:18px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--bd);font-weight:600}
+
+.cp{background:var(--glass);backdrop-filter:var(--blur);border-radius:var(--r);height:clamp(160px,18vw,280px);position:relative;overflow:hidden;margin:6px 0 0;border:1px solid var(--bd)}
+.cp canvas{width:100%!important;height:100%!important}
+
+.cg{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+@media(max-width:700px){.cg{grid-template-columns:1fr}}
+.bg{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+@media(max-width:600px){.bg{grid-template-columns:1fr}}
+.bc{border:1px solid var(--bd);border-radius:var(--r);padding:14px 16px;border-left:3px solid var(--acc);background:var(--glass);backdrop-filter:var(--blur);box-shadow:var(--sh)}
+.bc .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.bc .hd .nm{font-weight:600;font-size:13px}
+.bc .st{display:flex;gap:10px;font-size:11px;color:var(--tx2);flex-wrap:wrap}
+.bc .st b{color:var(--tx);font-weight:600}
+.cell-bar{display:flex;gap:2px;margin-top:8px;align-items:flex-end;height:clamp(36px,5vw,64px)}
+.cell-bar .cb{flex:1;background:var(--acc);border-radius:3px 3px 0 0;min-width:0;opacity:0.8}
+.cell-bar .cb.lo{background:var(--blue);opacity:1}.cell-bar .cb.hi{background:var(--red);opacity:1}
+.cell-lbl{display:flex;justify-content:space-between;font-size:9px;color:var(--tx3);margin-top:3px}
+
+.pill-status{font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;background:var(--accbg);color:var(--acctx)}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+<!-- SIDEBAR -->
+<nav class="nav">
+  <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="1.5"><path d="M7 3h10v4H7zM5 7h14v14H5zM9 11h6M9 15h6"/></svg>
+  <a class="ni on"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+  <a class="ni"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 11v2M11 11v2M15 11v2"/></svg><span>Battery</span></a>
+  <a class="ni"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0M12 12v.01"/></svg><span>Network</span></a>
+  <a class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>General</span></a>
+  <a class="ni"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span>Alerts</span></a>
+</nav>
+
+<!-- MAIN -->
+<div class="main">
+
+<!-- TOPBAR -->
+<div class="top">
+  <h1>TopBand BMS Gateway <span class="v">V2.63</span></h1>
+  <div class="rt">
+    <div class="pls">
+      <span class="pl pl-g">BMS 2x</span>
+      <span class="pl pl-g">CAN</span>
+      <span class="pl pl-g">MQTT</span>
+      <span class="pl pl-g">WiFi</span>
+    </div>
+    <span class="clock">14:45</span>
+    <span style="font-size:11px;color:var(--tx2)">admin <a href="#" style="color:var(--acc);text-decoration:none">Logout</a></span>
+    <button class="thm" id="thmBtn" onclick="tgT()">&#9790;</button>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div class="pg">
+
+<div class="mg">
+  <div class="mc mc-w">
+    <div class="l">SOC</div>
+    <div class="n" style="color:var(--acc)">75.0%</div>
+    <div class="s">230 / 307 Ah</div>
+  </div>
+  <div class="mc">
+    <div class="l">Power</div>
+    <div class="n">+447 W</div>
+    <div class="s" style="color:var(--acctx)">Charging</div>
+  </div>
+  <div class="mc">
+    <div class="l">Current</div>
+    <div class="n">+8.7 A</div>
+    <div class="s">Limit: 33.0 A</div>
+  </div>
+  <div class="mc mc-w">
+    <div class="l">Voltage</div>
+    <div class="n">51.35 V</div>
+    <div class="s">CVL: 52.50 V</div>
+  </div>
+  <div class="mc mc-w">
+    <div class="l">Energy today</div>
+    <div class="n sm" style="color:var(--acc)">3.2 kWh</div>
+    <div class="s">Out: 1.8 kWh</div>
+  </div>
+</div>
+
+<div class="mg5">
+  <div class="mc"><div class="l">Cell min</div><div class="n sm">3.414 V</div><div class="s">BMS1 / C7</div></div>
+  <div class="mc"><div class="l">Cell max</div><div class="n sm">3.428 V</div><div class="s">BMS1 / C8</div></div>
+  <div class="mc mc-w"><div class="l">Cell drift</div><div class="n sm">0.014 V</div><div class="s">Limit: 0.20</div></div>
+  <div class="mc"><div class="l">Temperature</div><div class="n sm">24.5 C</div><div class="s">SOH: 100.0%</div></div>
+  <div class="mc"><div class="l">Runtime est.</div><div class="n sm">~4.4 h</div><div class="s">to full</div></div>
+</div>
+
+<div class="cg">
+  <div>
+    <div style="margin-bottom:4px"><span style="font-size:11px;color:var(--tx3)">Power (48h)</span></div>
+    <div class="cp"><canvas id="ch1"></canvas></div>
+  </div>
+  <div>
+    <div style="margin-bottom:4px"><span style="font-size:11px;color:var(--tx3)">Voltage (48h)</span></div>
+    <div class="cp"><canvas id="ch2"></canvas></div>
+  </div>
+</div>
+
+<div class="sl">BMS packs</div>
+<div class="bg">
+
+  <div class="bc">
+    <div class="hd">
+      <span class="nm">BMS #0</span>
+      <span class="pill-status">Charging</span>
+    </div>
+    <div class="st">
+      <b>75%</b>
+      <span>51.35 V</span>
+      <span>+4.35 A</span>
+      <span>+223 W</span>
+      <span style="color:var(--tx3)">SOH 100%</span>
+    </div>
+    <div style="font-size:10px;color:var(--tx3);margin-top:4px">RS485: 98% ok (1243/1267) | 24 C</div>
+    <div class="cell-bar" id="cb0"></div>
+    <div class="cell-lbl"><span>3.414 V</span><span>15 cells</span><span>3.428 V</span></div>
+  </div>
+
+  <div class="bc">
+    <div class="hd">
+      <span class="nm">BMS #1</span>
+      <span class="pill-status">Charging</span>
+    </div>
+    <div class="st">
+      <b>75%</b>
+      <span>51.35 V</span>
+      <span>+4.35 A</span>
+      <span>+224 W</span>
+      <span style="color:var(--tx3)">SOH 100%</span>
+    </div>
+    <div style="font-size:10px;color:var(--tx3);margin-top:4px">RS485: 97% ok (1229/1267) | 25 C</div>
+    <div class="cell-bar" id="cb1"></div>
+    <div class="cell-lbl"><span>3.416 V</span><span>15 cells</span><span>3.425 V</span></div>
+  </div>
+
+</div>
+
+</div>
+</div>
+</div>
+
+<script>
+/* Theme toggle */
+var dk=matchMedia('(prefers-color-scheme:dark)').matches;
+function apT(){var r=document.documentElement;if(dk){r.classList.add('dk');r.classList.remove('lt')}else{r.classList.add('lt');r.classList.remove('dk')}document.getElementById('thmBtn').textContent=dk?'\u2600':'\u263E'}
+function tgT(){dk=!dk;apT()}apT();
+
+/* Generate 48h synthetic data, 192 points = 15min intervals */
+/* Scenario: today is day 2, peak solar at ~13:00, now 14:45, charging at +447W */
+function genData(){
+  var N=192;
+  var pow=[],vlt=[];
+  /* "Now" is at index N-1 (14:45 today). Walking backwards: */
+  for(var i=0;i<N;i++){
+    /* Minutes from now, positive backwards */
+    var mins_ago=(N-1-i)*15;
+    /* Convert to time-of-day: 14:45 = 885 min of day 2 */
+    var now_min=885;
+    var day_min=((now_min-mins_ago)%1440+1440)%1440;
+    /* Solar generation peaks mid-day (6-19h sunlight) */
+    var solar=0;
+    if(day_min>6*60 && day_min<19*60){
+      var solar_phase=(day_min-6*60)/(13*60)*Math.PI;
+      solar=Math.sin(solar_phase)*2800;
+      /* Random cloud dips */
+      if(Math.sin(day_min*0.07)<-0.6)solar*=0.5;
+    }
+    /* Household load: ~400W baseline, peaks morning (7-9) and evening (18-22) */
+    var load=350;
+    if(day_min>7*60 && day_min<9*60)load+=600;
+    if(day_min>18*60 && day_min<22*60)load+=800;
+    if(day_min<6*60 || day_min>22*60)load=180;
+    /* Net power to battery = solar - load (positive = charging) */
+    var p=solar-load;
+    /* Add some noise */
+    p+=(Math.sin(i*0.31)+Math.cos(i*0.17))*40;
+    pow.push(Math.round(p));
+    /* Voltage: follows SOC, with polarization when charging/discharging heavily */
+    /* Base voltage cycles between ~48.5V (empty morning) and ~52.8V (full after charging) */
+    var base_v=49.5+2.3*Math.sin((day_min/1440)*Math.PI*2-Math.PI/2);
+    /* Polarization: charging pushes up, discharge pulls down */
+    base_v+=p*0.0004;
+    vlt.push(Math.round(base_v*100));
+  }
+  /* Force the most recent point to match "now" (SOC 75%, +447W charging, 51.35V) */
+  pow[N-1]=447;vlt[N-1]=5135;
+  pow[N-2]=431;vlt[N-2]=5130;
+  pow[N-3]=458;vlt[N-3]=5128;
+  return {pow:pow,vlt:vlt,N:N};
+}
+var D=genData();
+
+/* Chart rendering adapted from V2.63 drLine */
+var CC=['#059669','#3b82f6'];
+function drLine(id,data,typ){
+  var c=document.getElementById(id);
+  var w=c.parentElement.clientWidth,h=c.parentElement.clientHeight||180;
+  if(w<10||h<10)return;
+  c.width=w;c.height=h;
+  var ctx=c.getContext('2d');
+  var sc=typ===0?1:0.01;
+  var col=CC[typ];
+  var unit=typ===0?'W':'V';
+  var pad=42,bt=24,tp=8;
+  var pv=[];
+  for(var i=0;i<data.length;i++)pv.push(data[i]*sc);
+  var mn=Infinity,mx=-Infinity;
+  for(i=0;i<pv.length;i++){if(pv[i]<mn)mn=pv[i];if(pv[i]>mx)mx=pv[i]}
+  var rng=mx-mn;if(rng<0.5)rng=0.5;mn-=rng*0.08;mx+=rng*0.08;rng=mx-mn;
+  var dh=h-bt-tp;
+  function gy(v){return tp+dh-((v-mn)/rng*dh)}
+  /* Gridlines + Y labels */
+  ctx.strokeStyle='rgba(128,128,128,0.08)';ctx.lineWidth=0.5;
+  for(var s=0;s<=3;s++){
+    var v2=mn+(rng*(s/3)),y=gy(v2);
+    ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w,y);ctx.stroke();
+    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--tx3');
+    ctx.font='10px sans-serif';ctx.textAlign='right';
+    var lbl=typ===1?v2.toFixed(1):Math.round(v2);
+    ctx.fillText(lbl,pad-4,y+3);
+  }
+  /* Zero line for power */
+  if(typ===0&&mn<0&&mx>0){
+    var y0=gy(0);
+    ctx.setLineDash([3,3]);ctx.strokeStyle='rgba(128,128,128,0.2)';
+    ctx.beginPath();ctx.moveTo(pad,y0);ctx.lineTo(w,y0);ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  var sx=(w-pad)/(pv.length-1);
+  /* Area fill */
+  var grd=ctx.createLinearGradient(0,tp,0,h-bt);
+  if(typ===0){
+    grd.addColorStop(0,'rgba(5,150,105,0.12)');
+    grd.addColorStop(0.5,'rgba(5,150,105,0.02)');
+    grd.addColorStop(0.5,'rgba(217,119,6,0.02)');
+    grd.addColorStop(1,'rgba(217,119,6,0.12)');
+  } else {
+    grd.addColorStop(0,'rgba(59,130,246,0.1)');
+    grd.addColorStop(1,'rgba(59,130,246,0.01)');
+  }
+  var baseY=typ===0&&mn<0?gy(0):h-bt;
+  ctx.beginPath();ctx.moveTo(pad,baseY);ctx.lineTo(pad,gy(pv[0]));
+  for(i=1;i<pv.length;i++)ctx.lineTo(pad+i*sx,gy(pv[i]));
+  ctx.lineTo(pad+(pv.length-1)*sx,baseY);
+  ctx.fillStyle=grd;ctx.fill();
+  /* Main line */
+  ctx.beginPath();ctx.moveTo(pad,gy(pv[0]));
+  for(i=1;i<pv.length;i++)ctx.lineTo(pad+i*sx,gy(pv[i]));
+  ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.stroke();
+  /* Last point marker */
+  var lastIdx=pv.length-1;
+  var lx=pad+lastIdx*sx,ly=gy(pv[lastIdx]);
+  ctx.beginPath();ctx.arc(lx,ly,3,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();
+  ctx.beginPath();ctx.arc(lx,ly,5,0,Math.PI*2);
+  ctx.strokeStyle=col;ctx.lineWidth=1;ctx.globalAlpha=0.3;ctx.stroke();ctx.globalAlpha=1;
+  ctx.fillStyle=col;ctx.font='10px sans-serif';ctx.textAlign='right';
+  var nv=pv[lastIdx];
+  ctx.fillText((typ===1?nv.toFixed(2):Math.round(nv))+' '+unit,lx-8,ly-8);
+  /* Time axis labels (hours) */
+  ctx.fillStyle='rgba(128,128,128,0.4)';ctx.font='9px sans-serif';ctx.textAlign='center';
+  /* Now is 14:45, show every ~8h */
+  var labels_h=[14,6,22,14,6];/* Now, -8h, -16h, -24h, -32h, -40h approx */
+  var step=Math.floor(pv.length/5);
+  for(i=0;i<pv.length;i+=step){
+    var mins_ago=(pv.length-1-i)*15;
+    var now_min=885;
+    var day_min=((now_min-mins_ago)%1440+1440)%1440;
+    var hh=Math.floor(day_min/60);
+    ctx.fillText(String(hh).padStart(2,'0')+':00',pad+i*sx,h-4);
+  }
+}
+
+/* Render cell bars for 15-cell BMS */
+function drCells(id,cells,minIdx,maxIdx){
+  var el=document.getElementById(id);
+  var mn=Math.min.apply(null,cells),mx=Math.max.apply(null,cells);
+  var rng=mx-mn;if(rng<0.001)rng=0.001;
+  var html='';
+  for(var i=0;i<cells.length;i++){
+    var rel=(cells[i]-mn)/rng;
+    var h=30+rel*70;
+    var cls=i===minIdx?'cb lo':(i===maxIdx?'cb hi':'cb');
+    html+='<div class="'+cls+'" style="height:'+h+'%"></div>';
+  }
+  el.innerHTML=html;
+}
+
+/* BMS#0 cells: min at idx 6, max at idx 7 (1-indexed: C7, C8) */
+var cells0=[3.421,3.422,3.420,3.419,3.418,3.416,3.414,3.428,3.421,3.423,3.420,3.419,3.422,3.421,3.420];
+var cells1=[3.420,3.422,3.421,3.419,3.418,3.416,3.417,3.425,3.420,3.421,3.419,3.418,3.420,3.421,3.418];
+drCells('cb0',cells0,6,7);
+drCells('cb1',cells1,6,7);
+
+/* Draw charts */
+function drawAll(){
+  drLine('ch1',D.pow,0);
+  drLine('ch2',D.vlt,1);
+}
+drawAll();
+window.addEventListener('resize',drawAll);
+</script>
+
+</body>
+</html>
