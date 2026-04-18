@@ -20,7 +20,7 @@ A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it direc
 
 - **Multi-pack support** up to 16 BMS packs on one RS485 bus
 - **Web dashboard** with glassmorphism sidebar UI, light/dark mode, responsive mobile layout
-- **48h chart history** for power, voltage, SOC, temperature (NVS-persistent, survives reboot)
+- **48h chart history** for power, voltage, SOC, temperature
 - **Energy tracking** rolling today / 7-day / monthly counters
 - **MQTT publishing** with Home Assistant auto-discovery and LWT
 - **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis throttling
