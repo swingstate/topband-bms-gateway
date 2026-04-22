@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 680 470" role="img" aria-labelledby="title desc">
+  <title id="title">TopBand BMS Gateway Architecture</title>
+  <desc id="desc">ESP32 gateway bridges a TopBand SmartBMS over RS485 and an inverter over CAN bus, publishes data over WiFi to an MQTT broker, and an OpenDTU ESP consumes that data via a second WiFi connection.</desc>
+
+  <defs>
+    <style>
+      .t-title { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 600; }
+      .t-sub   { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 12px; font-weight: 400; }
+      .t-edge  { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 12px; font-weight: 500; }
+
+      .box-mqtt { fill: #EEEDFE; stroke: #534AB7; }
+      .box-esp  { fill: #E1F5EE; stroke: #0F6E56; }
+      .box-bms  { fill: #EAF3DE; stroke: #3B6D11; }
+      .box-inv  { fill: #FAEEDA; stroke: #854F0B; }
+
+      .tx-mqtt-t { fill: #26215C; }
+      .tx-mqtt-s { fill: #534AB7; }
+      .tx-esp-t  { fill: #04342C; }
+      .tx-esp-s  { fill: #0F6E56; }
+      .tx-bms-t  { fill: #173404; }
+      .tx-bms-s  { fill: #3B6D11; }
+      .tx-inv-t  { fill: #412402; }
+      .tx-inv-s  { fill: #854F0B; }
+
+      .e-wifi  { stroke: #534AB7; stroke-dasharray: 6 4; fill: none; }
+      .e-rs485 { stroke: #0F6E56; fill: none; }
+      .e-can   { stroke: #D85A30; fill: none; }
+      .e-label { fill: #5F5E5A; }
+
+      @media (prefers-color-scheme: dark) {
+        .box-mqtt { fill: #3C3489; stroke: #AFA9EC; }
+        .box-esp  { fill: #085041; stroke: #5DCAA5; }
+        .box-bms  { fill: #27500A; stroke: #97C459; }
+        .box-inv  { fill: #633806; stroke: #EF9F27; }
+
+        .tx-mqtt-t { fill: #EEEDFE; }
+        .tx-mqtt-s { fill: #CECBF6; }
+        .tx-esp-t  { fill: #E1F5EE; }
+        .tx-esp-s  { fill: #9FE1CB; }
+        .tx-bms-t  { fill: #EAF3DE; }
+        .tx-bms-s  { fill: #C0DD97; }
+        .tx-inv-t  { fill: #FAEEDA; }
+        .tx-inv-s  { fill: #FAC775; }
+
+        .e-wifi  { stroke: #AFA9EC; }
+        .e-rs485 { stroke: #5DCAA5; }
+        .e-can   { stroke: #F0997B; }
+        .e-label { fill: #B4B2A9; }
+      }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M2 1 L9 5 L2 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- MQTT Broker -->
+  <rect class="box-mqtt" x="250" y="30" width="180" height="70" rx="10" stroke-width="1.2"/>
+  <text class="t-title tx-mqtt-t" x="340" y="58" text-anchor="middle" dominant-baseline="central">MQTT Broker</text>
+  <text class="t-sub tx-mqtt-s" x="340" y="80" text-anchor="middle" dominant-baseline="central">Pub/Sub message bus</text>
+
+  <!-- TopBand Gateway ESP -->
+  <rect class="box-esp" x="40" y="180" width="260" height="80" rx="10" stroke-width="1.2"/>
+  <text class="t-title tx-esp-t" x="170" y="210" text-anchor="middle" dominant-baseline="central">TopBand Gateway (ESP32)</text>
+  <text class="t-sub tx-esp-s" x="170" y="234" text-anchor="middle" dominant-baseline="central">RS485 + CAN + WiFi</text>
+
+  <!-- OpenDTU ESP -->
+  <rect class="box-esp" x="400" y="180" width="240" height="80" rx="10" stroke-width="1.2"/>
+  <text class="t-title tx-esp-t" x="520" y="210" text-anchor="middle" dominant-baseline="central">OpenDTU (ESP)</text>
+  <text class="t-sub tx-esp-s" x="520" y="234" text-anchor="middle" dominant-baseline="central">MQTT client via WiFi</text>
+
+  <!-- SmartBMS -->
+  <rect class="box-bms" x="40" y="360" width="260" height="80" rx="10" stroke-width="1.2"/>
+  <text class="t-title tx-bms-t" x="170" y="390" text-anchor="middle" dominant-baseline="central">TopBand SmartBMS</text>
+  <text class="t-sub tx-bms-s" x="170" y="414" text-anchor="middle" dominant-baseline="central">LiFePO4 battery pack</text>
+
+  <!-- Inverter -->
+  <rect class="box-inv" x="400" y="360" width="240" height="80" rx="10" stroke-width="1.2"/>
+  <text class="t-title tx-inv-t" x="520" y="390" text-anchor="middle" dominant-baseline="central">Inverter</text>
+  <text class="t-sub tx-inv-s" x="520" y="414" text-anchor="middle" dominant-baseline="central">Wechselrichter (Victron/Pylontech/SMA)</text>
+
+  <!-- Edge: TopBand -> MQTT (WiFi, publish) -->
+  <line class="e-wifi" x1="230" y1="180" x2="300" y2="100" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text class="t-edge e-label" x="228" y="140" text-anchor="end">WiFi · publish</text>
+
+  <!-- Edge: MQTT -> OpenDTU (WiFi, subscribe) -->
+  <line class="e-wifi" x1="380" y1="100" x2="460" y2="180" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text class="t-edge e-label" x="452" y="140" text-anchor="start">WiFi · subscribe</text>
+
+  <!-- Edge: SmartBMS -> TopBand (RS485) -->
+  <line class="e-rs485" x1="130" y1="360" x2="130" y2="262" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="t-edge e-label" x="140" y="315" text-anchor="start">RS485</text>
+
+  <!-- Edge: TopBand -> Inverter (CAN Bus, L-bend) -->
+  <path class="e-can" d="M 240 260 L 240 310 L 480 310 L 480 358" stroke-width="2" marker-end="url(#arrow)"/>
+  <text class="t-edge e-label" x="360" y="303" text-anchor="middle">CAN Bus</text>
+</svg>

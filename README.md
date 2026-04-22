@@ -1,12 +1,16 @@
 # TopBand BMS Gateway
 
-ESP32/ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to Victron, Pylontech, or SMA inverters via CAN bus. Includes a web dashboard, MQTT publishing, and Home Assistant auto-discovery.
+ESP32/ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to either Victron, Pylontech, or SMA inverters via CAN bus, or to Homeassistant (or other systems) via MQTT. Includes a web dashboard, MQTT publishing, and Home Assistant auto-discovery.
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
 ![Version](https://img.shields.io/badge/version-2.63-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3-orange)
+
+## Architecture
+
+![Architechture Overview](docs/bms_gateway_architecture.svg)
 
 ## Screenshots
 
