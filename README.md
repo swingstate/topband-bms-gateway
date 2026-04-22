@@ -4,7 +4,7 @@ ESP32/ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to either
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-2.63-green)
+![Version](https://img.shields.io/badge/version-2.66.3-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3-orange)
 
