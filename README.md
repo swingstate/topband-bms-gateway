@@ -4,7 +4,7 @@ ESP32/ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to either
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-2.66.3-green)
+![Version](https://img.shields.io/badge/version-2.67.2-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3-orange)
 
@@ -37,6 +37,9 @@ A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it direc
 - **Server-side alert ring buffer** last 25 alerts persisted in NVS
 - **Runtime pin configuration** no recompile needed to switch boards
 - **Per-BMS communication statistics** polls/ok/timeout/errors/spikes
+- **Tiered MQTT detail levels** (V2.67) off / per-pack statistics / additional per-cell voltages
+- **Live diagnostics panel** (V2.67) with tooltips, gateway self-monitoring counters, manual and 7-day auto reset
+- **About section** (V2.67) with build info, runtime state, and hardware details
 
 ## Supported Hardware
 
@@ -59,7 +62,7 @@ Download the latest .bin file from the Releases page and flash it via one of two
 - OTA Update (easiest) if you already have a working installation: open the web dashboard, go to General > OTA Firmware Update, and upload the .bin file. The device reboots into the new firmware automatically. No USB cable needed.
 - USB Flash (first install) use esptool.py or the ESP Web Tools flasher to flash via USB. Example:
 
-esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x10000 Topband_WaveshareS3_v2.63.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x10000 Topband_WaveshareS3_v2.67.2.bin
 
 Current binaries are built for Waveshare ESP32-S3 (no SD card support). LilyGo T-CAN485 users should compile from source or request a build via GitHub Issues.
 
