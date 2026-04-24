@@ -3,6 +3,119 @@
 All notable changes to TopBand BMS Gateway are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.67.2] - 2026-04-24
+
+GUI-Cleanup-Release. Reine UI-Arbeit, keine funktionalen Änderungen am MQTT-, RS485-, CAN- oder HA-Discovery-Pfad. OTA-kompatibel, keine Breaking Changes, keine NVS-Schema-Änderungen.
+
+### Changed
+
+- **Content skaliert jetzt auf volle Fensterbreite.** Die `.pg` Klasse hatte `max-width:1400px` hardcoded, was auf breiten Monitoren einen leeren rechten Rand erzeugte. Constraint entfernt. Metric Cards, Charts und BMS-Pack-Cards nutzen das verfügbare Fenster jetzt vollständig über die existierenden `auto-fit` Grids.
+- **Einheitliche Button-Größen überall.** Zuvor hatten diverse Sekundär-Buttons inline `style="padding:4px 10px;font-size:11px"` Overrides, Primär-Buttons hatten `.bo` Standard-Padding. Das führte zu visuell ungleichen Button-Paaren. Gelöst via zwei neuer Klassen: `.bo` bekommt `min-height:34px` für konsistente vertikale Ausrichtung, `.bo.sm` ist die offizielle kompakte Variante für Copy-/Close-Actions. Alle inline-style Button-Overrides entfernt.
+- **MQTT Section neu strukturiert (Network-Tab).** Fünf klare Subsections: **Broker** (Connection Config), **Home Assistant** (Auto-Discovery + Send/Clear Buttons), **Battery data (always on)** (Erklärung was immer publisht wird), **Extended battery monitoring (optional)** (drei vertikal gestackte Level-Optionen mit Beschreibung unter jedem Radio, keine Überlappungen mehr), **Gateway self-monitoring (optional, separate)** (klar abgegrenzt als ESP32-Health-Daten, nicht Batterie-Daten). Neue `.lvl-opt` Klasse für Radio-mit-Beschreibung-Pattern, neue `.btn-row` Klasse für Button-plus-Description-Zeilen.
+- **Level-Labels in Klartext.** Bisher zeigte die UI "L1 lean (default)", "L2 + per-BMS stats", "L3 + cells topic (20s)". Jetzt "Off", "Per-pack statistics", "Additional per-cell voltages" mit ausführlicher Beschreibung darunter. Interner NVS-Key `mq_level` bleibt unverändert bei 0/1/2.
+- **General Diagnostics Section neu strukturiert.** Log bekommt jetzt eine Überschrift ("Log (live)") und den Copy-Button rechtsbündig auf gleicher Höhe. Frame-Spy und Runtime-Counters Buttons stehen jetzt in `.btn-row` Grid mit fester linker Spaltenbreite (180px), Beschreibungstext rechts davon, beide Buttons exakt gleich breit. Frame-Spy Button kürzer: "Start RS485 Frame Spy" zu "Frame spy".
+- **"Show diag counters" zu "Runtime counters" umbenannt.** Klarerer Name, Runtime-Counters-Panel bekommt jetzt auch einen eigenen Header im Panel selbst.
+- **About Section in drei Subsections geteilt.** Build info (fix, ändert sich nur bei Release), Runtime state (Uptime, Heap, Flash, NVS, Boot-Reason, alles was sich ändert), Hardware (Device-ID, Chip, GPIO, alles statisch an dieses Board gebunden). `NVS usage` Row aus dem Diagnostics-Block nach About verschoben.
+- **Redundanz zwischen Runtime Counters und About Section eliminiert.** Diag-Counters-Panel zeigte 8 Werte die bereits in About standen (Firmware, Uptime, Boot-Reason, Free-Heap, Heap-Min, NVS-Used, NVS-Free, Session-Age-Days). Aus dem UI-Panel entfernt. Server-seitige Publishes auf MQTT `/diag` und HA Auto-Discovery bleiben unverändert bei 24 Keys, nur die Web-UI-Ansicht zeigt jetzt 16 Runtime-spezifische Counter.
+- **Board-Name präzisiert.** Dropdown-Label "Waveshare ESP32-S3" zu "Waveshare ESP32-S3 RS485/CAN Controller" erweitert, entspricht dem vollen Produktnamen.
+- **Maintenance Section als `.btn-row` Grid.** Firmware update, Download backup, Restore backup, Export history standen bisher als horizontale Button-Reihe mit unterschiedlichen Breiten. Jetzt vier vertikale Grid-Zeilen mit je 180px breitem Button links und Beschreibungstext rechts. Konsistent mit Network > Home Assistant und General > Tools.
+- **Battery Tab Buttons ebenfalls harmonisiert.** "BMS diagnostics" (Toggle für Service-Panel) und "Auto-configure from BMS" in `.btn-row` Grid umgesetzt, letzterer zu "Auto-configure" gekürzt.
+- **Alerts Clear Button auf `.bo.sm`.** Konsistent mit dem Header-Action-Pattern der Copy-Log und Copy-Hex Buttons.
+
+### Button-Architektur final
+
+| Pattern | Klasse | Verwendung |
+|---|---|---|
+| Main action | `.bo` in `.btn-row` Grid, feste 180px | Haupt-Actions auf Tab-Ebene, mit Description |
+| Compact action | `.bo.sm` (4px 10px) | Header-aligned oder kompakte inline-Actions |
+| Primary in task panel | `.bp` (grün) | Hauptaktion innerhalb eines expanded Tool-Panels |
+| Secondary in task panel | `.bo` | Sekundäraktion neben einem `.bp` |
+
+### Breaking changes
+
+Keine. NVS-Keys unverändert, gespeicherte Settings und Backups laden ohne Migration. MQTT-Topics unverändert, HA Entity IDs unverändert. Sessions bleiben gültig.
+
+### Deploy-Hinweise
+
+- Direkt-OTA von V2.67 oder V2.67.1 unterstützt.
+- Harter Browser-Refresh (Ctrl+Shift+R oder Cmd+Shift+R) empfohlen nach dem ersten Login, damit aktualisierte HTML/CSS/JS geladen werden. `Cache-Control: max-age=600` aus V2.66.2 E2 bedeutet sonst bis zu 10 Minuten alter UI-Cache.
+
+### Memory footprint
+
+- Static RAM: unverändert.
+- Flash: +~2.7 KB für HTML-Restrukturierung und neue CSS-Klassen.
+
+---
+
+## [2.67.1] - 2026-04-24
+
+Hotfix ausgelöst durch field-beobachteten TASK_WDT-Reboot am 2026-04-24 02:42 auf einem V2.67-Device mit aktiviertem L3 (`mq_level=2`). OTA-kompatibel, keine Breaking Changes, keine NVS-Schema-Änderungen.
+
+### Fixed
+
+- **F1/L3 Mutex-Hold über synchrone MQTT-Publishes in `sendMqttCells()`.** Der in V2.67 F1 eingeführte L3-Publish-Pfad hielt `dataMutex` über bis zu 16 aufeinanderfolgende synchrone `mqtt.publish()` TCP-Sends. Im Regelfall (gesunde WiFi/Broker-Verbindung) sind das ~40-160ms Mutex-Hold und unauffällig. Bei WiFi- oder Broker-Stall kann ein einzelner `mqtt.publish()` bis zum PubSubClient-Default-Timeout von 15s blockieren. Bei mehreren Packs summiert sich das. Folge: rs485Task auf Core 0 blockierte am Mutex, Main-Loop überschritt das 60s TASK_WDT-Fenster, Gerät rebootete. Field-Evidenz: `handler_max_ms=8854`, `loop_max_ms=8864` post-recovery, matcht einem Worst-Case von ~1.1s pro publish über 8 Packs. Ein weiterer Stall und das Fenster wäre überschritten. Fix folgt dem H4/C2-Snapshot-Pattern: ~170 bytes pro Pack (valid, cell_count, temp_count, cells[32], temps[8]) werden unter dem Mutex in einen static `CellSnap[MAX_BMS]` Buffer kopiert, Mutex wird sofort released, JSON-Build und `mqtt.publish()` passieren außerhalb des Locks. Zusätzlich `esp_task_wdt_reset()` zwischen den Publishes und `mqtt.connected()` Guard innerhalb der Publish-Loop damit eine mid-batch verlorene Verbindung nicht in 16 TCP-Timeouts kaskadiert.
+
+### Root-Cause-Analyse
+
+Pre-V2.67 existierte dieser Pfad nicht. V2.67 F1 führte `sendMqttCells()` ein, übernahm aber das Mutex-Take-over-Publish Muster das die V2.67 Roadmap (H4) explizit als Anti-Pattern für V2.68 markiert hatte. Das fiel im V2.67 Review nicht auf weil H4 auf V2.68 verschoben wurde und `sendMqttCells()` als neue Funktion nicht im H4-Scope stand. V2.67.1 zieht das Pattern für diesen einen neuen Pfad vor.
+
+### Breaking changes
+
+Keine. Schema von `{base}/cells/bms{n}` unverändert (`"v":1`). Keine NVS-Key-Änderungen. `mq_level` Verhalten unverändert.
+
+### Memory footprint
+
+- Static RAM: +2.7 KB (.bss) für `snap[16]` Buffer.
+- Stack: nicht betroffen, snap ist static statt lokal.
+- Flash: +~500 bytes durch zusätzliche Bounds-Checks und Kommentare.
+
+### Deploy-Hinweise
+
+- Direkt-OTA von V2.67 unterstützt.
+- Wer nach V2.67-Instabilität auf L1/L2 zurückgeschaltet hat, kann nach diesem Upgrade gefahrlos wieder auf L3.
+
+---
+
+## [2.67] - 2026-04-23
+
+Erstes GA-Release der V2.67-Linie. Vier Features, alle additiv, alle OTA-kompatibel, keine Breaking Changes, keine NVS-Schema-Migration. Setzt die in V2.66.3 begonnene Diagnostics-Sichtbarkeit konsequent fort: User bekommen ihre Zustandsdaten nicht nur auf MQTT, sondern auch direkt in der Web-UI und in Home Assistant, mit Erklärungen und mit einer Reset-Funktion damit Langzeit-Counter nach einem Vorfall sinnvoll wieder bei Null anfangen. Außerdem erstmals ein Tiered-MQTT-Modell (L1/L2/L3) damit kleinere HA-Instanzen nicht von 100+ Entitäten erschlagen werden.
+
+### Added
+
+- **F1 Tiered MQTT (L1/L2/L3) mit level-gated HA-Discovery.** Neuer NVS-Key `mq_level` (int, default 0). L1 (lean, default) publisht nur die Pack-Aggregate wie bisher, keine Per-BMS-Entitäten. L2 ergänzt pro BMS die 6 Core-Entitäten (soc, v, i, min_cell, max_cell, online) plus 6 neue Stat-Entitäten (`drift_mv`, `polls`, `timeouts`, `errors`, `spikes`, `current_holds`). L3 fügt zusätzlich das retained Topic `{base}/cells/bms{n}` im 20s-Takt hinzu, inkl. bis zu 16 Cell-Voltages und 4 Temps pro Pack. Level-Switch in der UI (MQTT-Tab) triggert sofortiges Re-Publish der HA-Discovery-Configs plus gezieltes Remove der nicht mehr benötigten Entitäten. Zero cost auf L1, deterministische Publish-Cadence auf L2/L3.
+- **F2 About-Section im General-Tab.** Compiled-Date, Git-SHA, Chip-Info, Flash-Usage, Free-Heap, PSRAM (wenn vorhanden), Uptime, Last-Boot-Time, Boot-Reason, GPIO-Pin-Set, Projekt-Link, Lizenz. Git-SHA wird über externes Build-Script `tools/git_sha_gen.sh` in `git_sha.h` injiziert; Fallback `"unknown"` wenn Header fehlt (Arduino-IDE Ad-hoc-Builds). Neuer globaler `g_boot_epoch` (uint32) erfasst Unix-Epoch des Boot-Zeitpunkts lazy bei erstem NTP-Sync, Cutoff 2023-01-01 als Pre-NTP-Guard.
+- **F3 Diagnostics-Panel mit Tooltips und `/diag` HTTP-Endpoint.** Neue `DIAG_KEY_HELP`-Tabelle als Single Source of Truth für Key-Erklärungen. Genutzt von (a) einem neuen `"_help"`-Objekt im MQTT `/diag`-Payload und (b) Hover-Tooltips im General-Tab der Web-UI. Jede Hilfszeile <=80 chars, plain English, Akronyme bei erster Nutzung ausgeschrieben. Neuer HTTP-Endpoint `GET /diag` gibt denselben JSON-Payload zurück wie das MQTT-Topic (inkl. `_help`), auth-geschützt, für UI-Live-Anzeige genutzt. Helper `buildDiagPayloadJson()` eliminiert die Duplikation zwischen MQTT- und HTTP-Pfad.
+- **F4 Counter-Reset-Button + 7-Tage-Auto-Rollover.** Neuer "Reset counters"-Button im Diagnostics-Panel mit Confirm-Dialog. Rolling-7-Day Auto-Reset seit letztem Reset, nicht kalender-wöchentlich. NTP-aware: wenn bei Rollover-Zeitpunkt NTP nicht synchronisiert ist, wird der Reset verschoben bis zum nächsten synchronisierten 60s-Check. Neuer additiver NVS-Key `lrst_ts` (ulong) persistiert den letzten Reset-Zeitstempel, RAM-Counter selbst bleiben RAM-only und resetten bei Reboot (Reboot bumpt `lrst_ts` nicht). Neuer `last_reset_ts` Key in Diag-Payload, HA-Entity und Web-UI. Neuer HTTP-Endpoint `POST /svc/reset_counters` (plus GET-Fallback). Reset zero-t: `bms_polls`, `can_tx_ok`, `can_tx_fail`, `stream_aborts`, `current_holds` (aggregate), `spike_rejects` (aggregate), `rl_rejects`, `mqtt_fail`, plus per-BMS `polls`, `timeouts`, `errors`, `spikes`. Preserved bleiben: `heap_min`, `handler_max_ms`, `loop_max_ms`, `rs485_hwm`, `wdt_warnings`, `can_tx_fail_streak`.
+
+### Changed
+
+- **MQTT `/diag` Buffer-Budget von 768 auf 3072 Bytes erhöht.** Nötig für das neue `_help`-Objekt (24 Keys × ~75 Bytes). Buffer lebt auf dem Main-Loop-Task-Stack (>=8 KB), Stack-Impact bleibt deutlich unter Wasserlinie.
+
+### Breaking changes
+
+Keine. Alle NVS-Keys additiv (`mq_level`, `lrst_ts`). Existierende Settings laden unverändert. Default für `mq_level` ist 0 (L1), d.h. Verhalten auf dem MQTT-Topic ist auf dem ersten Boot nach Upgrade identisch zu V2.66.3 bis der User explizit auf L2 oder L3 wechselt. HA-Discovery-Entities bestehend aus V2.66.3 bleiben bestehen.
+
+### Deploy-Hinweise
+
+- **OTA-Upgrade direkt von V2.66.3 unterstützt.** Kein USB-Flash nötig.
+- **Tiered MQTT (F1) opt-in.** User muss im MQTT-Tab `Publish level` aktiv umschalten um L2- oder L3-Features zu nutzen. Default bleibt L1 um bestehende HA-Installationen nicht zu überraschen.
+- **Counter-Reset-Window (F4) erst aktiv sobald NTP synchronisiert ist.** Auf einem fresh-flashed Device ohne WiFi/NTP bleibt `g_last_reset_ts = 0`. Beim ersten Loop-Tick mit valider Systemzeit (>2023-01-01) wird das Fenster einmalig verankert und in NVS geschrieben.
+- **HA-Diag-Discovery muss einmal neu getoggelt werden** damit die neue `last_reset_ts`-Entity erscheint. MQTT-Tab: Diagnostics off -> Save -> wieder on -> Save. Existierende 23 Diag-Entities bleiben davon unberührt.
+- **Git-SHA in About-Section (F2) nur sichtbar wenn Build-Script läuft.** `tools/git_sha_gen.sh` ausführen vor jedem Release-Build, dann taucht die SHA unter "Build" auf. Bei lokalen Arduino-IDE-Builds ohne Script steht dort "unknown"; das ist Absicht.
+
+### Known issue (fixed in V2.67.1)
+
+V2.67 L3 hatte unter WiFi/Broker-Stall ein TASK_WDT-Risiko wegen synchroner `mqtt.publish()`-Schleife unter `dataMutex`. Field-reproduced am 2026-04-24. Hotfix V2.67.1 eliminiert das Problem via Snapshot-Pattern. V2.67-User auf L2 oder L3 sollten auf V2.67.1 oder V2.67.2 upgraden.
+
+### Memory footprint
+
+- Static RAM: +16 bytes (`g_last_reset_ts`, `g_last_rollover_check`, `g_boot_epoch`, `g_mqtt_level`, `last_mqtt_cells`) plus DIAG_KEY_HELP-Tabelle (~24 × 16 bytes im Flash/ROM, nicht im RAM). Vernachlässigbar.
+- Stack: Diag-Payload-Buffer 768 -> 3072 bytes, einmal pro Publish auf Main-Loop-Task.
+- Flash: UI-HTML +~1.2 KB.
+- NVS: 2 neue Keys additiv.
+
+---
+
 ## [2.66.3] - 2026-04-20
 
 Home Assistant Auto-Discovery für den in V2.66.2 eingeführten `{base}/diag` Topic. Pre-existing JSON-Bugfix als Bonus. OTA-kompatibel, keine Breaking Changes.
