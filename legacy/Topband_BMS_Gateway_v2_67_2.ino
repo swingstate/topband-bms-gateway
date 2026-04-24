@@ -2,6 +2,139 @@
  * TOPBAND BMS GATEWAY V2.67.2
  * =========================
  *
+ * V2.67.2 CHANGELOG (GUI cleanup, final V2.67 release)
+ *
+ *   UI-only release. No functional changes to MQTT, RS485, CAN, or HA
+ *   discovery. OTA-compatible from V2.67 or V2.67.1.
+ *
+ *   - Content scales to full window width (removed 1400px cap on .pg)
+ *   - Consistent button sizing across all pages via new .bo + .bo.sm
+ *     classes. All main-action buttons use .btn-row grid (180px fixed
+ *     button + inline description) for visual consistency.
+ *   - MQTT section restructured with 5 subsections: Broker, Home Assistant,
+ *     Battery data (always on), Extended battery monitoring, Gateway
+ *     self-monitoring. Level labels in plain English instead of L1/L2/L3.
+ *     Radios vertical-stacked with description per option, fixing the
+ *     label overlap bug from V2.67.
+ *   - General Diagnostics section: Log gets a header, Frame spy and
+ *     Runtime counters buttons in equal-width grid with descriptions.
+ *   - "Show diag counters" renamed to "Runtime counters".
+ *   - About section split into Build info / Runtime state / Hardware.
+ *     NVS usage moved here from Diagnostics.
+ *   - Runtime counters panel deduplicated: 8 keys already in About
+ *     (fw, uptime, boot_reason, heap_free, heap_min, nvs_used, nvs_free,
+ *     session_age_d) removed from the UI panel. Server-side MQTT /diag
+ *     and HA discovery keep all 24 keys.
+ *   - Board dropdown label: "Waveshare ESP32-S3" ->
+ *     "Waveshare ESP32-S3 RS485/CAN Controller".
+ *   - Maintenance, Battery, and Alerts buttons harmonized.
+ *
+ *   No NVS schema changes. No breaking changes. OTA-ok from V2.67 and
+ *   V2.67.1.
+ *
+ * =========================
+ *
+ * TOPBAND BMS GATEWAY V2.67.1
+ * =========================
+ *
+ * V2.67.1 CHANGELOG (critical L3 hotfix)
+ *
+ *   Hotfix released 2026-04-24 after a field-observed TASK_WDT reboot
+ *   on a V2.67 device running mq_level=2 ("Additional per-cell
+ *   voltages"). OTA-compatible from V2.67.
+ *
+ *   Root cause: sendMqttCells() held dataMutex across up to 16
+ *   synchronous mqtt.publish() calls. On a healthy WiFi + broker this
+ *   is 40-160 ms of mutex hold. Under a WiFi or broker stall each
+ *   publish can block up to 15 s (PubSubClient default timeout).
+ *   Cumulative hold exceeded the 60 s TASK_WDT window. Field evidence:
+ *   handler_max_ms=8854, loop_max_ms=8864 post-recovery.
+ *
+ *   Fix: snapshot ~170 bytes per pack (valid, cell_count, temp_count,
+ *   cells[32], temps[8]) into a static CellSnap[MAX_BMS] buffer under
+ *   the mutex, release immediately, then build JSON and publish
+ *   outside the lock. esp_task_wdt_reset() between publishes and
+ *   mqtt.connected() guard inside the publish loop prevent cascading
+ *   TCP timeouts on mid-batch disconnect.
+ *
+ *   Same H4/C2 pattern already catalogued in CODE_REVIEW_V2.66.md.
+ *   V2.68 will extend it to sendMqttData as originally scoped.
+ *
+ *   No NVS changes. No schema changes. No breaking changes.
+ *
+ * =========================
+ *
+ * TOPBAND BMS GATEWAY V2.67
+ * =========================
+ *
+ * V2.67 CHANGELOG (F1 tiered MQTT, F2 About, F3 diag tooltips, F4 reset)
+ *
+ *   First GA release of the V2.67 line. Four additive features, all
+ *   OTA-compatible from V2.66.3, no breaking changes, no NVS schema
+ *   migration. Continues the V2.66.3 diagnostics visibility push into
+ *   Web UI and Home Assistant, and introduces tiered MQTT so smaller
+ *   HA instances are not flooded with 100+ entities.
+ *
+ *   F1  Tiered MQTT (L1/L2/L3) with level-gated HA discovery.
+ *       New NVS key mq_level (int, default 0). L1 (lean, default)
+ *       publishes pack aggregates as before, no per-BMS entities.
+ *       L2 adds 6 core + 6 stat entities per pack (drift_mv, polls,
+ *       timeouts, errors, spikes, current_holds). L3 additionally
+ *       publishes retained {base}/cells/bms{n} at 20 s with up to
+ *       16 cell voltages and 4 temps per pack. Level switch in the
+ *       UI triggers immediate re-publish of HA discovery plus
+ *       targeted removal of entities no longer needed. Zero cost on
+ *       L1. Deterministic publish cadence on L2/L3.
+ *
+ *   F2  About section in the General tab.
+ *       Compiled date, git SHA, chip info, flash usage, free heap,
+ *       PSRAM (if present), uptime, last boot time, boot reason,
+ *       GPIO pin set, project link, license. Git SHA injected via
+ *       external build script tools/git_sha_gen.sh into git_sha.h;
+ *       falls back to "unknown" for Arduino IDE ad-hoc builds.
+ *       New global g_boot_epoch (uint32) captures Unix epoch of boot
+ *       lazily on first NTP sync, 2023-01-01 pre-NTP cutoff guard.
+ *
+ *   F3  Diagnostics panel with tooltips and /diag HTTP endpoint.
+ *       New DIAG_KEY_HELP table as single source of truth for key
+ *       explanations. Used by (a) a new "_help" object in the MQTT
+ *       /diag payload and (b) hover tooltips in the General tab.
+ *       Each help line <= 80 chars, plain English, acronyms spelled
+ *       out on first use. New HTTP endpoint GET /diag returns the
+ *       same payload as the MQTT topic (including _help), auth-
+ *       protected, used by the UI for live display. Helper
+ *       buildDiagPayloadJson() eliminates duplication between the
+ *       MQTT and HTTP paths. Diag buffer grown 768 -> 3072 bytes to
+ *       fit the _help dictionary.
+ *
+ *   F4  Manual counter reset + 7-day rolling auto-rollover.
+ *       New "Reset counters" button in the Diagnostics panel with
+ *       confirm dialog. Rolling 7-day auto-reset since last reset,
+ *       not calendar week. NTP-aware: if NTP is not synced at
+ *       rollover time, the reset is deferred until the next NTP-
+ *       synced 60 s check. New additive NVS key lrst_ts (ulong)
+ *       persists the last reset timestamp. RAM counters stay
+ *       RAM-only and reset on reboot (reboot does not bump lrst_ts).
+ *       New last_reset_ts key in diag payload, HA entity, Web UI.
+ *       New HTTP endpoint POST /svc/reset_counters (plus GET
+ *       fallback). Reset zeroes: bms_polls, can_tx_ok, can_tx_fail,
+ *       stream_aborts, current_holds, spike_rejects, rl_rejects,
+ *       mqtt_fail, plus per-BMS polls/timeouts/errors/spikes.
+ *       Preserved: heap_min, handler_max_ms, loop_max_ms, rs485_hwm,
+ *       wdt_warnings, can_tx_fail_streak.
+ *
+ *   Known issue in V2.67 (fixed in V2.67.1): L3 mutex-over-publish
+ *   path could trigger TASK_WDT under WiFi/broker stall. V2.67
+ *   users on L2 or L3 should upgrade to V2.67.1 or V2.67.2 directly.
+ *
+ *   No breaking changes. Additive NVS keys only (mq_level, lrst_ts).
+ *   Default mq_level = 0 matches V2.66.3 MQTT surface exactly.
+ *
+ * =========================
+ *
+ * TOPBAND BMS GATEWAY V2.66.3
+ * =========================
+ *
  * V2.66.3 CHANGELOG (HA Auto-Discovery for diag topic)
  *
  *   D2  Home Assistant Auto-Discovery fuer {base}/diag Entities.
