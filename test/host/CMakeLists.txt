@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(test_config_serde CXX)
+project(topband_host_tests CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,3 +42,28 @@ include(CTest)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 catch_discover_tests(test_config_serde)
+
+# ── test_protocol ─────────────────────────────────────────────────────────────
+# protocol.cpp is host-portable: no IDF headers, no FreeRTOS.
+add_executable(test_protocol
+  test_protocol.cpp
+  ../../src/bms/protocol.cpp
+)
+
+target_include_directories(test_protocol PRIVATE
+  ../../src
+)
+
+target_compile_definitions(test_protocol PRIVATE
+  NATIVE_BUILD
+  "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\""
+)
+
+target_compile_options(test_protocol PRIVATE
+  -Wall
+  -Wextra
+  -Wno-unused-parameter
+)
+
+target_link_libraries(test_protocol PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_protocol)

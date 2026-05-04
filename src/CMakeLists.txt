@@ -11,6 +11,7 @@ idf_component_register(
     "storage/config.cpp"
     "storage/nvs_store.cpp"
     "bus/queues.cpp"
+    "bms/protocol.cpp"
   INCLUDE_DIRS
     "."
     "../include"
