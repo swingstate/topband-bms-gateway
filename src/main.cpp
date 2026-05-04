@@ -1,13 +1,6 @@
-// V3.0 skeleton. First real code lands via feature branches off v3-dev.
-// See docs/V3.0_REARCHITECTURE_PROMPT.md for the design brief.
-#include <Arduino.h>
+#include "app/boot.h"
 
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("TopBand BMS Gateway V3.0 skeleton");
-}
-
-void loop() {
-  delay(1000);
+extern "C" void app_main() {
+  app::run_boot();
+  // run_boot() never returns; it ends in an infinite heartbeat loop.
 }

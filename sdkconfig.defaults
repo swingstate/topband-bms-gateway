@@ -1,0 +1,60 @@
+# TopBand BMS Gateway V3.0 — sdkconfig overrides for ESP-IDF v5.3
+# Applied by IDF build system before menuconfig; do not edit generated sdkconfig.
+
+# ── PSRAM: ESP32-S3 OPI (Octal) PSRAM, 80 MHz ────────────────────────────────
+# The snapshot bus places BmsSystemSnapshot double-buffers in PSRAM.
+# Octal mode required for adequate bandwidth on read-heavy Core 1 consumers.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# ── FreeRTOS ──────────────────────────────────────────────────────────────────
+# 1000 Hz tick so vTaskDelay(pdMS_TO_TICKS(1)) gives 1 ms resolution.
+CONFIG_FREERTOS_HZ=1000
+
+# ── Task watchdog ─────────────────────────────────────────────────────────────
+# 60 s timeout. A WDT trip means a task is blocked — that is a bug, not a
+# recoverable event. Panic on WDT so we get a coredump for post-mortem.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# ── Core dump ─────────────────────────────────────────────────────────────────
+# Write panic coredump to the dedicated 64 KB flash partition. Readable via
+# espcoredump.py or GET /api/diag/coredump.bin.
+CONFIG_ESP_COREDUMP_ENABLE=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_BIN=y
+CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+
+# ── TWAI (CAN) driver ─────────────────────────────────────────────────────────
+# IRAM placement for lower ISR latency on the CAN TX hot path.
+CONFIG_TWAI_ISR_IN_IRAM=y
+
+# ── HTTP server ───────────────────────────────────────────────────────────────
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_MAX_RESP_HDR_LEN=1024
+
+# ── LittleFS (joltwallet/littlefs managed component) ─────────────────────────
+# These keys are only active once the component is added (Phase F).
+# Harmless here if the component is absent.
+CONFIG_LITTLEFS_MAX_PARTITIONS=4
+CONFIG_LITTLEFS_OBJ_NAME_LEN=64
+CONFIG_LITTLEFS_PAGE_SIZE=256
+CONFIG_LITTLEFS_READ_SIZE=128
+CONFIG_LITTLEFS_WRITE_SIZE=128
+
+# ── Flash size ────────────────────────────────────────────────────────────────
+# Must match the physical flash on the Waveshare ESP32-S3 (16 MB).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
