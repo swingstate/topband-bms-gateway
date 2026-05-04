@@ -1,3 +1,13 @@
+# Local-only design documents — do not commit to public repo.
+# These contain architectural reasoning and Claude Code phase prompts
+# that are intentionally not part of the public surface.
+
+docs/architecture.md
+prompts/
+
+# (The rest of your normal .gitignore goes below this block.)
+
+
 # PlatformIO build artifacts
 .pio/
 .pioenvs/
