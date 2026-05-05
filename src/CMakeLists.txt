@@ -8,10 +8,14 @@ idf_component_register(
   SRCS
     "main.cpp"
     "app/boot.cpp"
+    "app/smoke_reader.cpp"
     "storage/config.cpp"
     "storage/nvs_store.cpp"
     "bus/queues.cpp"
+    "bus/snapshot_bus.cpp"
     "bms/protocol.cpp"
+    "bms/snapshot.cpp"
+    "bms/poller.cpp"
   INCLUDE_DIRS
     "."
     "../include"
@@ -22,4 +26,6 @@ idf_component_register(
     esp_timer
     esp_system
     heap
+    driver
+    esp_hw_support
 )
