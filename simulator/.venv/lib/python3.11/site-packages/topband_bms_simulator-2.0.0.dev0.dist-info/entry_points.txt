@@ -1,0 +1,2 @@
+[console_scripts]
+simctl = simulator.cli.simctl:main

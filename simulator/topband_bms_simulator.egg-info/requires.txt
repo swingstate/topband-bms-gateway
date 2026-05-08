@@ -1,0 +1,9 @@
+pyserial~=3.5
+python-can~=4.4
+Flask~=3.0
+waitress~=3.0
+PyYAML~=6.0
+requests~=2.32
+
+[dev]
+pytest~=8.0

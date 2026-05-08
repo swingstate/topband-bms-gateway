@@ -1,0 +1,38 @@
+Metadata-Version: 2.4
+Name: topband-bms-simulator
+Version: 2.0.0.dev0
+Summary: Topband BMS simulator V2 — RS485 + CAN HIL test harness for the V3.0 firmware project
+Author: BMS Simulator Authors
+License: Proprietary
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pyserial~=3.5
+Requires-Dist: python-can~=4.4
+Requires-Dist: Flask~=3.0
+Requires-Dist: waitress~=3.0
+Requires-Dist: PyYAML~=6.0
+Requires-Dist: requests~=2.32
+Provides-Extra: dev
+Requires-Dist: pytest~=8.0; extra == "dev"
+
+# Topband BMS Simulator V2
+
+V2 of the Topband BMS simulator. Hardware-in-the-loop test harness for the V3.0
+gateway firmware: impersonates 1–16 packs over RS485, observes Victron CAN
+output, generates fixtures for the V3.0 host test suite.
+
+See `architecture.md` (gitignored, kept locally only) for design.
+See `deploy/README.md` for Pi setup.
+
+## Quickstart (dev laptop)
+
+```sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest -v
+```
+
+SIM-1 ships the framing layer, frame builders, and tests only. The RS485
+listener, scenario engine, HTTP API, and CAN monitor land in later phases.
+`python -m simulator` prints a placeholder until SIM-3.
