@@ -1,0 +1,24 @@
+{
+  "was_pack_online": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "prev_alarm_flags": 0,
+  "prev_factor_charge": 1.0,
+  "prev_factor_discharge": 1.0,
+  "was_packs_online_any": true
+}

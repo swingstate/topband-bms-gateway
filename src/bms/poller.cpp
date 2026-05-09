@@ -2,12 +2,15 @@
 #include "bms/snapshot.h"
 #include "bms/protocol.h"
 #include "bus/snapshot_bus.h"
+#include "safety/runSafety.h"
+#include "safety_state.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <cstring>
 
 static const char* TAG = "poller";
 
@@ -15,6 +18,13 @@ static const char* TAG = "poller";
 
 static portMUX_TYPE  s_stats_mux   = portMUX_INITIALIZER_UNLOCKED;
 static bms::poller::PollerStats s_stats{};
+
+// ── Safety state (Phase D) ────────────────────────────────────────────────────
+// Single-slot with a critical-section copy. Phase E can upgrade to seqlock.
+static SafetyState    s_safety{};
+static bool           s_safety_valid = false;
+static portMUX_TYPE   s_safety_mux   = portMUX_INITIALIZER_UNLOCKED;
+static PrevSafetyState s_safety_prev{};
 
 // ── RS485 helpers ─────────────────────────────────────────────────────────────
 
@@ -136,12 +146,7 @@ static bool rs485_receive_frame(uint8_t* buf, size_t buf_size, size_t& out_len) 
   return false;  // Total timeout
 }
 
-// ── Phase-stub stubs (replaced in Phase D / E) ───────────────────────────────
-
-// Phase D: runSafety() will go here.
-static inline void run_safety_stub() { /* no-op */ }
-
-// Phase E: canTxIfDue() will go here.
+// ── Phase E: canTxIfDue() will go here ───────────────────────────────────────
 static inline void can_tx_stub() { /* no-op */ }
 
 // ── ControlTask ──────────────────────────────────────────────────────────────
@@ -150,6 +155,8 @@ static void control_task_entry(void* param) {
   const Config& cfg = *static_cast<const Config*>(param);
 
   ESP_LOGI(TAG, "ControlTask started on Core 0 (bms_count=%u)", cfg.bms_count);
+
+  s_safety_prev = safety::make_default_prev();
 
   if (!rs485_init(cfg)) {
     ESP_LOGE(TAG, "RS485 init failed — ControlTask aborting");
@@ -312,8 +319,31 @@ static void control_task_entry(void* param) {
       sys->produced_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
       bus::snapshot_bus::publish();
 
-      // ── Phase C stubs (Phases D and E will replace) ──────────────────
-      run_safety_stub();
+      // ── Phase D: safety aggregation ──────────────────────────────────
+      {
+        SafetyState tmp;
+        uint32_t safety_now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
+        safety::update_prev_state(tmp, *sys, s_safety_prev);
+
+        // Log events (will be routed to MQTT/CAN in later phases)
+        for (uint8_t ev = 0; ev < tmp.event_count; ++ev) {
+          ESP_LOGI(TAG, "safety event %u bms=%u bits=0x%llx",
+                   static_cast<unsigned>(tmp.events[ev].type),
+                   tmp.events[ev].bms_id,
+                   static_cast<unsigned long long>(tmp.events[ev].alarm_bits));
+        }
+        if (tmp.alarm_flags)
+          ESP_LOGW(TAG, "safety: flags=0x%02X ccl=%.0fA dcl=%.0fA msg=%s",
+                   tmp.alarm_flags, tmp.ccl_amps, tmp.dcl_amps, tmp.sys_message);
+
+        portENTER_CRITICAL(&s_safety_mux);
+        memcpy(&s_safety, &tmp, sizeof(SafetyState));
+        s_safety_valid = true;
+        portEXIT_CRITICAL(&s_safety_mux);
+      }
+
+      // ── Phase E: CAN TX stub ─────────────────────────────────────────
       can_tx_stub();
 
       // ── Cycle timing stats ────────────────────────────────────────────
@@ -376,6 +406,17 @@ void get_stats(PollerStats& out) {
   portENTER_CRITICAL(&s_stats_mux);
   out = s_stats;
   portEXIT_CRITICAL(&s_stats_mux);
+}
+
+bool read_safety_state(SafetyState& out) {
+  portENTER_CRITICAL(&s_safety_mux);
+  if (!s_safety_valid) {
+    portEXIT_CRITICAL(&s_safety_mux);
+    return false;
+  }
+  memcpy(&out, &s_safety, sizeof(SafetyState));
+  portEXIT_CRITICAL(&s_safety_mux);
+  return true;
 }
 
 }  // namespace bms::poller

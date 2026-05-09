@@ -13,6 +13,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
+# ── nlohmann/json v3 via FetchContent (header-only) ──────────────────────────
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Pthreads — needed by test_snapshot_bus multi-thread fuzz
 find_package(Threads REQUIRED)
 
@@ -102,3 +111,29 @@ target_compile_definitions(test_snapshot_filler PRIVATE ${HOST_COMPILE_DEFS})
 target_compile_options(test_snapshot_filler PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_snapshot_filler PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_snapshot_filler)
+
+# ── test_safety ───────────────────────────────────────────────────────────────
+# filters.cpp and runSafety.cpp are host-portable (no IDF, no FreeRTOS).
+# Reads JSON fixtures from test/host/fixtures/v267/ for V2.67 regression.
+add_executable(test_safety
+  test_safety.cpp
+  ../../src/safety/filters.cpp
+  ../../src/safety/runSafety.cpp
+)
+
+target_include_directories(test_safety PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_safety PRIVATE
+  ${HOST_COMPILE_DEFS}
+  "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\""
+)
+
+target_compile_options(test_safety PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_safety PRIVATE
+  Catch2::Catch2WithMain
+  nlohmann_json::nlohmann_json
+)
+catch_discover_tests(test_safety)

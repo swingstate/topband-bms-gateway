@@ -3,6 +3,7 @@
 #if SMOKE_READER_ENABLED
 
 #include "bus/snapshot_bus.h"
+#include "bms/poller.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,6 +15,7 @@ static void smoke_reader_task(void* /*param*/) {
   // BmsSystemSnapshot is ~4.5 KB — too large for the task stack.
   // Static storage is safe because smoke_reader_task is a singleton.
   static BmsSystemSnapshot snap;
+  static SafetyState safety;
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -38,6 +40,14 @@ static void smoke_reader_task(void* /*param*/) {
              snap.pack_count_configured,
              p0v, p0c, p0cell,
              (unsigned long long)bus::snapshot_bus::total_read_retries());
+
+    if (bms::poller::read_safety_state(safety)) {
+      ESP_LOGI(TAG,
+               "safety: flags=0x%02X ccl=%.0f dcl=%.0f cvl=%.2f packs=%u msg=%s",
+               safety.alarm_flags,
+               safety.ccl_amps, safety.dcl_amps, safety.cvl_volts,
+               safety.packs_online, safety.sys_message);
+    }
   }
 }
 

@@ -1,0 +1,39 @@
+{
+  "cycle_id": 55,
+  "produced_ms": 150000,
+  "cvl_volts": 53.5,
+  "ccl_amps": 0.0,
+  "dcl_amps": 0.0,
+  "pack_voltage_avg": 45.074999999999996,
+  "pack_current_total": 0.0,
+  "soc_avg": 50.0,
+  "soh_avg": 100.0,
+  "temp_avg": 25.0,
+  "capacity_total_ah": 400.0,
+  "capacity_remain_ah": 400.0,
+  "factor_charge": 1.0,
+  "factor_discharge": 1.0,
+  "alarm_flags": 48,
+  "sys_message": "ALARM: PACK UNDERVOLT",
+  "packs_online": 4,
+  "packs_configured": 4,
+  "event_count": 3,
+  "events": [
+    {
+      "type": "BmsReportedAlarm",
+      "bms_id": 1,
+      "alarm_bits": 4096
+    },
+    {
+      "type": "CellImbalanceStart",
+      "bms_id": 1,
+      "alarm_bits": 0
+    },
+    {
+      "type": "PackUndervoltStart",
+      "bms_id": 255,
+      "alarm_bits": 0
+    }
+  ],
+  "events_overflowed": false
+}

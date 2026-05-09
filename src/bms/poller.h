@@ -1,12 +1,13 @@
 #pragma once
 #include <cstdint>
 #include "storage/config.h"
+#include "safety_state.h"
 
 // ── BMS Poller / ControlTask ────────────────────────────────────────────────
 // ControlTask runs pinned to Core 0 at priority 5. Each iteration:
 //   Phase A (every 3 s) — poll all configured packs for analog data (0x42)
 //   Phase B (every 3 s, round-robin one pack) — poll alarm (0x44) or sysparam (0x47)
-//   Safety stub (Phase D will replace)
+//   Phase D — safety::runSafety() + safety state commit
 //   CAN TX stub (Phase E will replace)
 //   Snapshot publish via bus::snapshot_bus
 
@@ -41,5 +42,10 @@ struct PollerStats {
 
 // Thread-safe stats snapshot via portENTER_CRITICAL (< 1 µs, no I/O).
 void get_stats(PollerStats& out);
+
+// Thread-safe safety state snapshot. Returns false if safety has not yet run
+// (i.e. before the first ControlTask cycle completes). Phase E consumers
+// (CAN TX, MQTT) call this to read the latest SafetyState.
+bool read_safety_state(SafetyState& out);
 
 }  // namespace bms::poller
