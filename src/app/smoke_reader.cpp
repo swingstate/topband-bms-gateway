@@ -4,6 +4,7 @@
 
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
+#include "can/tx.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,11 +43,20 @@ static void smoke_reader_task(void* /*param*/) {
              (unsigned long long)bus::snapshot_bus::total_read_retries());
 
     if (bms::poller::read_safety_state(safety)) {
+      can::tx::CanStats cs{};
+      can::tx::get_stats(cs);
       ESP_LOGI(TAG,
                "safety: flags=0x%02X ccl=%.0f dcl=%.0f cvl=%.2f packs=%u msg=%s",
                safety.alarm_flags,
                safety.ccl_amps, safety.dcl_amps, safety.cvl_volts,
                safety.packs_online, safety.sys_message);
+      ESP_LOGI(TAG,
+               "can: ok=%llu fail=%llu hbeat=%lu exprss=%lu busoff=%lu",
+               (unsigned long long)cs.tx_ok,
+               (unsigned long long)cs.tx_fail,
+               (unsigned long)cs.heartbeats,
+               (unsigned long)cs.express_sends,
+               (unsigned long)cs.bus_off_count);
     }
   }
 }

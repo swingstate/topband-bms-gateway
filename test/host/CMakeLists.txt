@@ -137,3 +137,32 @@ target_link_libraries(test_safety PRIVATE
   nlohmann_json::nlohmann_json
 )
 catch_discover_tests(test_safety)
+
+# ── test_can_victron ──────────────────────────────────────────────────────────
+# victron.cpp, tx.cpp (NATIVE_BUILD stub), and busoff.cpp (NATIVE_BUILD mock).
+# All three are host-portable when compiled with NATIVE_BUILD defined.
+# Reads JSON fixtures from test/host/fixtures/v267/ (safety) and
+# test/host/fixtures/v267_can/ (CAN expected frames).
+add_executable(test_can_victron
+  test_can_victron.cpp
+  ../../src/can/victron.cpp
+  ../../src/can/tx.cpp
+  ../../src/can/busoff.cpp
+)
+
+target_include_directories(test_can_victron PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_can_victron PRIVATE
+  ${HOST_COMPILE_DEFS}
+  "FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\""
+)
+
+target_compile_options(test_can_victron PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_can_victron PRIVATE
+  Catch2::Catch2WithMain
+  nlohmann_json::nlohmann_json
+)
+catch_discover_tests(test_can_victron)
