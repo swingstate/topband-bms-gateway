@@ -18,6 +18,9 @@ idf_component_register(
     "bms/poller.cpp"
     "safety/filters.cpp"
     "safety/runSafety.cpp"
+    "can/victron.cpp"
+    "can/tx.cpp"
+    "can/busoff.cpp"
   INCLUDE_DIRS
     "."
     "../include"

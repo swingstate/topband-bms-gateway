@@ -4,6 +4,8 @@
 #include "bus/snapshot_bus.h"
 #include "safety/runSafety.h"
 #include "safety_state.h"
+#include "can/tx.h"
+#include "can/busoff.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -146,8 +148,7 @@ static bool rs485_receive_frame(uint8_t* buf, size_t buf_size, size_t& out_len) 
   return false;  // Total timeout
 }
 
-// ── Phase E: canTxIfDue() will go here ───────────────────────────────────────
-static inline void can_tx_stub() { /* no-op */ }
+// (Phase E: can::tx::init() called at ControlTask startup; can_tx_if_due() called per tick)
 
 // ── ControlTask ──────────────────────────────────────────────────────────────
 
@@ -162,6 +163,12 @@ static void control_task_entry(void* param) {
     ESP_LOGE(TAG, "RS485 init failed — ControlTask aborting");
     vTaskDelete(nullptr);
     return;
+  }
+
+  // ── CAN TX driver init (Phase E) ─────────────────────────────────────────
+  if (!can::tx::init(cfg)) {
+    ESP_LOGW(TAG, "CAN TX init failed — CAN frames will not be sent");
+    // Non-fatal: RS485 BMS polling continues; inverter will timeout gracefully.
   }
 
   // ── Initial snapshot: all packs offline ──────────────────────────────────
@@ -343,8 +350,7 @@ static void control_task_entry(void* param) {
         portEXIT_CRITICAL(&s_safety_mux);
       }
 
-      // ── Phase E: CAN TX stub ─────────────────────────────────────────
-      can_tx_stub();
+      // (CAN TX runs outside do_cycle — every 50 ms tick below)
 
       // ── Cycle timing stats ────────────────────────────────────────────
       uint32_t cycle_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000) - cycle_t0;
@@ -371,6 +377,15 @@ static void control_task_entry(void* param) {
                (unsigned long)local_stats.cycle_avg_ms,
                (unsigned long)local_stats.cycle_max_ms);
     }
+
+    // ── Phase E: CAN TX (every 50 ms tick) ──────────────────────────────
+    // Uses the most recently committed SafetyState. Before the first poll
+    // cycle completes s_safety_valid is false and no frames are sent.
+    if (s_safety_valid) {
+      // Direct read within ControlTask (sole writer on Core 0) — no lock needed.
+      can::tx::can_tx_if_due(s_safety, now_ms);
+    }
+    can::busoff::tick(now_ms);
 
     // ── Maintain 50 ms base tick using vTaskDelayUntil ───────────────────
     vTaskDelayUntil(&tick_start, pdMS_TO_TICKS(bms::poller::POLL_TICK_MS));
