@@ -2,9 +2,13 @@
 #include "version.h"
 #include "storage/config.h"
 #include "storage/nvs_store.h"
+#include "storage/lfs_store.h"
+#include "storage/ui_provisioner.h"
 #include "bus/queues.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
+#include "net/wifi.h"
+#include "web/server.h"
 #include "app/smoke_reader.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -13,17 +17,35 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include <cstring>
 
 static const char* TAG = "boot";
 
-// g_config: the loaded (or default) config, accessible to tasks spawned here.
-// Declared static so it lives for the device lifetime without a global.
+// Runtime config — lives for device lifetime, accessible via app::get_config().
 static Config g_config;
 
 namespace app {
 
+const Config& get_config() {
+  return g_config;
+}
+
+bool update_and_save_config(const Config& new_cfg) {
+  char field_err[64] = {};
+  ValidationError verr = storage::validate(new_cfg, field_err, sizeof(field_err));
+  if (verr != ValidationError::None) {
+    ESP_LOGW(TAG, "update_and_save_config: validation failed on field=%s", field_err);
+    return false;
+  }
+  if (!storage::saveConfig(new_cfg)) {
+    ESP_LOGE(TAG, "update_and_save_config: NVS save failed");
+    return false;
+  }
+  g_config = new_cfg;
+  return true;
+}
+
 // NVS flash init with standard erase-and-retry recovery.
-// Returns true on success.
 static bool init_nvs() {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -82,11 +104,7 @@ void run_boot() {
   {
     uint32_t psram_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     if (!bus::snapshot_bus::init()) {
-      // Architecture §10 R3: do NOT fall back to internal SRAM for the
-      // snapshot bus. PSRAM availability is a hard requirement for V3.0.
       ESP_LOGE(TAG, "Snapshot bus PSRAM init FAILED — cannot continue safely. Halting.");
-      // Halt: the heartbeat loop below will never run, which is intentional.
-      // A watchdog reset will follow. Better than running with no bus.
       for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
     uint32_t psram_after = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -95,21 +113,55 @@ void run_boot() {
              (unsigned)(psram_before - psram_after));
   }
 
-  // ── Step 5: Spawn ControlTask ────────────────────────────────────────────
+  // ── Step 5: LittleFS ────────────────────────────────────────────────────
+  {
+    if (storage::lfs::init()) {
+      ESP_LOGI(TAG, "LittleFS ready — total=%u free=%u B",
+               (unsigned)storage::lfs::total_bytes(),
+               (unsigned)storage::lfs::free_bytes());
+    } else {
+      ESP_LOGE(TAG, "LittleFS unavailable — UI will not function");
+    }
+  }
+
+  // ── Step 6: UI provisioner ───────────────────────────────────────────────
+  storage::ui_provisioner::provision_ui_if_needed();
+
+  // ── Step 7: WiFi ─────────────────────────────────────────────────────────
+  bool wifi_ok = false;
+  if (!net::wifi::init()) {
+    ESP_LOGE(TAG, "WiFi subsystem init failed");
+  } else {
+    wifi_ok = net::wifi::start_sta(15000);
+    if (!wifi_ok) {
+      ESP_LOGW(TAG, "WiFi STA failed — starting AP mode for setup");
+      net::wifi::start_ap();
+    } else {
+      char ip_buf[24] = {};
+      net::wifi::get_ip(ip_buf, sizeof(ip_buf));
+      ESP_LOGI(TAG, "WiFi connected — IP %s", ip_buf);
+    }
+  }
+
+  // ── Step 8: HTTP server ──────────────────────────────────────────────────
+  if (!web::start_httpd(g_config)) {
+    ESP_LOGE(TAG, "HTTP server failed to start");
+  }
+
+  // ── Step 9: Spawn ControlTask ────────────────────────────────────────────
   if (!bms::poller::start(g_config)) {
     ESP_LOGE(TAG, "ControlTask creation failed");
   } else {
     ESP_LOGI(TAG, "ControlTask created on Core 0 (bms_count=%u)", g_config.bms_count);
   }
 
-  // ── Step 6: Smoke reader (Phase C validation — Core 1) ──────────────────
+  // ── Step 10: Smoke reader (Phase C validation — Core 1) ─────────────────
 #if SMOKE_READER_ENABLED
   app::start_smoke_reader();
   ESP_LOGI(TAG, "Smoke reader task created on Core 1 (SMOKE_READER_ENABLED=1)");
 #endif
 
-  // ── Step 7: Heartbeat loop ───────────────────────────────────────────────
-  // app_main stays alive here. All work is done in spawned tasks.
+  // ── Step 11: Heartbeat loop ──────────────────────────────────────────────
   ESP_LOGI(TAG, "Boot complete — heartbeat every 5 s");
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(5000));
@@ -121,11 +173,19 @@ void run_boot() {
     bms::poller::PollerStats ps{};
     bms::poller::get_stats(ps);
 
+    char ip_buf[24] = {};
+    if (net::wifi::is_connected()) {
+      net::wifi::get_ip(ip_buf, sizeof(ip_buf));
+    } else {
+      snprintf(ip_buf, sizeof(ip_buf), net::wifi::is_ap_mode() ? "AP-192.168.4.1" : "disconnected");
+    }
+
     ESP_LOGI(TAG,
-             "Heartbeat | uptime=%lu s | heap=%lu B | psram=%lu B | "
+             "Heartbeat | uptime=%lu s | heap=%lu B | psram=%lu B | ip=%s | "
              "publishes=%llu | reads=%llu | retries=%llu | "
              "cycle_avg=%lu ms | cycle_max=%lu ms",
              (unsigned long)uptime_s, (unsigned long)heap, (unsigned long)spiram,
+             ip_buf,
              (unsigned long long)bus::snapshot_bus::total_publishes(),
              (unsigned long long)bus::snapshot_bus::total_reads(),
              (unsigned long long)bus::snapshot_bus::total_read_retries(),

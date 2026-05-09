@@ -1,0 +1,117 @@
+"""
+PlatformIO pre-build script: packages web/ui/ into web/littlefs_ui.tar,
+then pre-generates the IDF embedding assembly file so PlatformIO's SCons
+build finds it ready (avoiding a race with CMake's CUSTOM_COMMAND).
+
+Plain tar (no gzip) so the firmware extracts directly with microtar.
+
+The UI_VERSION string is read from src/storage/ui_provisioner.h so the
+firmware constant and the tarball always agree.
+"""
+
+import re
+import subprocess
+import tarfile
+import io
+import shutil
+import sys
+from pathlib import Path
+
+Import("env")  # noqa: F821 — injected by PlatformIO
+
+PROJECT_DIR  = Path(env["PROJECT_DIR"])   # noqa: F821
+WEB_DIR      = PROJECT_DIR / "web"
+UI_DIR       = WEB_DIR / "ui"
+OUT_TAR      = WEB_DIR / "littlefs_ui.tar"
+PROV_HEADER  = PROJECT_DIR / "src" / "storage" / "ui_provisioner.h"
+
+# IDF tooling paths — use env.subst() to expand SCons $VARIABLES.
+BUILD_DIR    = Path(env.subst("$BUILD_DIR"))  # .pio/build/esp32s3
+_PKG_DIR     = Path(env.subst("$PROJECT_PACKAGES_DIR"))
+CMAKE_SCRIPT = _PKG_DIR / "framework-espidf/tools/cmake/scripts/data_file_embed_asm.cmake"
+CMAKE_BIN    = _PKG_DIR / "tool-cmake/bin/cmake"
+
+
+def read_ui_version():
+    """Extract UI_VERSION constant from ui_provisioner.h."""
+    try:
+        text = PROV_HEADER.read_text(encoding="utf-8")
+        m = re.search(r'UI_VERSION\s*=\s*"([^"]+)"', text)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return "unknown"
+
+
+def build_tarball():
+    if not UI_DIR.exists():
+        print(f"[build_ui] ERROR: {UI_DIR} not found", file=sys.stderr)
+        env.Exit(1)  # noqa: F821
+
+    ui_version = read_ui_version()
+    (UI_DIR / "ui_version.txt").write_text(ui_version, encoding="utf-8")
+
+    # Build plain tar in memory, then write atomically.
+    # GNU_FORMAT avoids PAX extended headers (././@PaxHeader type 'x') that
+    # Python 3.8+ emits by default; microtar cannot iterate past them.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        for src in sorted(UI_DIR.rglob("*")):
+            if src.is_file():
+                arcname = src.relative_to(UI_DIR).as_posix()
+                tar.add(str(src), arcname=arcname)
+
+    raw = buf.getvalue()
+    tmp = OUT_TAR.with_suffix(".tar.tmp")
+    tmp.write_bytes(raw)
+    shutil.move(str(tmp), str(OUT_TAR))
+
+    n_files = sum(1 for f in UI_DIR.rglob("*") if f.is_file())
+    size_kb  = len(raw) / 1024
+    print(f"[build_ui] Packed {n_files} files → {OUT_TAR.name} "
+          f"({size_kb:.1f} KB, version={ui_version})")
+
+    return raw
+
+
+def pre_generate_embed_s(raw_tar_bytes):
+    """
+    Pre-generate the IDF embedding .S file before SCons tries to compile it.
+    PlatformIO's SCons and IDF's CMake CUSTOM_COMMAND both target the same file;
+    generating it early avoids the 'source not found' error.
+    """
+    if not BUILD_DIR or not CMAKE_SCRIPT.exists() or not CMAKE_BIN.exists():
+        print("[build_ui] Warning: Cannot pre-generate .S file "
+              "(cmake or script not found). Build may fail.", file=sys.stderr)
+        return
+
+    embed_s = BUILD_DIR / "littlefs_ui.tar.S"
+    embed_s.parent.mkdir(parents=True, exist_ok=True)
+
+    # Skip if .S is newer than the tar (already up-to-date).
+    if embed_s.exists() and embed_s.stat().st_mtime >= OUT_TAR.stat().st_mtime:
+        print(f"[build_ui] {embed_s.name} up-to-date, skipping generation")
+        return
+
+    try:
+        result = subprocess.run(
+            [str(CMAKE_BIN),
+             "-D", f"DATA_FILE={OUT_TAR}",
+             "-D", f"SOURCE_FILE={embed_s}",
+             "-D", "FILE_TYPE=TEXT",
+             "-P", str(CMAKE_SCRIPT)],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            print(f"[build_ui] Warning: .S generation failed:\n{result.stderr}",
+                  file=sys.stderr)
+        else:
+            print(f"[build_ui] Pre-generated {embed_s.name} "
+                  f"({embed_s.stat().st_size} B)")
+    except Exception as exc:
+        print(f"[build_ui] Warning: .S generation exception: {exc}", file=sys.stderr)
+
+
+raw = build_tarball()
+pre_generate_embed_s(raw)
