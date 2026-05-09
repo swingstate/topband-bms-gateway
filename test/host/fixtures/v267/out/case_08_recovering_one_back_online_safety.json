@@ -1,0 +1,34 @@
+{
+  "cycle_id": 57,
+  "produced_ms": 168000,
+  "cvl_volts": 53.5,
+  "ccl_amps": 30.0,
+  "dcl_amps": 30.0,
+  "pack_voltage_avg": 50.1,
+  "pack_current_total": 0.0,
+  "soc_avg": 50.0,
+  "soh_avg": 100.0,
+  "temp_avg": 25.0,
+  "capacity_total_ah": 100.0,
+  "capacity_remain_ah": 100.0,
+  "factor_charge": 1.0,
+  "factor_discharge": 1.0,
+  "alarm_flags": 0,
+  "sys_message": "OK",
+  "packs_online": 1,
+  "packs_configured": 4,
+  "event_count": 2,
+  "events": [
+    {
+      "type": "BmsCameOnline",
+      "bms_id": 0,
+      "alarm_bits": 0
+    },
+    {
+      "type": "PacksOnlineRecovered",
+      "bms_id": 255,
+      "alarm_bits": 0
+    }
+  ],
+  "events_overflowed": false
+}

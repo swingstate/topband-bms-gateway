@@ -1,0 +1,23 @@
+{
+  "cycle_id": 51,
+  "produced_ms": 153000,
+  "cvl_volts": 53.5,
+  "ccl_amps": 120.0,
+  "dcl_amps": 120.0,
+  "pack_voltage_avg": 50.1,
+  "pack_current_total": 20.0,
+  "soc_avg": 55.0,
+  "soh_avg": 100.0,
+  "temp_avg": 25.0,
+  "capacity_total_ah": 400.0,
+  "capacity_remain_ah": 400.0,
+  "factor_charge": 1.0,
+  "factor_discharge": 1.0,
+  "alarm_flags": 0,
+  "sys_message": "OK",
+  "packs_online": 4,
+  "packs_configured": 4,
+  "event_count": 0,
+  "events": [],
+  "events_overflowed": false
+}

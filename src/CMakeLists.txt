@@ -16,6 +16,8 @@ idf_component_register(
     "bms/protocol.cpp"
     "bms/snapshot.cpp"
     "bms/poller.cpp"
+    "safety/filters.cpp"
+    "safety/runSafety.cpp"
   INCLUDE_DIRS
     "."
     "../include"
