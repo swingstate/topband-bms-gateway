@@ -152,6 +152,25 @@ static bool rs485_receive_frame(uint8_t* buf, size_t buf_size, size_t& out_len) 
 
 // (Phase E: can::tx::init() called at ControlTask startup; can_tx_if_due() called per tick)
 
+// Post one alarm event to q_mqtt_publish. Separated from control_task_entry
+// so the 1030-byte MqttPublishRequest never lands on the ControlTask frame
+// when MQTT is disabled (GCC reserves locals at function entry with -Os).
+// Called only when cfg.mqtt_enabled is true.
+static void route_alarm_event_to_mqtt(const SafetyState::EventEntry& entry,
+                                       uint64_t ts_ms) {
+  if (!q_mqtt_publish) return;
+  MqttPublishRequest req{};
+  req.topic    = MqttPublishRequest::Topic::Alarm;
+  req.pack_id  = entry.bms_id;
+  req.retained = false;
+  size_t n = mqtt::payloads::build_alarm_event(entry, ts_ms,
+                                                req.payload, sizeof(req.payload));
+  if (n > 0) {
+    req.payload_len = static_cast<uint16_t>(n);
+    xQueueSend(q_mqtt_publish, &req, 0);
+  }
+}
+
 // ── ControlTask ──────────────────────────────────────────────────────────────
 
 static void control_task_entry(void* param) {
@@ -343,18 +362,9 @@ static void control_task_entry(void* param) {
                    static_cast<unsigned>(entry.type),
                    entry.bms_id,
                    static_cast<unsigned long long>(entry.alarm_bits));
-          if (q_mqtt_publish && cfg.mqtt_enabled) {
-            MqttPublishRequest req{};
-            req.topic    = MqttPublishRequest::Topic::Alarm;
-            req.pack_id  = entry.bms_id;
-            req.retained = false;
-            size_t n = mqtt::payloads::build_alarm_event(entry, ts_ms,
-                                                          req.payload, sizeof(req.payload));
-            if (n > 0) {
-              req.payload_len = static_cast<uint16_t>(n);
-              // Non-blocking: drop if queue full (event already logged above).
-              xQueueSend(q_mqtt_publish, &req, 0);
-            }
+          if (cfg.mqtt_enabled) {
+            // Non-blocking: drop if queue full (event already logged above).
+            route_alarm_event_to_mqtt(entry, ts_ms);
           }
         }
         if (tmp.alarm_flags)
@@ -421,7 +431,7 @@ bool start(const Config& cfg) {
   BaseType_t r = xTaskCreatePinnedToCore(
       control_task_entry,
       "ctrl",
-      /*stack_depth*/ 8192,
+      /*stack_depth*/ 12288,
       &cfg_copy,
       /*priority*/ 5,
       &handle,
