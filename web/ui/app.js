@@ -86,6 +86,29 @@ function chargePill(current) {
 let g_live = null;
 let g_poll_interval = null;
 
+/* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
+async function fetchConfigOnce() {
+  try {
+    const r = await fetch('/api/config');
+    if (r.ok) g_config = await r.json();
+  } catch (e) { /* thresholds unavailable until config loads */ }
+}
+
+/* ── Alarm threshold helpers ────────────────────────────────────────────────── */
+function alarmVolt(v) {
+  if (!g_config || v === null) return false;
+  const s = g_config.safe_pack_volt;
+  return v > s || v < (s - 12.0);
+}
+function alarmCellMax(v)  { return g_config && v !== null && v > g_config.safe_cell_volt; }
+function alarmCellMin(v)  { return g_config && v !== null && v < (g_config.safe_cell_volt - 1.0); }
+function alarmDrift(v)    { return g_config && v !== null && v > g_config.safe_cell_drift; }
+function alarmTemp(v) {
+  if (!g_config || v === null) return false;
+  return v > (g_config.charge_temp_max - 5) || v < (g_config.charge_temp_min + 5);
+}
+function alarmSoc(v)      { return v !== null && v < 10; }
+
 async function fetchLive() {
   try {
     const r = await fetch('/api/live');
@@ -187,6 +210,7 @@ function updateDashboardCards() {
       unit: '%',
       sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '',
       color: 'var(--purple)',
+      alarm: alarmSoc(soc),
     },
     {
       label: 'Power',
@@ -194,6 +218,7 @@ function updateDashboardCards() {
       unit: 'W',
       sub: chargePill(cur),
       color: cur > 0 ? 'var(--accent)' : (cur < 0 ? 'var(--amber)' : 'var(--fg-muted)'),
+      alarm: false,
     },
     {
       label: 'Current (total)',
@@ -201,6 +226,7 @@ function updateDashboardCards() {
       unit: 'A',
       sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`,
       color: 'var(--fg)',
+      alarm: false,
     },
     {
       label: 'Pack Voltage',
@@ -208,6 +234,7 @@ function updateDashboardCards() {
       unit: 'V',
       sub: `CVL ${fmt(cvl, 2)} V`,
       color: 'var(--blue)',
+      alarm: alarmVolt(volt),
     },
     {
       label: 'Cell Min',
@@ -215,13 +242,15 @@ function updateDashboardCards() {
       unit: 'V',
       sub: '',
       color: 'var(--blue)',
+      alarm: alarmCellMin(cellMin),
     },
     {
       label: 'Cell Max',
       value: cellMax !== null ? fmt(cellMax, 3) : '—',
       unit: 'V',
       sub: '',
-      color: 'var(--red)',
+      color: 'var(--fg)',
+      alarm: alarmCellMax(cellMax),
     },
     {
       label: 'Cell Drift',
@@ -229,6 +258,7 @@ function updateDashboardCards() {
       unit: 'mV',
       sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">⚠ Imbalance</span>' : 'Normal',
       color: cellDrift > 0.05 ? 'var(--amber)' : 'var(--accent)',
+      alarm: alarmDrift(cellDrift),
     },
     {
       label: 'Temperature',
@@ -236,15 +266,18 @@ function updateDashboardCards() {
       unit: '°C',
       sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
       color: temp > 40 ? 'var(--amber)' : 'var(--fg)',
+      alarm: alarmTemp(temp),
     },
   ];
 
   grid.innerHTML = '';
   cards.forEach(c => {
-    const card = el('div', 'card metric-card');
+    const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
+    // Omit inline color when in alarm state so the CSS .alarm rule can control the value color.
+    const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
     card.innerHTML = `
       <div class="metric-label">${c.label}</div>
-      <div class="metric-value" style="color:${c.color}">${c.value}<span class="metric-unit">${c.unit}</span></div>
+      <div class="metric-value" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
       <div class="metric-sub">${c.sub}</div>
     `;
     grid.appendChild(card);
@@ -623,6 +656,9 @@ document.addEventListener('click', e => {
   // Clock.
   updateClock();
   setInterval(updateClock, 10000);
+
+  // Load config once for alarm threshold checks on dashboard cards.
+  fetchConfigOnce();
 
   // Render current page.
   renderPage(location.pathname);
