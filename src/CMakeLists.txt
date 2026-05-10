@@ -11,6 +11,8 @@ idf_component_register(
     "app/smoke_reader.cpp"
     "storage/config.cpp"
     "storage/nvs_store.cpp"
+    "storage/lfs_store.cpp"
+    "storage/ui_provisioner.cpp"
     "bus/queues.cpp"
     "bus/snapshot_bus.cpp"
     "bms/protocol.cpp"
@@ -21,6 +23,16 @@ idf_component_register(
     "can/victron.cpp"
     "can/tx.cpp"
     "can/busoff.cpp"
+    "net/wifi.cpp"
+    "web/server.cpp"
+    "web/config_json.cpp"
+    "web/handlers_live.cpp"
+    "web/handlers_config.cpp"
+    "web/handlers_actions.cpp"
+    "web/handlers_static.cpp"
+    "third_party/microtar/microtar.c"
+  EMBED_TXTFILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../web/littlefs_ui.tar"
   INCLUDE_DIRS
     "."
     "../include"
@@ -33,4 +45,10 @@ idf_component_register(
     heap
     driver
     esp_hw_support
+    esp_wifi
+    esp_netif
+    esp_event
+    esp_http_server
+    esp_littlefs
+    esp_rom
 )
