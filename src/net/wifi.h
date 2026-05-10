@@ -1,39 +1,95 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <string>
+#include <vector>
+#include "esp_netif.h"
 
 // ── WiFi module ───────────────────────────────────────────────────────────────
-// STA mode: connect using credentials persisted via esp_wifi_set_config (NVS).
-// AP fallback: open AP "TopBand-Setup-XXXX" at 192.168.4.1 when no creds or
-// connection fails. Phase G adds captive-portal DNS hijack on top of this.
+// Manages STA (client) and AP (captive portal) modes.
+//
+// Normal boot path:
+//   init() → start_sta(30 000) → connected? → normal HTTP server
+//                              → failed?    → start_ap() → captive portal
+//
+// Captive-portal connect path (from HTTP handler):
+//   save_creds(ssid, pass) → start_connection_async() → browser polls get_state()
+//   On StaConnected: esp_restart() is scheduled automatically by the task.
 
 namespace net::wifi {
 
-// Initialize esp_netif + default event loop. Call once before start_sta/ap.
+enum class Mode : uint8_t {
+  Off,            // before init()
+  StaConnecting,  // esp_wifi_connect() in progress
+  StaConnected,   // IP obtained
+  StaFailed,      // connection timed out / credential error
+  ApActive,       // open AP, no STA session
+};
+
+struct ScanResult {
+  std::string ssid;
+  int8_t      rssi;
+  bool        secure;  // authmode != WIFI_AUTH_OPEN
+};
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+// Initialize esp_netif + default event loop. Call once at boot before any
+// start_* function.
 bool init();
 
-// Attempt STA connection using stored credentials. Blocks until connected or
-// timeout_ms elapses. Returns true if connected.
+// Attempt STA connection using credentials stored in esp_wifi NVS.
+// Blocks until connected or timeout_ms elapses.
+// Returns true (Mode becomes StaConnected) or false (StaFailed).
 bool start_sta(uint32_t timeout_ms = 15000);
 
-// Start AP mode. SSID is "TopBand-Setup-XXXX" (last 4 hex digits of MAC).
-// Open network (no password). Gateway IP is 192.168.4.1.
-void start_ap();
+// Start AP mode (APSTA internally so scans work while AP is active).
+// SSID is auto-generated: "TopBand-Setup-XXXX" using last 4 MAC hex digits.
+// Open network. Gateway IP 192.168.4.1.
+// Returns the SSID string for logging.
+std::string start_ap();
 
-// Persist WiFi credentials via esp_wifi_set_config (→ NVS net80211 namespace).
-// Returns true on success.
+// Stop AP interface (call after STA connection succeeds in captive mode).
+void stop_ap();
+
+// ── Credentials ───────────────────────────────────────────────────────────────
+
+// Persist WiFi credentials into esp_wifi NVS namespace.
 bool save_creds(const char* ssid, const char* pass);
 
 // Read stored SSID into buf. Returns false if no credentials stored.
 bool load_ssid(char* buf, size_t len);
 
-bool is_connected();
+// ── Captive-portal connect (non-blocking) ─────────────────────────────────────
 
-// Fill buf with the station IPv4 address string, e.g. "192.168.1.42".
-// Returns "0.0.0.0" if not connected.
+// Save credentials and start an async connect task.
+// The task: attempts STA connection for up to timeout_ms; on success it
+// schedules esp_restart(); on failure it sets Mode=StaFailed.
+// Returns immediately (non-blocking from the HTTP handler's perspective).
+void start_connection_async(const char* ssid, const char* pass,
+                            uint32_t timeout_ms = 30000);
+
+// ── Scan ──────────────────────────────────────────────────────────────────────
+
+// Scan for nearby networks. Blocks up to timeout_ms (typically ~2-3 s).
+// Requires WiFi to be running (AP or APSTA mode).
+// Returns empty vector on error.
+std::vector<ScanResult> scan(uint32_t timeout_ms = 5000);
+
+// ── Status ────────────────────────────────────────────────────────────────────
+
+Mode get_state();
+
+bool is_connected();   // true if Mode == StaConnected
+bool is_ap_mode();     // true if Mode == ApActive
+
+// Fill buf with STA IPv4 address string, e.g. "192.168.1.42".
 void get_ip(char* buf, size_t len);
 
-// True if currently in AP (setup) mode.
-bool is_ap_mode();
+// Return STA IP as std::string (empty if not connected).
+std::string get_local_ip();
+
+// Expose the AP netif for captdns to query the gateway IP.
+esp_netif_t* get_ap_netif();
 
 }  // namespace net::wifi

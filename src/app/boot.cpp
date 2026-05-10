@@ -4,16 +4,21 @@
 #include "storage/nvs_store.h"
 #include "storage/lfs_store.h"
 #include "storage/ui_provisioner.h"
+#include "storage/boot_reasons.h"
 #include "bus/queues.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
 #include "net/wifi.h"
+#include "net/captdns.h"
 #include "web/server.h"
+#include "web/auth.h"
+#include "web/captive.h"
 #include "app/smoke_reader.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -64,6 +69,21 @@ static bool init_nvs() {
   return true;
 }
 
+// Start captive portal: AP + DNS hijack + captive HTTP server.
+static void enter_captive_portal() {
+  std::string ssid = net::wifi::start_ap();
+  ESP_LOGI(TAG, "AP mode — SSID=%s", ssid.c_str());
+
+  // DNS hijack: all queries resolve to 192.168.4.1 (the AP gateway).
+  // inet_addr() returns network-byte-order uint32_t.
+  net::captdns::start(0x0104A8C0u);  // 192.168.4.1 in network byte order
+
+  web::auth::init();
+  if (!web::captive::start()) {
+    ESP_LOGE(TAG, "Captive portal HTTP server failed to start");
+  }
+}
+
 void run_boot() {
   ESP_LOGI(TAG, "TopBand BMS Gateway %s  git=%s  built=%s %s",
            FW_VERSION, GIT_SHA, BUILD_DATE, BUILD_TIME);
@@ -72,6 +92,10 @@ void run_boot() {
   if (!init_nvs()) {
     ESP_LOGE(TAG, "NVS init failed — running with defaults (no persistence)");
   }
+
+  // ── Step 1a: Record this boot (NVS must be ready first) ──────────────────
+  // Called before Config load so we capture the raw early uptime.
+  storage::boot_reasons::record_this_boot();
 
   // ── Step 2: Config ───────────────────────────────────────────────────────
   bool loaded = storage::loadConfig(g_config);
@@ -127,41 +151,81 @@ void run_boot() {
   // ── Step 6: UI provisioner ───────────────────────────────────────────────
   storage::ui_provisioner::provision_ui_if_needed();
 
-  // ── Step 7: WiFi ─────────────────────────────────────────────────────────
-  bool wifi_ok = false;
-  if (!net::wifi::init()) {
+  // ── Step 7: WiFi init ─────────────────────────────────────────────────────
+  bool wifi_init_ok = net::wifi::init();
+  if (!wifi_init_ok) {
     ESP_LOGE(TAG, "WiFi subsystem init failed");
-  } else {
-    wifi_ok = net::wifi::start_sta(15000);
-    if (!wifi_ok) {
-      ESP_LOGW(TAG, "WiFi STA failed — starting AP mode for setup");
-      net::wifi::start_ap();
+  }
+
+  // ── Step 7a: 5x reset detection (requires WiFi init for credential clear) ─
+  if (wifi_init_ok && storage::boot_reasons::is_5x_reset_detected()) {
+    ESP_LOGW(TAG, "5x rapid reset detected — clearing auth credentials and WiFi");
+
+    Config cleared = g_config;
+    cleared.auth_enabled = false;
+    cleared.auth_hash[0] = '\0';
+    cleared.wifi_ssid[0] = '\0';
+    if (storage::saveConfig(cleared)) {
+      g_config = cleared;
     } else {
-      char ip_buf[24] = {};
-      net::wifi::get_ip(ip_buf, sizeof(ip_buf));
-      ESP_LOGI(TAG, "WiFi connected — IP %s", ip_buf);
+      ESP_LOGE(TAG, "5x reset: Config save failed");
+    }
+
+    // Clear esp_wifi NVS credentials (persisted in WiFi driver namespace).
+    wifi_config_t empty = {};
+    esp_wifi_set_config(WIFI_IF_STA, &empty);
+
+    storage::boot_reasons::clear();
+    ESP_LOGW(TAG, "5x reset applied — device will start in captive portal mode");
+  }
+
+  // ── Step 8: WiFi STA attempt or captive portal ────────────────────────────
+  bool sta_connected = false;
+  if (wifi_init_ok) {
+    char ssid_check[33] = {};
+    bool has_creds = net::wifi::load_ssid(ssid_check, sizeof(ssid_check));
+
+    if (!has_creds) {
+      ESP_LOGI(TAG, "No WiFi credentials — starting captive portal");
+      enter_captive_portal();
+      // Fall through to Step 9 (ControlTask) — BMS polling still runs.
+    } else {
+      sta_connected = net::wifi::start_sta(30000);
+      if (!sta_connected) {
+        ESP_LOGW(TAG, "STA connect failed — falling back to captive portal");
+        enter_captive_portal();
+      } else {
+        char ip_buf[24] = {};
+        net::wifi::get_ip(ip_buf, sizeof(ip_buf));
+        ESP_LOGI(TAG, "WiFi connected — IP %s", ip_buf);
+      }
     }
   }
 
-  // ── Step 8: HTTP server ──────────────────────────────────────────────────
-  if (!web::start_httpd(g_config)) {
-    ESP_LOGE(TAG, "HTTP server failed to start");
+  // ── Step 9: Main HTTP server (STA mode only) ──────────────────────────────
+  if (sta_connected) {
+    web::auth::init();
+    if (!web::start_httpd(g_config)) {
+      ESP_LOGE(TAG, "HTTP server failed to start");
+    }
   }
 
-  // ── Step 9: Spawn ControlTask ────────────────────────────────────────────
+  // ── Step 10: Spawn ControlTask ────────────────────────────────────────────
   if (!bms::poller::start(g_config)) {
     ESP_LOGE(TAG, "ControlTask creation failed");
   } else {
     ESP_LOGI(TAG, "ControlTask created on Core 0 (bms_count=%u)", g_config.bms_count);
   }
 
-  // ── Step 10: Smoke reader (Phase C validation — Core 1) ─────────────────
+  // ── Step 11: Smoke reader (Phase C validation — Core 1) ──────────────────
 #if SMOKE_READER_ENABLED
-  app::start_smoke_reader();
-  ESP_LOGI(TAG, "Smoke reader task created on Core 1 (SMOKE_READER_ENABLED=1)");
+  if (sta_connected) {
+    app::start_smoke_reader();
+    ESP_LOGI(TAG, "Smoke reader task created on Core 1");
+  }
 #endif
 
-  // ── Step 11: Heartbeat loop ──────────────────────────────────────────────
+  // ── Step 12: Heartbeat loop ───────────────────────────────────────────────
   ESP_LOGI(TAG, "Boot complete — heartbeat every 5 s");
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(5000));
@@ -177,7 +241,8 @@ void run_boot() {
     if (net::wifi::is_connected()) {
       net::wifi::get_ip(ip_buf, sizeof(ip_buf));
     } else {
-      snprintf(ip_buf, sizeof(ip_buf), net::wifi::is_ap_mode() ? "AP-192.168.4.1" : "disconnected");
+      const char* mode = net::wifi::is_ap_mode() ? "AP-192.168.4.1" : "disconnected";
+      snprintf(ip_buf, sizeof(ip_buf), "%s", mode);
     }
 
     ESP_LOGI(TAG,

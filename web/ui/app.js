@@ -1,5 +1,35 @@
-/* TopBand BMS Gateway — Phase F MVP dashboard JS */
+/* TopBand BMS Gateway — Phase G dashboard JS */
 'use strict';
+
+/* ── Auth / CSRF ────────────────────────────────────────────────────────────── */
+// CSRF token from meta tag (injected by handlers_static at serve-time).
+// Fallback: sessionStorage written by login.html on successful login.
+const CSRF_TOKEN = (function() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  if (meta && meta.content && meta.content !== '{{CSRF_TOKEN}}') return meta.content;
+  return sessionStorage.getItem('csrf') || '';
+})();
+
+// Authenticated fetch wrapper.
+// Adds X-CSRF-Token for mutating methods; redirects to /login.html on 401.
+async function apiFetch(url, options) {
+  options = options || {};
+  const method = (options.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    options.headers = Object.assign({}, options.headers, {'X-CSRF-Token': CSRF_TOKEN});
+  }
+  let r;
+  try {
+    r = await fetch(url, options);
+  } catch (e) {
+    throw e;
+  }
+  if (r.status === 401) {
+    window.location.href = '/login.html?next=' + encodeURIComponent(window.location.pathname);
+    return null;
+  }
+  return r;
+}
 
 /* ── Theme ─────────────────────────────────────────────────────────────────── */
 const THEME_KEY = 'tbms_theme';
@@ -89,8 +119,8 @@ let g_poll_interval = null;
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
   try {
-    const r = await fetch('/api/config');
-    if (r.ok) g_config = await r.json();
+    const r = await apiFetch('/api/config');
+    if (r && r.ok) g_config = await r.json();
   } catch (e) { /* thresholds unavailable until config loads */ }
 }
 
@@ -111,8 +141,8 @@ function alarmSoc(v)      { return v !== null && v < 10; }
 
 async function fetchLive() {
   try {
-    const r = await fetch('/api/live');
-    if (!r.ok) return;
+    const r = await apiFetch('/api/live');
+    if (!r || !r.ok) return;
     g_live = await r.json();
     updateLiveUI();
   } catch (e) {
@@ -647,11 +677,37 @@ document.addEventListener('click', e => {
   navigate(a.getAttribute('href'));
 });
 
+/* ── Logout ─────────────────────────────────────────────────────────────────── */
+async function doLogout() {
+  try {
+    await apiFetch('/api/auth/logout', {method: 'POST'});
+  } catch (_) {}
+  sessionStorage.removeItem('csrf');
+  window.location.href = '/login.html';
+}
+
+/* ── Auth-disabled banner ────────────────────────────────────────────────────── */
+async function checkAuthState() {
+  try {
+    const r = await apiFetch('/api/config');
+    if (!r || !r.ok) return;
+    const cfg = await r.json();
+    const banner  = document.getElementById('auth-banner');
+    const logoutBtn = document.getElementById('logout-btn');
+    if (banner)    banner.style.display    = cfg.auth_enabled === false ? 'flex' : 'none';
+    if (logoutBtn) logoutBtn.style.display = cfg.auth_enabled !== false ? 'inline-flex' : 'none';
+  } catch (_) {}
+}
+
 /* ── Boot ───────────────────────────────────────────────────────────────────── */
 (function init() {
   // Apply stored theme.
   applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
   document.getElementById('theme-btn').addEventListener('click', cycleTheme);
+
+  // Logout button.
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
 
   // Clock.
   updateClock();
@@ -659,6 +715,8 @@ document.addEventListener('click', e => {
 
   // Load config once for alarm threshold checks on dashboard cards.
   fetchConfigOnce();
+  // Check auth state for banner and logout-button visibility.
+  checkAuthState();
 
   // Render current page.
   renderPage(location.pathname);

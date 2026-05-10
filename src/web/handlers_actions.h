@@ -12,4 +12,9 @@ esp_err_t handle_restart(httpd_req_t* req);
 // GET /api/backup — download Config as topband-config.json attachment.
 esp_err_t handle_backup(httpd_req_t* req);
 
+// POST /api/factory_reset — body: {"confirm":true}
+// Wipes WiFi credentials and admin password from NVS, then reboots.
+// Next boot enters captive portal mode. Authenticated endpoint.
+esp_err_t handle_factory_reset(httpd_req_t* req);
+
 }  // namespace web

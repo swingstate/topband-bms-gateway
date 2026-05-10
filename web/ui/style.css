@@ -211,6 +211,34 @@ a { text-decoration: none; color: inherit; }
 .theme-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 .theme-btn svg { width: 16px; height: 16px; }
 
+/* ── Logout button (topbar) ────────────────────────────────────────────────── */
+.logout-btn {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+.logout-btn:hover { background: var(--bg-card-hover); color: var(--brand-coral); border-color: var(--brand-coral); }
+
+/* ── Auth-disabled banner ──────────────────────────────────────────────────── */
+.auth-disabled-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 20px;
+  background: color-mix(in srgb, var(--brand-coral) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--brand-coral) 30%, transparent);
+  color: var(--brand-coral);
+  font-size: 13px;
+  font-weight: 500;
+}
+
 /* ── Scrollable content area ───────────────────────────────────────────────── */
 .content {
   flex: 1;

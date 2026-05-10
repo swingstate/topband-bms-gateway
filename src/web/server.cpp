@@ -1,4 +1,5 @@
 #include "server.h"
+#include "auth.h"
 #include "handlers_live.h"
 #include "handlers_config.h"
 #include "handlers_actions.h"
@@ -9,8 +10,7 @@
 static const char* TAG = "httpd";
 static httpd_handle_t g_server = nullptr;
 
-// Register a single URI handler. Zero-initialize the struct so all optional
-// fields (user_ctx, is_websocket, etc.) are always set to safe defaults.
+// Register a URI handler.
 static void reg(httpd_handle_t srv,
                 const char* uri, httpd_method_t method,
                 esp_err_t (*handler)(httpd_req_t*)) {
@@ -21,9 +21,53 @@ static void reg(httpd_handle_t srv,
   httpd_register_uri_handler(srv, &h);
 }
 
+// ── Auth-check wrapper ────────────────────────────────────────────────────────
+// Wraps any handler with a session-cookie + CSRF check.
+// Returns 401 if the check fails.
+
+struct AuthCtx {
+  esp_err_t (*real)(httpd_req_t*);
+};
+
+static esp_err_t auth_dispatch(httpd_req_t* req) {
+  if (!web::auth::check(req)) {
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
+  }
+  auto* ctx = static_cast<AuthCtx*>(req->user_ctx);
+  return ctx->real(req);
+}
+
+// Statically allocated auth context slots (one per protected route).
+// We need as many as there are auth-required routes.
+static AuthCtx g_auth_ctx[16];
+static int     g_auth_ctx_count = 0;
+
+static void reg_auth(httpd_handle_t srv,
+                     const char* uri, httpd_method_t method,
+                     esp_err_t (*handler)(httpd_req_t*)) {
+  if (g_auth_ctx_count >= 16) {
+    ESP_LOGE(TAG, "reg_auth: out of context slots");
+    return;
+  }
+  g_auth_ctx[g_auth_ctx_count].real = handler;
+
+  httpd_uri_t h = {};
+  h.uri      = uri;
+  h.method   = method;
+  h.handler  = auth_dispatch;
+  h.user_ctx = &g_auth_ctx[g_auth_ctx_count];
+  g_auth_ctx_count++;
+
+  httpd_register_uri_handler(srv, &h);
+}
+
 namespace web {
 
 bool start_httpd(const Config& /*cfg*/) {
+  g_auth_ctx_count = 0;
+
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.task_priority      = 4;
   config.stack_size         = 12 * 1024;
@@ -33,7 +77,6 @@ bool start_httpd(const Config& /*cfg*/) {
   config.send_wait_timeout  = 5;
   config.lru_purge_enable   = true;
   config.keep_alive_enable  = false;
-  // Wildcard URI matching so the static handler catches unmatched paths.
   config.uri_match_fn       = httpd_uri_match_wildcard;
 
   esp_err_t ret = httpd_start(&g_server, &config);
@@ -42,19 +85,26 @@ bool start_httpd(const Config& /*cfg*/) {
     return false;
   }
 
-  // ── Register routes (specific before wildcard) ────────────────────────────
-  reg(g_server, "/api/health",  HTTP_GET,  handle_health);
-  reg(g_server, "/api/live",    HTTP_GET,  handle_live);
-  reg(g_server, "/api/bms/*",   HTTP_GET,  handle_bms_id);
-  reg(g_server, "/api/config",  HTTP_GET,  handle_config_get);
-  reg(g_server, "/api/config",  HTTP_POST, handle_config_post);
-  reg(g_server, "/api/wifi",    HTTP_POST, handle_wifi_post);
-  reg(g_server, "/api/restart", HTTP_POST, handle_restart);
-  reg(g_server, "/api/backup",  HTTP_GET,  handle_backup);
-  reg(g_server, "/wifi-setup",  HTTP_GET,  handle_wifi_setup_page);
-  reg(g_server, "/*",           HTTP_GET,  handle_static);  // catch-all last
+  // ── Public endpoints (no auth) ────────────────────────────────────────────
+  reg(g_server, "/api/health",         HTTP_GET,  handle_health);
+  reg(g_server, "/api/auth/login",     HTTP_POST, web::auth::handler_login);
+  reg(g_server, "/api/auth/logout",    HTTP_POST, web::auth::handler_logout);
+  reg(g_server, "/api/auth/set_password", HTTP_POST, web::auth::handler_set_password);
 
-  ESP_LOGI(TAG, "HTTP server started on port 80");
+  // ── Auth-protected API endpoints ──────────────────────────────────────────
+  reg_auth(g_server, "/api/live",         HTTP_GET,  handle_live);
+  reg_auth(g_server, "/api/bms/*",        HTTP_GET,  handle_bms_id);
+  reg_auth(g_server, "/api/config",       HTTP_GET,  handle_config_get);
+  reg_auth(g_server, "/api/config",       HTTP_POST, handle_config_post);
+  reg_auth(g_server, "/api/wifi",         HTTP_POST, handle_wifi_post);
+  reg_auth(g_server, "/api/restart",      HTTP_POST, handle_restart);
+  reg_auth(g_server, "/api/backup",       HTTP_GET,  handle_backup);
+  reg_auth(g_server, "/api/factory_reset",HTTP_POST, handle_factory_reset);
+
+  // Static files — catch-all last (handles login.html, setup.html, etc.)
+  reg(g_server, "/*", HTTP_GET, handle_static);
+
+  ESP_LOGI(TAG, "HTTP server started on port 80 (auth enabled)");
   return true;
 }
 
