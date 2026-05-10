@@ -14,6 +14,8 @@
 #include "web/auth.h"
 #include "web/captive.h"
 #include "app/smoke_reader.h"
+#include "app/housekeeping.h"
+#include "mqtt/publisher.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -207,6 +209,20 @@ void run_boot() {
     web::auth::init();
     if (!web::start_httpd(g_config)) {
       ESP_LOGE(TAG, "HTTP server failed to start");
+    }
+  }
+
+  // ── Step 9.5: MQTT publisher (STA mode only, when enabled) ──────────────
+  if (sta_connected && g_config.mqtt_enabled) {
+    if (!mqtt::publisher::start(g_config)) {
+      ESP_LOGE(TAG, "MQTT publisher failed to start");
+    }
+  }
+
+  // ── Step 9.6: Housekeeping task (STA mode only) ───────────────────────────
+  if (sta_connected) {
+    if (!app::housekeeping::start(g_config)) {
+      ESP_LOGE(TAG, "Housekeeping task failed to start");
     }
   }
 

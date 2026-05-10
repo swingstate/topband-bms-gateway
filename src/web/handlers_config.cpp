@@ -4,6 +4,7 @@
 #include "storage/config.h"
 #include "storage/nvs_store.h"
 #include "net/wifi.h"
+#include "mqtt/publisher.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -96,12 +97,27 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     return send_json_error(req, 400, msg);
   }
 
+  // Snapshot current MQTT settings for change detection before overwriting.
+  const Config& old_cfg = app::get_config();
+  bool mqtt_changed = (old_cfg.mqtt_enabled    != new_cfg.mqtt_enabled   ||
+                       old_cfg.mqtt_port        != new_cfg.mqtt_port       ||
+                       strcmp(old_cfg.mqtt_host,       new_cfg.mqtt_host)       != 0 ||
+                       strcmp(old_cfg.mqtt_user,       new_cfg.mqtt_user)       != 0 ||
+                       strcmp(old_cfg.mqtt_base_topic, new_cfg.mqtt_base_topic) != 0 ||
+                       (new_cfg.mqtt_pass_obf[0] != '\0'));  // non-empty = password updated
+
   // Persist to NVS and update runtime config.
   if (!app::update_and_save_config(new_cfg)) {
     return send_json_error(req, 500, "NVS save failed");
   }
 
   ESP_LOGI(TAG, "Config saved via HTTP POST /api/config");
+
+  // Reconnect MQTT when connection-relevant settings changed.
+  if (mqtt_changed) {
+    ESP_LOGI(TAG, "MQTT settings changed — reconfiguring publisher");
+    mqtt::publisher::reconfigure(new_cfg);
+  }
 
   // Return the saved config.
   JsonDocument resp;

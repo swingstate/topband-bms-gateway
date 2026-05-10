@@ -22,6 +22,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+# ── ArduinoJson v7 via FetchContent (header-only) ─────────────────────────────
+FetchContent_Declare(
+  ArduinoJson
+  GIT_REPOSITORY https://github.com/bblanchon/ArduinoJson.git
+  GIT_TAG        v7.3.1
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(ArduinoJson)
+
 # Pthreads — needed by test_snapshot_bus multi-thread fuzz
 find_package(Threads REQUIRED)
 
@@ -166,3 +175,24 @@ target_link_libraries(test_can_victron PRIVATE
   nlohmann_json::nlohmann_json
 )
 catch_discover_tests(test_can_victron)
+
+# ── test_mqtt_payloads ────────────────────────────────────────────────────────
+# payloads.cpp and topics.cpp are host-portable (ArduinoJson only, no IDF).
+add_executable(test_mqtt_payloads
+  test_mqtt_payloads.cpp
+  ../../src/mqtt/payloads.cpp
+  ../../src/mqtt/topics.cpp
+)
+
+target_include_directories(test_mqtt_payloads PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_mqtt_payloads PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_mqtt_payloads PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_mqtt_payloads PRIVATE
+  Catch2::Catch2WithMain
+  ArduinoJson
+)
+catch_discover_tests(test_mqtt_payloads)

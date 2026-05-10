@@ -6,6 +6,8 @@
 #include "safety_state.h"
 #include "can/tx.h"
 #include "can/busoff.h"
+#include "bus/queues.h"
+#include "mqtt/payloads.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -333,12 +335,27 @@ static void control_task_entry(void* param) {
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
 
-        // Log events (will be routed to MQTT/CAN in later phases)
+        // Log and route safety events to MQTT alarm topic.
+        uint64_t ts_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
         for (uint8_t ev = 0; ev < tmp.event_count; ++ev) {
+          const SafetyState::EventEntry& entry = tmp.events[ev];
           ESP_LOGI(TAG, "safety event %u bms=%u bits=0x%llx",
-                   static_cast<unsigned>(tmp.events[ev].type),
-                   tmp.events[ev].bms_id,
-                   static_cast<unsigned long long>(tmp.events[ev].alarm_bits));
+                   static_cast<unsigned>(entry.type),
+                   entry.bms_id,
+                   static_cast<unsigned long long>(entry.alarm_bits));
+          if (q_mqtt_publish && cfg.mqtt_enabled) {
+            MqttPublishRequest req{};
+            req.topic    = MqttPublishRequest::Topic::Alarm;
+            req.pack_id  = entry.bms_id;
+            req.retained = false;
+            size_t n = mqtt::payloads::build_alarm_event(entry, ts_ms,
+                                                          req.payload, sizeof(req.payload));
+            if (n > 0) {
+              req.payload_len = static_cast<uint16_t>(n);
+              // Non-blocking: drop if queue full (event already logged above).
+              xQueueSend(q_mqtt_publish, &req, 0);
+            }
+          }
         }
         if (tmp.alarm_flags)
           ESP_LOGW(TAG, "safety: flags=0x%02X ccl=%.0fA dcl=%.0fA msg=%s",

@@ -194,6 +194,8 @@ a { text-decoration: none; color: inherit; }
 .pill-bms { background: var(--color-success); color: #fff; }
 .pill-can { background: var(--brand-teal);    color: var(--brand-aubergine); }
 .pill-can.alarm { background: var(--brand-coral); color: #fff; }
+.pill-mqtt { background: var(--brand-teal); color: var(--brand-aubergine); }
+.pill-mqtt.alarm { background: var(--brand-coral); color: #fff; }
 
 .topbar-time { font-size: 13px; font-weight: 600; color: var(--text-muted); min-width: 40px; text-align: right; }
 

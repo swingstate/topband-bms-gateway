@@ -98,8 +98,10 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/config",       HTTP_POST, handle_config_post);
   reg_auth(g_server, "/api/wifi",         HTTP_POST, handle_wifi_post);
   reg_auth(g_server, "/api/restart",      HTTP_POST, handle_restart);
-  reg_auth(g_server, "/api/backup",       HTTP_GET,  handle_backup);
-  reg_auth(g_server, "/api/factory_reset",HTTP_POST, handle_factory_reset);
+  reg_auth(g_server, "/api/backup",                    HTTP_GET,  handle_backup);
+  reg_auth(g_server, "/api/factory_reset",             HTTP_POST, handle_factory_reset);
+  reg_auth(g_server, "/api/svc/ha/discovery/send",    HTTP_POST, handle_ha_discovery_send);
+  reg_auth(g_server, "/api/svc/ha/discovery/clear",   HTTP_POST, handle_ha_discovery_clear);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

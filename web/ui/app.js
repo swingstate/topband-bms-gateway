@@ -180,6 +180,33 @@ function updateStatusBar() {
   }
 }
 
+let g_health = null;
+
+async function fetchHealth() {
+  try {
+    const r = await fetch('/api/health', { cache: 'no-store' });
+    if (r && r.ok) {
+      g_health = await r.json();
+      updateMqttIndicator();
+    }
+  } catch (_) {}
+}
+
+function updateMqttIndicator() {
+  const mqttEl = document.getElementById('status-mqtt');
+  if (!mqttEl) return;
+  const h = g_health;
+  if (!h || !h.mqtt || !h.mqtt.enabled) {
+    mqttEl.style.display = 'none';
+    return;
+  }
+  const state = h.mqtt.state || 'unknown';
+  mqttEl.style.display = 'inline-flex';
+  const labels = { connected: 'MQTT ok', connecting: 'MQTT…', disconnected: 'MQTT off', failed: 'MQTT err' };
+  mqttEl.textContent = labels[state] || 'MQTT';
+  mqttEl.className = 'status-pill pill-mqtt' + (state === 'connected' ? '' : ' alarm');
+}
+
 function updateLiveUI() {
   updateStatusBar();
   // If currently on dashboard, update cards without full re-render.
@@ -588,6 +615,62 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="settings-section">
+        <div class="settings-section-title">MQTT</div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-mqtt_enabled" ${c.mqtt_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-mqtt_enabled" style="margin:0">MQTT enabled</label>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Broker Host / IP</label>
+            <input type="text" id="cfg-mqtt_host" value="${c.mqtt_host || ''}" placeholder="192.168.1.x">
+          </div>
+          <div class="form-group">
+            <label>Broker Port</label>
+            <input type="number" id="cfg-mqtt_port" value="${c.mqtt_port || 1883}" min="1" max="65535">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="cfg-mqtt_user" value="${c.mqtt_user || ''}" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="cfg-mqtt_pass" value="" autocomplete="new-password" placeholder="Leave blank to keep current">
+            <div class="help">Leave blank to keep existing password</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Base Topic</label>
+          <input type="text" id="cfg-mqtt_base_topic" value="${c.mqtt_base_topic || 'topband-bms'}" placeholder="topband-bms">
+          <div class="help">Gateway appends -XXXX (last 4 MAC hex) automatically</div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Publish Level</label>
+            <select id="cfg-mqtt_level">
+              <option value="0" ${c.mqtt_level === 0 ? 'selected' : ''}>Disabled</option>
+              <option value="1" ${c.mqtt_level === 1 ? 'selected' : ''}>Status only</option>
+              <option value="2" ${c.mqtt_level === 2 ? 'selected' : ''}>Data (system)</option>
+              <option value="3" ${c.mqtt_level === 3 ? 'selected' : ''}>Per-cell</option>
+            </select>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;gap:8px;padding-top:20px">
+            <input type="checkbox" id="cfg-mqtt_diag_enabled" ${c.mqtt_diag_enabled ? 'checked' : ''} style="width:auto">
+            <label for="cfg-mqtt_diag_enabled" style="margin:0">Publish diagnostics (every 30 s)</label>
+          </div>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-ha_discovery_enabled" ${c.ha_discovery_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-ha_discovery_enabled" style="margin:0">Home Assistant auto-discovery</label>
+        </div>
+        <div class="btn-row" style="margin-top:12px">
+          <button class="btn btn-secondary" onclick="sendHaDiscovery()">Re-send HA Discovery</button>
+        </div>
+      </div>
+
       <div id="feedback-msg" class="feedback-msg"></div>
 
       <div class="btn-row">
@@ -646,9 +729,19 @@ function readFormConfig() {
   c.timezone_offset_h     = num('cfg-timezone_offset_h');
   c.can_protocol          = num('cfg-can_protocol');
   c.can_enabled           = bool('cfg-can_enabled');
-  // Never send auth_hash or mqtt_pass_obf back (they show as "" from server).
-  c.auth_hash    = '';
-  c.mqtt_pass_obf = '';
+  c.mqtt_enabled          = bool('cfg-mqtt_enabled');
+  c.mqtt_host             = str('cfg-mqtt_host');
+  c.mqtt_port             = num('cfg-mqtt_port');
+  c.mqtt_user             = str('cfg-mqtt_user');
+  c.mqtt_base_topic       = str('cfg-mqtt_base_topic');
+  c.mqtt_level            = num('cfg-mqtt_level');
+  c.mqtt_diag_enabled     = bool('cfg-mqtt_diag_enabled');
+  c.ha_discovery_enabled  = bool('cfg-ha_discovery_enabled');
+  // auth_hash: never send back (shown as "" from server).
+  c.auth_hash = '';
+  // mqtt_pass_obf: only send if user typed a new password; empty = keep existing.
+  const mqttPass = str('cfg-mqtt_pass');
+  c.mqtt_pass_obf = (mqttPass && mqttPass.length > 0) ? mqttPass : '';
   return c;
 }
 
@@ -810,6 +903,24 @@ async function changePassword() {
   }
 }
 
+/* ── HA Discovery ───────────────────────────────────────────────────────────── */
+async function sendHaDiscovery() {
+  const msg = document.getElementById('feedback-msg');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = 'Sending HA discovery…'; }
+  try {
+    const r = await apiFetch('/api/svc/ha/discovery/send', { method: 'POST' });
+    if (!r) return;
+    if (r.ok) {
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'HA discovery sent.'; }
+    } else {
+      const data = await r.json().catch(() => ({}));
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Failed to send HA discovery.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
 /* ── Factory reset ──────────────────────────────────────────────────────────── */
 function confirmFactoryReset() {
   const overlay = document.getElementById('modal-overlay');
@@ -910,4 +1021,8 @@ async function checkAuthState() {
 
   // Start live polling at 2 s.
   startPolling(2000);
+
+  // Poll /api/health every 10 s for MQTT indicator.
+  fetchHealth();
+  setInterval(fetchHealth, 10000);
 })();
