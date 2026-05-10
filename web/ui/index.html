@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TopBand BMS Gateway</title>
+  <meta name="csrf-token" content="{{CSRF_TOKEN}}">
   <link rel="stylesheet" href="/style.css">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 </head>
@@ -71,6 +72,7 @@
         <span class="status-pill pill-bms" id="status-bms">BMS —</span>
         <span class="status-pill pill-can" id="status-can">CAN —</span>
         <span class="topbar-time" id="topbar-time">--:--</span>
+        <button class="logout-btn" id="logout-btn" title="Sign out" style="display:none">Sign out</button>
         <button class="theme-btn" id="theme-btn" title="Toggle theme">
           <svg id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="5"/>
@@ -89,6 +91,11 @@
         </button>
       </div>
     </header>
+
+    <!-- Auth-disabled banner (shown after 5x reset) -->
+    <div class="auth-disabled-banner" id="auth-banner" style="display:none">
+      Auth disabled — set a new password to re-enable security.
+    </div>
 
     <!-- Page content (SPA routing) -->
     <main class="content" id="page-root">

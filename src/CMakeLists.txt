@@ -13,6 +13,7 @@ idf_component_register(
     "storage/nvs_store.cpp"
     "storage/lfs_store.cpp"
     "storage/ui_provisioner.cpp"
+    "storage/boot_reasons.cpp"
     "bus/queues.cpp"
     "bus/snapshot_bus.cpp"
     "bms/protocol.cpp"
@@ -24,7 +25,10 @@ idf_component_register(
     "can/tx.cpp"
     "can/busoff.cpp"
     "net/wifi.cpp"
+    "net/captdns.cpp"
     "web/server.cpp"
+    "web/auth.cpp"
+    "web/captive.cpp"
     "web/config_json.cpp"
     "web/handlers_live.cpp"
     "web/handlers_config.cpp"
@@ -51,4 +55,5 @@ idf_component_register(
     esp_http_server
     esp_littlefs
     esp_rom
+    mbedtls
 )

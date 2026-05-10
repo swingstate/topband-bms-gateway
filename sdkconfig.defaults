@@ -11,6 +11,11 @@ CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 
+# ── Main task stack ───────────────────────────────────────────────────────────
+# Default 3584 B is too small when esp-littlefs rename-over-existing triggers
+# lfs_remove internally, which can overflow the stack during UI provisioning.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # ── FreeRTOS ──────────────────────────────────────────────────────────────────
 # 1000 Hz tick so vTaskDelay(pdMS_TO_TICKS(1)) gives 1 ms resolution.
 CONFIG_FREERTOS_HZ=1000

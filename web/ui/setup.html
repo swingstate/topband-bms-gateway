@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TopBand BMS Gateway — WiFi Setup</title>
+  <style>
+    :root {
+      --brand-cream:     #F5F1DE;
+      --brand-aubergine: #2E0B45;
+      --brand-teal:      #76D2D9;
+      --brand-coral:     #E25548;
+      --color-success:   #4FA77B;
+      --neutral-200:     #EBE5D0;
+      --neutral-300:     #D4CDB9;
+      --neutral-500:     #8A7E69;
+      --neutral-700:     #4A4032;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --brand-cream:     #F5F1DE;
+        --brand-aubergine: #2E0B45;
+        --brand-teal:      #76D2D9;
+        --brand-coral:     #E25548;
+        --color-success:   #4FA77B;
+        --neutral-200:     #3D1858;
+        --neutral-300:     #4F2870;
+        --neutral-500:     #8C7BA0;
+        --neutral-700:     #C5B8D4;
+        --page-bg:         #2E0B45;
+        --card-bg:         #3D1858;
+        --text-primary:    #F5F1DE;
+        --text-muted:      #8C7BA0;
+        --border:          #4F2870;
+        --input-bg:        #2E0B45;
+        --input-border:    #4F2870;
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --page-bg:      #FAF8F0;
+        --card-bg:      #F5F1DE;
+        --text-primary: #2E0B45;
+        --text-muted:   #8A7E69;
+        --border:       #D4CDB9;
+        --input-bg:     #FAF8F0;
+        --input-border: #D4CDB9;
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      background: var(--page-bg);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 28px;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 4px 24px rgba(46, 11, 69, 0.12);
+    }
+
+    .wordmark {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--brand-aubergine);
+      margin-bottom: 4px;
+    }
+    @media (prefers-color-scheme: dark) {
+      .wordmark { color: var(--brand-cream); }
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    /* ── Scan list ── */
+    .scan-list {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .scan-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+    .scan-item:last-child { border-bottom: none; }
+    .scan-item:hover { background: rgba(118, 210, 217, 0.12); }
+    .scan-item.selected { background: rgba(118, 210, 217, 0.18); }
+
+    .scan-ssid {
+      flex: 1;
+      font-weight: 500;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .scan-lock {
+      font-size: 12px;
+      opacity: 0.55;
+    }
+    .scan-rssi {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+    }
+    .rssi-bar {
+      width: 4px;
+      border-radius: 2px;
+      background: var(--neutral-300);
+    }
+    .rssi-bar.active { background: var(--brand-teal); }
+
+    /* ── Expanded password row ── */
+    .pw-row {
+      display: none;
+      padding: 10px 12px 12px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(118, 210, 217, 0.06);
+    }
+    .pw-row.open { display: block; }
+
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+      margin-bottom: 8px;
+    }
+    input[type="text"]:focus, input[type="password"]:focus {
+      border-color: var(--brand-teal);
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 9px 18px;
+      background: var(--brand-aubergine);
+      color: var(--brand-cream);
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: opacity 0.15s;
+    }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Status pill ── */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 16px;
+    }
+    .pill-neutral  { background: rgba(138,126,105,0.15); color: var(--text-muted); }
+    .pill-teal     { background: rgba(118,210,217,0.18); color: var(--brand-teal); }
+    .pill-success  { background: rgba(79,167,123,0.18);  color: var(--color-success); }
+    .pill-coral    { background: rgba(226,85,72,0.15);   color: var(--brand-coral); }
+
+    .pulse { animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    /* ── Empty / scanning states ── */
+    .scan-placeholder {
+      padding: 20px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    /* ── Success card ── */
+    .success-card { text-align: center; }
+    .success-card h2 { color: var(--color-success); margin-bottom: 8px; }
+    .success-card p  { color: var(--text-muted); font-size: 13px; }
+
+    @media (max-width: 600px) {
+      .card { padding: 24px 18px; }
+    }
+  </style>
+</head>
+<body>
+<div class="card" id="main-card">
+  <div class="wordmark">TopBand BMS Gateway</div>
+  <h1>Connect to WiFi</h1>
+  <p class="subtitle">Set up your gateway by connecting it to your home network.</p>
+
+  <div class="section-label">Available networks</div>
+  <div class="scan-list" id="scan-list">
+    <div class="scan-placeholder" id="scan-placeholder">Scanning...</div>
+  </div>
+
+  <div id="status-area"></div>
+</div>
+
+<script>
+'use strict';
+let selectedSsid = null;
+let selectedPwRow = null;
+let pollTimer = null;
+
+// ── RSSI bars ──────────────────────────────────────────────────────────────
+function rssiToStrength(rssi) {
+  if (rssi >= -55) return 4;
+  if (rssi >= -65) return 3;
+  if (rssi >= -75) return 2;
+  return 1;
+}
+function rssiBars(rssi) {
+  const s = rssiToStrength(rssi);
+  return [1,2,3,4].map(h => {
+    const active = h <= s ? ' active' : '';
+    return `<div class="rssi-bar${active}" style="height:${h*3+3}px"></div>`;
+  }).join('');
+}
+
+// ── Build scan list ────────────────────────────────────────────────────────
+function buildScanList(networks) {
+  const list = document.getElementById('scan-list');
+  list.innerHTML = '';
+  if (!networks.length) {
+    list.innerHTML = '<div class="scan-placeholder">No networks found. Retrying...</div>';
+    return;
+  }
+  networks.forEach(n => {
+    const item = document.createElement('div');
+    item.className = 'scan-item';
+    item.innerHTML = `
+      <div class="scan-rssi">${rssiBars(n.rssi)}</div>
+      <div class="scan-ssid">${escHtml(n.ssid)}</div>
+      ${n.secure ? '<div class="scan-lock">&#128274;</div>' : ''}
+    `;
+    // Password row (hidden by default)
+    const pwRow = document.createElement('div');
+    pwRow.className = 'pw-row';
+    pwRow.innerHTML = `
+      <input type="password" id="pw-${escId(n.ssid)}"
+             placeholder="${n.secure ? 'WiFi password' : 'No password needed (open network)'}"
+             autocomplete="off">
+      <button class="btn-primary" onclick="doConnect('${escJs(n.ssid)}')">Connect</button>
+    `;
+    item.addEventListener('click', () => selectNetwork(n.ssid, item, pwRow));
+
+    // Insert item + pwRow as siblings inside the list.
+    list.appendChild(item);
+    list.appendChild(pwRow);
+  });
+}
+
+function selectNetwork(ssid, item, pwRow) {
+  // Close previously selected.
+  if (selectedPwRow && selectedPwRow !== pwRow) {
+    selectedPwRow.classList.remove('open');
+  }
+  document.querySelectorAll('.scan-item').forEach(el => el.classList.remove('selected'));
+
+  if (selectedSsid === ssid) {
+    // Toggle off.
+    pwRow.classList.remove('open');
+    selectedSsid = null;
+    selectedPwRow = null;
+  } else {
+    item.classList.add('selected');
+    pwRow.classList.add('open');
+    selectedSsid = ssid;
+    selectedPwRow = pwRow;
+    // Focus password field.
+    const inp = pwRow.querySelector('input');
+    if (inp) setTimeout(() => inp.focus(), 50);
+  }
+}
+
+// ── Connect ────────────────────────────────────────────────────────────────
+async function doConnect(ssid) {
+  const pwId = 'pw-' + escId(ssid);
+  const pw = (document.getElementById(pwId) || {value: ''}).value;
+  setStatus('connecting', 'Connecting to ' + escHtml(ssid) + '...');
+
+  try {
+    const r = await fetch('/api/wifi/configure', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ssid, password: pw})
+    });
+    if (!r.ok) throw new Error('Server error ' + r.status);
+    startStatusPoll(ssid);
+  } catch (e) {
+    setStatus('coral', 'Failed: ' + e.message);
+  }
+}
+
+// ── Status polling ─────────────────────────────────────────────────────────
+function startStatusPoll(ssid) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(() => pollStatus(ssid), 1000);
+}
+
+async function pollStatus(ssid) {
+  try {
+    const r = await fetch('/api/wifi/status');
+    const d = await r.json();
+    if (d.state === 'connected') {
+      clearInterval(pollTimer);
+      showSuccess(ssid, d.ip);
+    } else if (d.state === 'failed') {
+      clearInterval(pollTimer);
+      setStatus('coral', 'Failed to connect. Check password and try again.');
+    }
+  } catch (_) { /* network hiccup — keep polling */ }
+}
+
+// ── Status pill ────────────────────────────────────────────────────────────
+function setStatus(type, text) {
+  const area = document.getElementById('status-area');
+  let cls = 'pill-neutral';
+  if (type === 'connecting') cls = 'pill-teal pulse';
+  if (type === 'coral')      cls = 'pill-coral';
+  if (type === 'success')    cls = 'pill-success';
+  area.innerHTML = `<div class="status-pill ${cls}">${text}</div>`;
+}
+
+// ── Success screen ─────────────────────────────────────────────────────────
+let countdown = 8;
+function showSuccess(ssid, ip) {
+  const card = document.getElementById('main-card');
+  card.innerHTML = `
+    <div class="success-card">
+      <h2>Connected!</h2>
+      <p>Gateway joined <strong>${escHtml(ssid)}</strong></p>
+      <p style="margin-top:8px">IP address: <strong>${escHtml(ip)}</strong></p>
+      <div class="status-pill pill-teal" id="countdown-pill" style="margin:16px auto;display:inline-flex">
+        Setup AP closing in <span id="cd">${countdown}</span>s&hellip;
+      </div>
+      <p style="margin-top:12px;font-size:12px;color:var(--text-muted)">
+        Reconnect to your home WiFi, then open<br>
+        <strong>http://${escHtml(ip)}/</strong> to access the dashboard.
+      </p>
+    </div>
+  `;
+  const timer = setInterval(() => {
+    countdown--;
+    const el = document.getElementById('cd');
+    if (el) el.textContent = countdown;
+    if (countdown <= 0) clearInterval(timer);
+  }, 1000);
+}
+
+// ── Scan loop ──────────────────────────────────────────────────────────────
+async function doScan() {
+  try {
+    const r = await fetch('/api/wifi/scan');
+    const nets = await r.json();
+    buildScanList(nets);
+  } catch (e) {
+    document.getElementById('scan-list').innerHTML =
+        '<div class="scan-placeholder">Scan error — retrying...</div>';
+  }
+}
+
+// ── Escape helpers ─────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                  .replace(/"/g,'&quot;');
+}
+function escJs(s) { return String(s).replace(/'/g,"\\'"); }
+function escId(s)  { return String(s).replace(/[^a-zA-Z0-9]/g,'_'); }
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+doScan();
+setInterval(doScan, 5000);  // Rescan every 5 s while on the page.
+</script>
+</body>
+</html>

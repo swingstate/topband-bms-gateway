@@ -2,9 +2,12 @@
 #include "config_json.h"
 #include "app/boot.h"
 #include "app/version.h"
+#include "storage/config.h"
+#include "storage/nvs_store.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <ArduinoJson.h>
@@ -17,11 +20,13 @@ namespace web {
 
 esp_err_t handle_health(httpd_req_t* req) {
   uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+  const Config& cfg = app::get_config();
 
   char body[256];
   snprintf(body, sizeof(body),
-           "{\"ok\":true,\"uptime_s\":%lu,\"version\":\"%s\",\"build\":\"%s %s\"}",
-           (unsigned long)uptime_s, FW_VERSION, BUILD_DATE, BUILD_TIME);
+           "{\"ok\":true,\"uptime_s\":%lu,\"auth_enabled\":%s,\"version\":\"%s\",\"build\":\"%s %s\"}",
+           (unsigned long)uptime_s, cfg.auth_enabled ? "true" : "false",
+           FW_VERSION, BUILD_DATE, BUILD_TIME);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -87,6 +92,54 @@ esp_err_t handle_backup(httpd_req_t* req) {
   esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)n);
   free(buf);
   return ret;
+}
+
+esp_err_t handle_factory_reset(httpd_req_t* req) {
+  // Require explicit confirmation to prevent accidental calls.
+  char body[128] = {};
+  size_t remaining = req->content_len;
+  if (remaining > 0 && remaining < sizeof(body)) {
+    size_t total = 0;
+    while (remaining > 0) {
+      int n = httpd_req_recv(req, body + total, remaining);
+      if (n <= 0) break;
+      total     += (size_t)n;
+      remaining -= (size_t)n;
+    }
+    body[total] = '\0';
+  }
+
+  JsonDocument doc;
+  bool confirmed = false;
+  if (deserializeJson(doc, body) == DeserializationError::Ok) {
+    confirmed = doc["confirm"] | false;
+  }
+  if (!confirmed) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"confirm:true required\"}");
+  }
+
+  ESP_LOGW(TAG, "Factory reset requested via API — clearing WiFi + auth");
+
+  // Clear auth and WiFi in Config blob.
+  Config cleared = app::get_config();
+  cleared.auth_enabled = false;
+  cleared.auth_hash[0] = '\0';
+  cleared.wifi_ssid[0] = '\0';
+  storage::saveConfig(cleared);
+
+  // Clear esp_wifi NVS credentials.
+  wifi_config_t empty = {};
+  esp_wifi_set_config(WIFI_IF_STA, &empty);
+
+  // Respond before restarting.
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Factory reset — rebooting\"}");
+
+  vTaskDelay(pdMS_TO_TICKS(500));
+  esp_restart();
+  return ESP_OK;
 }
 
 }  // namespace web

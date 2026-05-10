@@ -82,6 +82,11 @@ bool write_file_atomic(const char* path, const uint8_t* data, size_t len) {
     return false;
   }
 
+  // Remove existing target first: esp-littlefs rename-over-existing triggers
+  // an internal lfs_remove, which can overflow a shallow stack. By removing
+  // explicitly the rename becomes a simple directory-entry move.
+  remove(path);  // expected ENOENT on first extraction — ignore
+
   if (rename(tmp, path) != 0) {
     ESP_LOGE(TAG, "write_file_atomic: rename(%s → %s) failed: %d", tmp, path, errno);
     remove(tmp);

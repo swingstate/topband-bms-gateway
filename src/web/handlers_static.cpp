@@ -1,9 +1,13 @@
 #include "handlers_static.h"
+#include "auth.h"
 #include "net/wifi.h"
 #include "storage/lfs_store.h"
+#include "storage/config.h"
+#include "app/boot.h"
 #include "esp_log.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 static const char* TAG = "web_static";
 
@@ -22,65 +26,171 @@ static const char* mime_for(const char* path) {
   return "application/octet-stream";
 }
 
-static const char WIFI_SETUP_HTML[] =
-  "<!DOCTYPE html><html><head>"
-  "<meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-  "<title>TopBand BMS Gateway — WiFi Setup</title>"
-  "<style>"
-  "body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#f5f5f5;"
-  "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}"
-  ".card{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:2rem;"
-  "width:340px;box-shadow:0 4px 24px #0008}"
-  "h1{font-size:1.2rem;margin:0 0 1.5rem;color:#f5f5f5}"
-  "label{display:block;font-size:.85rem;color:#aaa;margin-bottom:.3rem}"
-  "input{width:100%;box-sizing:border-box;background:#111;border:1px solid #444;"
-  "border-radius:6px;color:#f5f5f5;padding:.5rem .75rem;font-size:1rem;margin-bottom:1rem}"
-  "button{width:100%;background:#22c55e;border:none;border-radius:6px;color:#fff;"
-  "font-size:1rem;font-weight:600;padding:.65rem;cursor:pointer}"
-  "button:hover{background:#16a34a}"
-  ".info{font-size:.8rem;color:#666;margin-top:1rem;text-align:center}"
-  "</style></head><body>"
-  "<div class=card>"
-  "<h1>TopBand BMS Gateway<br><span style='font-weight:400;color:#aaa'>WiFi Setup</span></h1>"
-  "<label>WiFi Network (SSID)</label>"
-  "<input id=ssid type=text autocomplete=off placeholder='Enter SSID'>"
-  "<label>Password</label>"
-  "<input id=pass type=password autocomplete=off placeholder='Enter password'>"
-  "<button onclick=save()>Connect &amp; Restart</button>"
-  "<p class=info>After saving the gateway reboots and joins your network.</p>"
-  "</div>"
-  "<script>"
-  "function save(){"
-  "var s=document.getElementById('ssid').value;"
-  "var p=document.getElementById('pass').value;"
-  "if(!s){alert('SSID required');return;}"
-  "fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},"
-  "body:JSON.stringify({ssid:s,pass:p})})"
-  ".then(r=>r.json()).then(d=>{"
-  "document.body.innerHTML='<div style=\"color:#22c55e;font-family:system-ui;text-align:center;"
-  "margin-top:40vh\">Connecting to '+s+'…<br>Gateway is rebooting.</div>';"
-  "}).catch(e=>alert('Error: '+e));}"
-  "</script></body></html>";
+// ── Template-substitute index.html ────────────────────────────────────────────
+// Replaces {{CSRF_TOKEN}} with the live session token so JS can send it on
+// mutations.  File is read fully (< 16 KB in practice), substituted in-place,
+// then streamed to the client.  Substitution is case-exact and single-pass.
+
+static esp_err_t serve_index_html(httpd_req_t* req, const char* lfs_path) {
+  FILE* f = fopen(lfs_path, "rb");
+  if (!f) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"File open failed\"}");
+  }
+
+  fseek(f, 0, SEEK_END);
+  long file_size = ftell(f);
+  rewind(f);
+
+  if (file_size <= 0 || file_size > 32768) {
+    fclose(f);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"File size invalid\"}");
+  }
+
+  char* raw = (char*)malloc((size_t)file_size + 1);
+  if (!raw) {
+    fclose(f);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  }
+
+  size_t n = fread(raw, 1, (size_t)file_size, f);
+  fclose(f);
+  raw[n] = '\0';
+
+  const char* token = web::auth::get_csrf_token();
+  const char* placeholder = "{{CSRF_TOKEN}}";
+  size_t ph_len    = strlen(placeholder);
+  size_t token_len = strlen(token);
+
+  // Find the placeholder and replace it.
+  char* pos = strstr(raw, placeholder);
+  if (!pos) {
+    // No placeholder found — serve as-is.
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
+    esp_err_t ret = httpd_resp_send(req, raw, (ssize_t)n);
+    free(raw);
+    return ret;
+  }
+
+  // Build substituted output: pre + token + post.
+  size_t pre_len  = (size_t)(pos - raw);
+  size_t post_len = n - pre_len - ph_len;
+  size_t out_len  = pre_len + token_len + post_len;
+  char* out = (char*)malloc(out_len + 1);
+  if (!out) {
+    free(raw);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  }
+  memcpy(out, raw, pre_len);
+  memcpy(out + pre_len, token, token_len);
+  memcpy(out + pre_len + token_len, pos + ph_len, post_len);
+  free(raw);
+
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
+  esp_err_t ret = httpd_resp_send(req, out, (ssize_t)out_len);
+  free(out);
+  return ret;
+}
+
+// ── Template-substitute login.html ────────────────────────────────────────────
+// Replaces {{AUTH_ENABLED}} with "true"/"false" so the page renders the
+// correct form (set-password vs sign-in).
+
+static esp_err_t serve_login_html(httpd_req_t* req, const char* lfs_path) {
+  FILE* f = fopen(lfs_path, "rb");
+  if (!f) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"File open failed\"}");
+  }
+
+  fseek(f, 0, SEEK_END);
+  long file_size = ftell(f);
+  rewind(f);
+
+  if (file_size <= 0 || file_size > 32768) {
+    fclose(f);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"File size invalid\"}");
+  }
+
+  char* raw = (char*)malloc((size_t)file_size + 1);
+  if (!raw) {
+    fclose(f);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  }
+
+  size_t n = fread(raw, 1, (size_t)file_size, f);
+  fclose(f);
+  raw[n] = '\0';
+
+  const Config& cfg = app::get_config();
+  const char* value      = cfg.auth_enabled ? "true" : "false";
+  const char* placeholder = "{{AUTH_ENABLED}}";
+  size_t ph_len    = strlen(placeholder);
+  size_t value_len = strlen(value);
+
+  char* pos = strstr(raw, placeholder);
+  if (!pos) {
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
+    esp_err_t ret = httpd_resp_send(req, raw, (ssize_t)n);
+    free(raw);
+    return ret;
+  }
+
+  size_t pre_len  = (size_t)(pos - raw);
+  size_t post_len = n - pre_len - ph_len;
+  size_t out_len  = pre_len + value_len + post_len;
+  char* out = (char*)malloc(out_len + 1);
+  if (!out) {
+    free(raw);
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  }
+  memcpy(out, raw, pre_len);
+  memcpy(out + pre_len, value, value_len);
+  memcpy(out + pre_len + value_len, pos + ph_len, post_len);
+  free(raw);
+
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
+  esp_err_t ret = httpd_resp_send(req, out, (ssize_t)out_len);
+  free(out);
+  return ret;
+}
 
 namespace web {
 
 esp_err_t handle_wifi_setup_page(httpd_req_t* req) {
+  // Redirect to the proper setup page if LittleFS is available.
+  const char* path = "/lfs/ui/setup.html";
+  if (storage::lfs::exists(path)) {
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/setup.html");
+    return httpd_resp_sendstr(req, "");
+  }
+  // LittleFS not available — return minimal inline page.
   httpd_resp_set_type(req, "text/html; charset=utf-8");
-  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-  return httpd_resp_sendstr(req, WIFI_SETUP_HTML);
+  return httpd_resp_sendstr(req, "<html><body><h2>WiFi setup — LittleFS not ready</h2></body></html>");
 }
 
 esp_err_t handle_static(httpd_req_t* req) {
   const char* uri = req->uri;
 
-  // AP mode: serve the WiFi setup page for all paths.
+  // AP mode: redirect everything to setup page.
   if (net::wifi::is_ap_mode()) {
-    return handle_wifi_setup_page(req);
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/setup.html");
+    return httpd_resp_sendstr(req, "");
   }
 
-  // Map URI to LittleFS path. Buffer is 600 B: URI max 512 + "/lfs/ui" prefix
-  // 7 + null = 520 max output. 600 gives GCC enough headroom to prove no
-  // truncation without a runtime length check.
+  // Map URI to LittleFS path.
   char lfs_path[600];
   if (strcmp(uri, "/") == 0 || strcmp(uri, "/index.html") == 0) {
     snprintf(lfs_path, sizeof(lfs_path), "/lfs/ui/index.html");
@@ -88,21 +198,32 @@ esp_err_t handle_static(httpd_req_t* req) {
     snprintf(lfs_path, sizeof(lfs_path), "/lfs/ui%s", uri);
   }
 
-  // Security: reject paths with ".." traversal.
+  // Security: reject path traversal.
   if (strstr(lfs_path, "..")) {
     httpd_resp_set_status(req, "403 Forbidden");
     return httpd_resp_sendstr(req, "Forbidden");
   }
 
   if (!storage::lfs::exists(lfs_path)) {
-    ESP_LOGD(TAG, "static: not found: %s", lfs_path);
+    // Redirect unknown paths to login to avoid confusing 404s.
+    if (strcmp(lfs_path, "/lfs/ui/index.html") == 0) {
+      httpd_resp_set_status(req, "302 Found");
+      httpd_resp_set_hdr(req, "Location", "/login.html");
+      return httpd_resp_sendstr(req, "");
+    }
     httpd_resp_set_status(req, "404 Not Found");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"error\":\"Not found\"}");
   }
 
-  // Read file and stream to client.
-  // Files > 2 KB use chunked transfer. The chunk size limits peak RAM.
+  // Special-case templates.
+  bool is_index = (strcmp(lfs_path, "/lfs/ui/index.html") == 0);
+  bool is_login = (strcmp(lfs_path, "/lfs/ui/login.html") == 0);
+
+  if (is_index) return serve_index_html(req, lfs_path);
+  if (is_login) return serve_login_html(req, lfs_path);
+
+  // Generic file: stream in 2 KB chunks.
   FILE* f = fopen(lfs_path, "rb");
   if (!f) {
     httpd_resp_set_status(req, "500 Internal Server Error");
@@ -111,11 +232,7 @@ esp_err_t handle_static(httpd_req_t* req) {
 
   const char* mime = mime_for(lfs_path);
   httpd_resp_set_type(req, mime);
-
-  // Cache-Control: no-cache for index.html; 1 hour for everything else.
-  bool is_index = (strcmp(lfs_path, "/lfs/ui/index.html") == 0);
-  httpd_resp_set_hdr(req, "Cache-Control",
-                     is_index ? "no-cache, must-revalidate" : "max-age=3600");
+  httpd_resp_set_hdr(req, "Cache-Control", "max-age=3600");
 
   static constexpr size_t CHUNK = 2048;
   char* buf = (char*)malloc(CHUNK);
@@ -125,10 +242,10 @@ esp_err_t handle_static(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
   }
 
-  size_t n;
+  size_t nr;
   esp_err_t ret = ESP_OK;
-  while ((n = fread(buf, 1, CHUNK, f)) > 0) {
-    ret = httpd_resp_send_chunk(req, buf, (ssize_t)n);
+  while ((nr = fread(buf, 1, CHUNK, f)) > 0) {
+    ret = httpd_resp_send_chunk(req, buf, (ssize_t)nr);
     if (ret != ESP_OK) {
       ESP_LOGD(TAG, "client disconnected during static send: %s", lfs_path);
       break;
@@ -136,10 +253,7 @@ esp_err_t handle_static(httpd_req_t* req) {
   }
   fclose(f);
   free(buf);
-
-  if (ret == ESP_OK) {
-    httpd_resp_send_chunk(req, NULL, 0);  // Terminate chunked response.
-  }
+  if (ret == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);
   return ret;
 }
 

@@ -1,5 +1,35 @@
-/* TopBand BMS Gateway — Phase F MVP dashboard JS */
+/* TopBand BMS Gateway — Phase G dashboard JS */
 'use strict';
+
+/* ── Auth / CSRF ────────────────────────────────────────────────────────────── */
+// CSRF token from meta tag (injected by handlers_static at serve-time).
+// Fallback: sessionStorage written by login.html on successful login.
+const CSRF_TOKEN = (function() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  if (meta && meta.content && meta.content !== '{{CSRF_TOKEN}}') return meta.content;
+  return sessionStorage.getItem('csrf') || '';
+})();
+
+// Authenticated fetch wrapper.
+// Adds X-CSRF-Token for mutating methods; redirects to /login.html on 401.
+async function apiFetch(url, options) {
+  options = options || {};
+  const method = (options.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    options.headers = Object.assign({}, options.headers, {'X-CSRF-Token': CSRF_TOKEN});
+  }
+  let r;
+  try {
+    r = await fetch(url, options);
+  } catch (e) {
+    throw e;
+  }
+  if (r.status === 401) {
+    window.location.href = '/login.html?next=' + encodeURIComponent(window.location.pathname);
+    return null;
+  }
+  return r;
+}
 
 /* ── Theme ─────────────────────────────────────────────────────────────────── */
 const THEME_KEY = 'tbms_theme';
@@ -89,8 +119,8 @@ let g_poll_interval = null;
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
   try {
-    const r = await fetch('/api/config');
-    if (r.ok) g_config = await r.json();
+    const r = await apiFetch('/api/config');
+    if (r && r.ok) g_config = await r.json();
   } catch (e) { /* thresholds unavailable until config loads */ }
 }
 
@@ -111,8 +141,8 @@ function alarmSoc(v)      { return v !== null && v < 10; }
 
 async function fetchLive() {
   try {
-    const r = await fetch('/api/live');
-    if (!r.ok) return;
+    const r = await apiFetch('/api/live');
+    if (!r || !r.ok) return;
     g_live = await r.json();
     updateLiveUI();
   } catch (e) {
@@ -384,12 +414,26 @@ function renderBattery() {
 /* ── Settings page ─────────────────────────────────────────────────────────── */
 let g_config = null;
 
+const EYE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+function pwField(id, label, autocomplete, placeholder) {
+  return `
+    <div class="form-group">
+      <label>${label}</label>
+      <div class="pw-wrap">
+        <input type="password" id="${id}" autocomplete="${autocomplete}" placeholder="${placeholder}">
+        <button type="button" class="pw-toggle" onclick="togglePw('${id}')" title="Show/hide">${EYE_SVG}</button>
+      </div>
+    </div>`;
+}
+
 async function renderSettings() {
   const root = document.getElementById('page-root');
   root.innerHTML = '<div class="placeholder-page"><div class="spinner"></div></div>';
 
   try {
-    const r = await fetch('/api/config');
+    const r = await apiFetch('/api/config');
+    if (!r) return;
     g_config = await r.json();
   } catch (e) {
     root.innerHTML = '<p style="color:var(--red);padding:20px">Failed to load config.</p>';
@@ -549,7 +593,27 @@ async function renderSettings() {
       <div class="btn-row">
         <button class="btn btn-primary" onclick="saveConfig()">Save Settings</button>
         <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
-        <button class="btn btn-danger" onclick="confirmRestart()">Restart Gateway</button>
+        <button class="btn btn-secondary" onclick="confirmRestart()">Restart Gateway</button>
+      </div>
+
+      <div class="settings-section" style="margin-top:32px">
+        <div class="settings-section-title">Account</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
+        ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}
+        ${pwField('pw-new',     'New password',     'new-password',     'New password')}
+        ${pwField('pw-confirm', 'Confirm new password', 'new-password', 'Repeat new password')}
+        <div id="pw-feedback" class="feedback-msg"></div>
+        <button class="btn btn-primary" style="margin-top:8px" onclick="changePassword()">Save password</button>
+      </div>
+
+      <div class="settings-section settings-section-danger" style="margin-top:24px">
+        <div class="settings-section-title settings-section-title-danger">Reset</div>
+        <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Factory reset</p>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+          Wipes WiFi credentials and admin password. The gateway will reboot into captive portal mode and need to be set up again from scratch.
+        </p>
+        <div id="reset-feedback" class="feedback-msg"></div>
+        <button class="btn btn-danger" onclick="confirmFactoryReset()">Factory Reset</button>
       </div>
     </div>
   `;
@@ -595,11 +659,12 @@ async function saveConfig() {
 
   const cfg = readFormConfig();
   try {
-    const r = await fetch('/api/config', {
+    const r = await apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
     });
+    if (!r) return;
     const data = await r.json();
     if (r.ok) {
       g_config = data;
@@ -623,17 +688,47 @@ function downloadBackup() {
 async function confirmRestart() {
   if (!confirm('Restart the gateway now?')) return;
   try {
-    await fetch('/api/restart', { method: 'POST' });
-    const root = document.getElementById('page-root');
-    root.innerHTML = `
-      <div class="placeholder-page">
-        <div class="spinner"></div>
-        <h2>Restarting…</h2>
-        <p>The gateway is rebooting. This page will reload in 10 seconds.</p>
-      </div>
-    `;
-    setTimeout(() => location.reload(), 10000);
+    await apiFetch('/api/restart', { method: 'POST' });
   } catch (e) { /* ignore — device is rebooting */ }
+  showPageOverlay('Restarting gateway…',
+    'This page will reconnect automatically when the gateway comes back online.');
+  // Wait 3 s (device restarts in 2 s) then poll until it responds with low uptime.
+  setTimeout(pollUntilOnline, 3000);
+}
+
+function showPageOverlay(title, body) {
+  let overlay = document.getElementById('full-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'full-overlay';
+    overlay.className = 'full-overlay';
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = `
+    <div class="spinner" style="width:36px;height:36px;border-width:3px"></div>
+    <h2>${title}</h2>
+    <p>${body}</p>
+  `;
+  overlay.style.display = 'flex';
+}
+
+async function pollUntilOnline() {
+  let attempts = 0;
+  const poll = async () => {
+    try {
+      const r = await fetch('/api/health', { cache: 'no-store' });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.uptime_s < 30) {
+          window.location.href = '/login.html';
+          return;
+        }
+      }
+    } catch (_) { /* not up yet */ }
+    attempts++;
+    if (attempts < 90) setTimeout(poll, 2000);  // max 3 min
+  };
+  await poll();
 }
 
 /* ── Router ─────────────────────────────────────────────────────────────────── */
@@ -647,11 +742,159 @@ document.addEventListener('click', e => {
   navigate(a.getAttribute('href'));
 });
 
+/* ── Logout ─────────────────────────────────────────────────────────────────── */
+async function doLogout() {
+  try {
+    await apiFetch('/api/auth/logout', {method: 'POST'});
+  } catch (_) {}
+  sessionStorage.removeItem('csrf');
+  window.location.href = '/login.html';
+}
+
+/* ── Password show/hide toggle ──────────────────────────────────────────────── */
+function togglePw(id) {
+  const inp = document.getElementById(id);
+  if (inp) inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+/* ── Change password ────────────────────────────────────────────────────────── */
+async function changePassword() {
+  const cur = document.getElementById('pw-current').value;
+  const nw  = document.getElementById('pw-new').value;
+  const cfm = document.getElementById('pw-confirm').value;
+  const msg = document.getElementById('pw-feedback');
+  msg.className = 'feedback-msg';
+  msg.textContent = '';
+
+  if (!cur || !nw || !cfm) {
+    msg.className = 'feedback-msg err';
+    msg.textContent = 'All three fields are required.';
+    return;
+  }
+  if (nw !== cfm) {
+    msg.className = 'feedback-msg err';
+    msg.textContent = 'New password and confirmation do not match.';
+    document.getElementById('pw-new').value = '';
+    document.getElementById('pw-confirm').value = '';
+    return;
+  }
+
+  try {
+    const r = await apiFetch('/api/auth/set_password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({current: cur, new: nw}),
+    });
+    if (!r) return;  // 401 → apiFetch redirected to login
+
+    if (r.ok) {
+      const data = await r.json().catch(() => ({}));
+      if (data.csrf) sessionStorage.setItem('csrf', data.csrf);
+      document.getElementById('pw-current').value = '';
+      document.getElementById('pw-new').value = '';
+      document.getElementById('pw-confirm').value = '';
+      msg.className = 'feedback-msg ok';
+      msg.textContent = 'Password updated.';
+    } else if (r.status === 403) {
+      msg.className = 'feedback-msg err';
+      msg.textContent = 'Current password is incorrect.';
+      document.getElementById('pw-current').value = '';
+    } else {
+      const data = await r.json().catch(() => ({}));
+      msg.className = 'feedback-msg err';
+      msg.textContent = data.error || 'Failed to update password.';
+    }
+  } catch (e) {
+    msg.className = 'feedback-msg err';
+    msg.textContent = 'Network error: ' + e.message;
+  }
+}
+
+/* ── Factory reset ──────────────────────────────────────────────────────────── */
+function confirmFactoryReset() {
+  const overlay = document.getElementById('modal-overlay');
+  const confirmBtn = document.getElementById('modal-confirm');
+  document.getElementById('modal-title').textContent = 'Factory Reset';
+  document.getElementById('modal-body').textContent =
+    'This will wipe WiFi credentials and admin password. The gateway will reboot into setup mode. Continue?';
+  overlay.style.display = 'flex';
+  // Replace onclick each time to avoid double-binding.
+  confirmBtn.onclick = () => {
+    overlay.style.display = 'none';
+    doFactoryReset();
+  };
+}
+
+async function doFactoryReset() {
+  const msg = document.getElementById('reset-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  try {
+    const r = await apiFetch('/api/factory_reset', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm: true}),
+    });
+    if (!r) return;
+    if (r.ok) {
+      showPageOverlay('Resetting device…',
+        "Wipes complete. You'll need to reconnect to the setup network (TopBand-Setup-XXXX) in about 10 seconds.");
+    } else {
+      const data = await r.json().catch(() => ({}));
+      if (msg) {
+        msg.className = 'feedback-msg err';
+        msg.textContent = data.error || 'Factory reset failed.';
+      }
+    }
+  } catch (e) {
+    if (msg) {
+      msg.className = 'feedback-msg err';
+      msg.textContent = 'Network error: ' + e.message;
+    }
+  }
+}
+
+/* ── Auth-disabled banner ────────────────────────────────────────────────────── */
+async function checkAuthState() {
+  try {
+    const r = await apiFetch('/api/config');
+    if (!r || !r.ok) return;
+    const cfg = await r.json();
+    const banner  = document.getElementById('auth-banner');
+    const logoutBtn = document.getElementById('logout-btn');
+    if (banner)    banner.style.display    = cfg.auth_enabled === false ? 'flex' : 'none';
+    if (logoutBtn) logoutBtn.style.display = cfg.auth_enabled !== false ? 'inline-flex' : 'none';
+  } catch (_) {}
+}
+
 /* ── Boot ───────────────────────────────────────────────────────────────────── */
 (function init() {
+  // Inject modal for factory-reset confirmation.
+  const modalEl = document.createElement('div');
+  modalEl.id = 'modal-overlay';
+  modalEl.className = 'modal-overlay';
+  modalEl.style.display = 'none';
+  modalEl.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title" id="modal-title"></div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
+        <button class="btn btn-danger" id="modal-confirm">Reset Device</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modalEl);
+  document.getElementById('modal-cancel').addEventListener('click', () => {
+    modalEl.style.display = 'none';
+  });
+
   // Apply stored theme.
   applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
   document.getElementById('theme-btn').addEventListener('click', cycleTheme);
+
+  // Logout button.
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) logoutBtn.addEventListener('click', doLogout);
 
   // Clock.
   updateClock();
@@ -659,6 +902,8 @@ document.addEventListener('click', e => {
 
   // Load config once for alarm threshold checks on dashboard cards.
   fetchConfigOnce();
+  // Check auth state for banner and logout-button visibility.
+  checkAuthState();
 
   // Render current page.
   renderPage(location.pathname);
