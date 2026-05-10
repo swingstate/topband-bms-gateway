@@ -513,3 +513,81 @@ a { text-decoration: none; color: inherit; }
   display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Password input with show/hide toggle ──────────────────────────────────── */
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 38px; }
+.pw-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+.pw-toggle:hover { color: var(--text-primary); }
+.pw-toggle svg { width: 16px; height: 16px; }
+
+/* ── Confirm modal ─────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  padding: 24px;
+  max-width: 400px;
+  width: calc(100% - 40px);
+}
+.modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+.modal-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+.modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* ── Full-page overlay (restart / factory reset) ───────────────────────────── */
+.full-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-page);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  z-index: 900;
+  text-align: center;
+  padding: 20px;
+}
+.full-overlay h2 { font-size: 20px; color: var(--text-primary); }
+.full-overlay p  { font-size: 14px; color: var(--text-muted); max-width: 360px; }
+
+/* ── Danger settings section ───────────────────────────────────────────────── */
+.settings-section-danger {
+  border: 1px solid color-mix(in srgb, var(--color-alarm) 35%, transparent);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: color-mix(in srgb, var(--color-alarm) 5%, transparent);
+}
+.settings-section-title-danger { color: var(--color-alarm) !important; }

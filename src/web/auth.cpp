@@ -202,7 +202,7 @@ esp_err_t handler_set_password(httpd_req_t* req) {
     std::string cur_hash = hash_password(std::string(current_pw));
     if (cur_hash != old_cfg.auth_hash) {
       vTaskDelay(pdMS_TO_TICKS(50));
-      return send_json_err(req, "401 Unauthorized", "Wrong current password");
+      return send_json_err(req, "403 Forbidden", "Wrong current password");
     }
   }
   // else: auth_enabled==false → initial setup, skip current-password check.
