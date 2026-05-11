@@ -2,6 +2,7 @@
 #include "mqtt/topics.h"
 #include "mqtt/ha_discovery.h"
 #include "bus/queues.h"
+#include "app/boot.h"
 #include "app/version.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -170,14 +171,20 @@ static void mqtt_task_entry(void* /*arg*/) {
     if (just_conn) {
       publish_status_online();
 
-      bool ha_en;
-      portENTER_CRITICAL(&s_mux);
-      ha_en = s_cfg.ha_discovery_enabled;
-      portEXIT_CRITICAL(&s_mux);
+      // Read ha_discovery_enabled from the live config so that toggling it in
+      // the UI takes effect on the next connect without a full publisher restart.
+      // s_cfg.ha_discovery_enabled is only set at start() time and goes stale
+      // if the user enables discovery while MQTT is already connected.
+      bool ha_en = app::get_config().ha_discovery_enabled;
 
       if (ha_en) {
-        mqtt::ha_discovery::cleanup_stale(s_client, s_cfg, s_device_uid, s_effective_base);
-        mqtt::ha_discovery::publish_all(s_client, s_cfg, s_device_uid, s_effective_base);
+        // Snapshot s_cfg once under lock for the discovery calls.
+        Config cfg_snap;
+        portENTER_CRITICAL(&s_mux);
+        cfg_snap = s_cfg;
+        portEXIT_CRITICAL(&s_mux);
+        mqtt::ha_discovery::cleanup_stale(s_client, cfg_snap, s_device_uid, s_effective_base);
+        mqtt::ha_discovery::publish_all(s_client, cfg_snap, s_device_uid, s_effective_base);
       }
     }
 
@@ -372,6 +379,9 @@ void trigger_ha_discovery() {
   portENTER_CRITICAL(&s_mux);
   if (s_state == State::Connected) {
     s_just_connected = true;
+    // Force discovery enabled for this one cycle; the live config is authoritative
+    // for subsequent connects. Admin explicitly requested this, so bypass the flag.
+    s_cfg.ha_discovery_enabled = true;
   }
   portEXIT_CRITICAL(&s_mux);
 }
