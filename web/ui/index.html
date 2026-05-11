@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TopBand BMS Gateway</title>
   <meta name="csrf-token" content="{{CSRF_TOKEN}}">
-  <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/uplot.min.css">
+  <link rel="stylesheet" href="/style.css?v={{UI_VERSION}}">
+  <link rel="stylesheet" href="/uplot.min.css?v={{UI_VERSION}}">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 </head>
 <body>
@@ -105,7 +105,7 @@
     </main>
   </div>
 
-  <script src="/uplot.min.js"></script>
-  <script src="/app.js"></script>
+  <script src="/uplot.min.js?v={{UI_VERSION}}"></script>
+  <script src="/app.js?v={{UI_VERSION}}"></script>
 </body>
 </html>

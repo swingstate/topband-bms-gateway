@@ -55,7 +55,9 @@ esp_err_t handle_health(httpd_req_t* req) {
   doc["now_ts_s"]   = net::ntp::now_unix_s();
   doc["ntp_synced"] = net::ntp::is_synced();
 
-  char body[768];
+  doc["free_heap_b"] = esp_get_free_heap_size();
+
+  char body[1024];
   size_t n = serializeJson(doc, body, sizeof(body));
   if (n == 0) {
     httpd_resp_set_status(req, "500 Internal Server Error");
