@@ -4,6 +4,9 @@
 #include "app/version.h"
 #include "storage/config.h"
 #include "storage/nvs_store.h"
+#include "mqtt/publisher.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -16,21 +19,47 @@
 
 static const char* TAG = "web_act";
 
+static const char* mqtt_state_str(mqtt::publisher::State s) {
+  switch (s) {
+    case mqtt::publisher::State::Disabled:     return "disabled";
+    case mqtt::publisher::State::Disconnected: return "disconnected";
+    case mqtt::publisher::State::Connecting:   return "connecting";
+    case mqtt::publisher::State::Connected:    return "connected";
+    case mqtt::publisher::State::Failed:       return "failed";
+    default:                                   return "unknown";
+  }
+}
+
 namespace web {
 
 esp_err_t handle_health(httpd_req_t* req) {
   uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
   const Config& cfg = app::get_config();
 
-  char body[256];
-  snprintf(body, sizeof(body),
-           "{\"ok\":true,\"uptime_s\":%lu,\"auth_enabled\":%s,\"version\":\"%s\",\"build\":\"%s %s\"}",
-           (unsigned long)uptime_s, cfg.auth_enabled ? "true" : "false",
-           FW_VERSION, BUILD_DATE, BUILD_TIME);
+  JsonDocument doc;
+  doc["ok"]           = true;
+  doc["uptime_s"]     = uptime_s;
+  doc["auth_enabled"] = cfg.auth_enabled;
+  doc["version"]      = FW_VERSION;
+  doc["build"]        = BUILD_DATE " " BUILD_TIME;
+
+  JsonObject mqtt = doc["mqtt"].to<JsonObject>();
+  mqtt["enabled"]       = cfg.mqtt_enabled;
+  mqtt["state"]         = mqtt_state_str(mqtt::publisher::get_state());
+  mqtt["publish_ok"]    = mqtt::publisher::get_publish_ok();
+  mqtt["publish_fail"]  = mqtt::publisher::get_publish_fail();
+  mqtt["publish_drops"] = mqtt::publisher::get_publish_drops();
+
+  char body[512];
+  size_t n = serializeJson(doc, body, sizeof(body));
+  if (n == 0) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-  return httpd_resp_sendstr(req, body);
+  return httpd_resp_send(req, body, (ssize_t)n);
 }
 
 // FreeRTOS task that waits 2 s then calls esp_restart().
@@ -140,6 +169,33 @@ esp_err_t handle_factory_reset(httpd_req_t* req) {
   vTaskDelay(pdMS_TO_TICKS(500));
   esp_restart();
   return ESP_OK;
+}
+
+esp_err_t handle_ha_discovery_send(httpd_req_t* req) {
+  httpd_resp_set_type(req, "application/json");
+  if (mqtt::publisher::get_state() != mqtt::publisher::State::Connected) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "{\"error\":\"MQTT not connected\"}");
+  }
+  mqtt::publisher::trigger_ha_discovery();
+  return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+esp_err_t handle_ha_discovery_clear(httpd_req_t* req) {
+  // Reset the NVS version marker so cleanup_stale() runs on next MQTT connect.
+  nvs_handle_t nvs = 0;
+  esp_err_t err = nvs_open("gateway", NVS_READWRITE, &nvs);
+  if (err == ESP_OK) {
+    nvs_erase_key(nvs, "ha_disco_v");
+    nvs_commit(nvs);
+    nvs_close(nvs);
+  }
+  // Also trigger full discovery publish now if connected.
+  if (mqtt::publisher::get_state() == mqtt::publisher::State::Connected) {
+    mqtt::publisher::trigger_ha_discovery();
+  }
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
 }  // namespace web

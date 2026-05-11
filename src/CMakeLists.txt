@@ -34,6 +34,11 @@ idf_component_register(
     "web/handlers_config.cpp"
     "web/handlers_actions.cpp"
     "web/handlers_static.cpp"
+    "mqtt/topics.cpp"
+    "mqtt/payloads.cpp"
+    "mqtt/publisher.cpp"
+    "mqtt/ha_discovery.cpp"
+    "app/housekeeping.cpp"
     "third_party/microtar/microtar.c"
   EMBED_TXTFILES
     "${CMAKE_CURRENT_SOURCE_DIR}/../web/littlefs_ui.tar"
@@ -56,4 +61,5 @@ idf_component_register(
     esp_littlefs
     esp_rom
     mbedtls
+    mqtt
 )

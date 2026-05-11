@@ -6,6 +6,8 @@
 #include "safety_state.h"
 #include "can/tx.h"
 #include "can/busoff.h"
+#include "bus/queues.h"
+#include "mqtt/payloads.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -149,6 +151,25 @@ static bool rs485_receive_frame(uint8_t* buf, size_t buf_size, size_t& out_len) 
 }
 
 // (Phase E: can::tx::init() called at ControlTask startup; can_tx_if_due() called per tick)
+
+// Post one alarm event to q_mqtt_publish. Separated from control_task_entry
+// so the 1030-byte MqttPublishRequest never lands on the ControlTask frame
+// when MQTT is disabled (GCC reserves locals at function entry with -Os).
+// Called only when cfg.mqtt_enabled is true.
+static void route_alarm_event_to_mqtt(const SafetyState::EventEntry& entry,
+                                       uint64_t ts_ms) {
+  if (!q_mqtt_publish) return;
+  MqttPublishRequest req{};
+  req.topic    = MqttPublishRequest::Topic::Alarm;
+  req.pack_id  = entry.bms_id;
+  req.retained = false;
+  size_t n = mqtt::payloads::build_alarm_event(entry, ts_ms,
+                                                req.payload, sizeof(req.payload));
+  if (n > 0) {
+    req.payload_len = static_cast<uint16_t>(n);
+    xQueueSend(q_mqtt_publish, &req, 0);
+  }
+}
 
 // ── ControlTask ──────────────────────────────────────────────────────────────
 
@@ -333,12 +354,18 @@ static void control_task_entry(void* param) {
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
 
-        // Log events (will be routed to MQTT/CAN in later phases)
+        // Log and route safety events to MQTT alarm topic.
+        uint64_t ts_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
         for (uint8_t ev = 0; ev < tmp.event_count; ++ev) {
+          const SafetyState::EventEntry& entry = tmp.events[ev];
           ESP_LOGI(TAG, "safety event %u bms=%u bits=0x%llx",
-                   static_cast<unsigned>(tmp.events[ev].type),
-                   tmp.events[ev].bms_id,
-                   static_cast<unsigned long long>(tmp.events[ev].alarm_bits));
+                   static_cast<unsigned>(entry.type),
+                   entry.bms_id,
+                   static_cast<unsigned long long>(entry.alarm_bits));
+          if (cfg.mqtt_enabled) {
+            // Non-blocking: drop if queue full (event already logged above).
+            route_alarm_event_to_mqtt(entry, ts_ms);
+          }
         }
         if (tmp.alarm_flags)
           ESP_LOGW(TAG, "safety: flags=0x%02X ccl=%.0fA dcl=%.0fA msg=%s",
@@ -404,7 +431,7 @@ bool start(const Config& cfg) {
   BaseType_t r = xTaskCreatePinnedToCore(
       control_task_entry,
       "ctrl",
-      /*stack_depth*/ 8192,
+      /*stack_depth*/ 12288,
       &cfg_copy,
       /*priority*/ 5,
       &handle,
