@@ -221,7 +221,6 @@ function updateLiveUI() {
   if (window.location.pathname === '/' || window.location.pathname === '/dashboard') {
     updateDashboardCards();
     updatePackCards();
-    updateEnergyRuntimeCards();
   }
 }
 
@@ -230,29 +229,6 @@ function renderDashboard() {
   const root = document.getElementById('page-root');
   root.innerHTML = `
     <div class="metrics-grid" id="metrics-grid"></div>
-    <div class="dash-summary-row">
-      <div class="card summary-card" id="energy-card">
-        <div class="metric-label">Energy Today</div>
-        <div class="energy-vals">
-          <div class="energy-dir-block">
-            <span class="energy-dir">In</span>
-            <span class="energy-val" id="energy-in">—</span>
-            <span class="metric-unit">kWh</span>
-          </div>
-          <div class="energy-dir-block">
-            <span class="energy-dir">Out</span>
-            <span class="energy-val" id="energy-out">—</span>
-            <span class="metric-unit">kWh</span>
-          </div>
-        </div>
-        <div class="metric-sub" id="energy-week"></div>
-      </div>
-      <div class="card summary-card" id="runtime-card">
-        <div class="metric-label">Runtime Estimate</div>
-        <div class="metric-value" id="runtime-val" style="font-size:28px">—</div>
-        <div class="metric-sub" id="runtime-sub">Idle</div>
-      </div>
-    </div>
     <div class="charts-row">
       <div class="card chart-card">
         <div class="chart-title">Power &amp; SOC — last 2 h</div>
@@ -268,7 +244,6 @@ function renderDashboard() {
   `;
   updateDashboardCards();
   updatePackCards();
-  updateEnergyRuntimeCards();
   loadCharts();
 }
 
@@ -303,6 +278,11 @@ function updateDashboardCards() {
   const power = (cur !== null && volt !== null) ? cur * volt : null;
   const alarmFlags = safety.alarm_flags || 0;
   const sysMsg = safety.sys_message || 'OK';
+
+  const energy  = (g_live && g_live.energy)           || {};
+  const rtMin   = g_live && g_live.runtime_est_min;
+  const rtState = (g_live && g_live.runtime_est_state) || 'idle';
+  const rtLabels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
 
   const cards = [
     {
@@ -368,6 +348,22 @@ function updateDashboardCards() {
       sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
       color: temp > 40 ? 'var(--amber)' : 'var(--fg)',
       alarm: alarmTemp(temp),
+    },
+    {
+      label: 'Energy Today',
+      value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—',
+      unit: 'kWh in',
+      sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '',
+      color: 'var(--brand-teal)',
+      alarm: false,
+    },
+    {
+      label: 'Runtime Est.',
+      value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—',
+      unit: '',
+      sub: rtLabels[rtState] || 'Idle',
+      color: 'var(--fg)',
+      alarm: false,
     },
   ];
 
