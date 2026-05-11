@@ -247,11 +247,11 @@ function renderDashboard() {
     <div class="metrics-grid" id="metrics-grid"></div>
     <div class="charts-row">
       <div class="card chart-card">
-        <div class="chart-title">Power &amp; SOC — last 2 h</div>
+        <div class="chart-title" id="chart-a-title">Power / SOC — last 2 h</div>
         <div id="chart-a-plot" class="chart-plot"></div>
       </div>
       <div class="card chart-card">
-        <div class="chart-title">Voltage &amp; Temperature — last 2 h</div>
+        <div class="chart-title" id="chart-b-title">Voltage / Temp — last 2 h</div>
         <div id="chart-b-plot" class="chart-plot"></div>
       </div>
     </div>
@@ -513,6 +513,32 @@ function updateEnergyRuntimeCards() {
 
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
 
+const SERIES_DEFS = {
+  power:   { label: 'Power',   color: '#76D2D9', dec: 0, unit: 'W' },
+  soc:     { label: 'SOC',     color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } },
+  voltage: { label: 'Voltage', color: '#E25548', dec: 1, unit: 'V' },
+  temp:    { label: 'Temp',    color: '#E89C5C', dec: 1, unit: '°C' },
+};
+
+function getChartConfig() {
+  return {
+    a_left:  localStorage.getItem('chart_a_left')  || 'power',
+    a_right: localStorage.getItem('chart_a_right') || 'soc',
+    b_left:  localStorage.getItem('chart_b_left')  || 'voltage',
+    b_right: localStorage.getItem('chart_b_right') || 'temp',
+  };
+}
+
+function saveChartConfig() {
+  const val = id => document.getElementById(id) && document.getElementById(id).value;
+  const keys = ['chart_a_left', 'chart_a_right', 'chart_b_left', 'chart_b_right'];
+  const ids  = ['cfg-chart-a-left', 'cfg-chart-a-right', 'cfg-chart-b-left', 'cfg-chart-b-right'];
+  keys.forEach((k, i) => { if (val(ids[i])) localStorage.setItem(k, val(ids[i])); });
+  loadCharts();
+  const el = document.getElementById('chart-cfg-feedback');
+  if (el) { el.textContent = 'Applied.'; el.className = 'feedback-msg ok'; }
+}
+
 function buildUplotData(serA, serB) {
   const src = serA || serB;
   if (!src || !src.points || src.points.length === 0 || src.t0_epoch <= 0) return null;
@@ -593,51 +619,41 @@ function makeChartOpts(width, dA, dB) {
 
 async function loadCharts() {
   if (typeof uPlot === 'undefined') return;
-
-  const plotA = document.getElementById('chart-a-plot');
-  const plotB = document.getElementById('chart-b-plot');
-  if (!plotA || !plotB) return;
+  if (!document.getElementById('chart-a-plot')) return;
 
   if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; }
   if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; }
 
+  const cfg    = getChartConfig();
+  const needed = [...new Set([cfg.a_left, cfg.a_right, cfg.b_left, cfg.b_right])];
+
   try {
-    const [rP, rS, rV, rT] = await Promise.all([
-      apiFetch('/api/history?series=power&tier=fine'),
-      apiFetch('/api/history?series=soc&tier=fine'),
-      apiFetch('/api/history?series=voltage&tier=fine'),
-      apiFetch('/api/history?series=temp&tier=fine'),
-    ]);
-    const power   = rP && rP.ok ? await rP.json() : null;
-    const soc     = rS && rS.ok ? await rS.json() : null;
-    const voltage = rV && rV.ok ? await rV.json() : null;
-    const temp    = rT && rT.ok ? await rT.json() : null;
+    const fetched = {};
+    await Promise.all(needed.map(async s => {
+      const r = await apiFetch(`/api/history?series=${s}&tier=fine`);
+      if (!r || !r.ok) return;
+      const d = await r.json();
+      // API returns { series: [ { name, tier, t0_epoch, points, ... } ] }
+      fetched[s] = (d && d.series && d.series[0]) || null;
+    }));
 
-    // Chart A: Power (W) + SOC (%)
-    const dataA = buildUplotData(power, soc);
-    const elA = document.getElementById('chart-a-plot');
-    if (elA) {
-      if (dataA && elA.offsetWidth > 0) {
-        const dPow = { label: 'Power', color: '#76D2D9', dec: 0, unit: 'W' };
-        const dSoc = { label: 'SOC',   color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } };
-        g_chart_a = new uPlot(makeChartOpts(elA.offsetWidth, dPow, dSoc), dataA, elA);
-      } else if (!dataA) {
-        elA.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
+    const renderChart = (plotId, titleId, keyL, keyR) => {
+      const el = document.getElementById(plotId);
+      if (!el) return null;
+      const dL   = SERIES_DEFS[keyL];
+      const dR   = SERIES_DEFS[keyR];
+      const data = buildUplotData(fetched[keyL] || null, fetched[keyR] || null);
+      const titleEl = document.getElementById(titleId);
+      if (titleEl) titleEl.textContent = `${dL.label} / ${dR.label} — last 2 h`;
+      if (data && el.offsetWidth > 0) {
+        return new uPlot(makeChartOpts(el.offsetWidth, dL, dR), data, el);
       }
-    }
+      if (!data) el.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
+      return null;
+    };
 
-    // Chart B: Voltage (V) + Temperature (°C)
-    const dataB = buildUplotData(voltage, temp);
-    const elB = document.getElementById('chart-b-plot');
-    if (elB) {
-      if (dataB && elB.offsetWidth > 0) {
-        const dVolt = { label: 'Voltage', color: '#E25548', dec: 1, unit: 'V' };
-        const dTemp = { label: 'Temp',    color: '#E89C5C', dec: 1, unit: '°C' };
-        g_chart_b = new uPlot(makeChartOpts(elB.offsetWidth, dVolt, dTemp), dataB, elB);
-      } else if (!dataB) {
-        elB.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
-      }
-    }
+    g_chart_a = renderChart('chart-a-plot', 'chart-a-title', cfg.a_left,  cfg.a_right);
+    g_chart_b = renderChart('chart-b-plot', 'chart-b-title', cfg.b_left,  cfg.b_right);
   } catch (_) { /* charts unavailable — silently ignore */ }
 }
 
@@ -915,6 +931,56 @@ async function renderSettings() {
         <button class="btn btn-primary" onclick="saveConfig()">Save Settings</button>
         <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
         <button class="btn btn-secondary" onclick="confirmRestart()">Restart Gateway</button>
+      </div>
+
+      <div class="settings-section" style="margin-top:32px">
+        <div class="settings-section-title">Charts</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Choose which series to display on each dashboard chart card.
+          Each card has a left axis and a right axis — pick any combination.
+        </p>
+        ${(chartCfg => `
+        <div class="form-row">
+          <div class="form-group">
+            <label>Chart A — left axis</label>
+            <select id="cfg-chart-a-left">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${chartCfg.a_left === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Chart A — right axis</label>
+            <select id="cfg-chart-a-right">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${chartCfg.a_right === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Chart B — left axis</label>
+            <select id="cfg-chart-b-left">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${chartCfg.b_left === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Chart B — right axis</label>
+            <select id="cfg-chart-b-right">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${chartCfg.b_right === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+        </div>
+        `)(getChartConfig())}
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-primary" onclick="saveChartConfig()">Apply</button>
+        </div>
+        <div id="chart-cfg-feedback" class="feedback-msg"></div>
       </div>
 
       <div class="settings-section" style="margin-top:32px">
