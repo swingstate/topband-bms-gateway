@@ -205,11 +205,13 @@ esp_err_t handle_static(httpd_req_t* req) {
   }
 
   if (!storage::lfs::exists(lfs_path)) {
-    // Redirect unknown paths to login to avoid confusing 404s.
-    if (strcmp(lfs_path, "/lfs/ui/index.html") == 0) {
-      httpd_resp_set_status(req, "302 Found");
-      httpd_resp_set_hdr(req, "Location", "/login.html");
-      return httpd_resp_sendstr(req, "");
+    // SPA fallback: paths without a file extension are client-side routes
+    // (e.g. /dashboard, /settings). Serve index.html so the JS router takes over.
+    const char* last_seg = strrchr(uri, '/');
+    bool has_extension   = last_seg && strchr(last_seg, '.');
+    if (!has_extension) {
+      snprintf(lfs_path, sizeof(lfs_path), "/lfs/ui/index.html");
+      return serve_index_html(req, lfs_path);
     }
     httpd_resp_set_status(req, "404 Not Found");
     httpd_resp_set_type(req, "application/json");
