@@ -119,6 +119,22 @@ function formatRuntime(min) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+function formatUptime(s) {
+  if (!s) return '—';
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function chartEmptyMsg() {
+  if (!g_live || !g_live.ntp_synced) return 'Waiting for NTP time sync…';
+  if (!g_live.bms_count_online) return 'BMS offline — history will record when packs connect';
+  return 'Collecting first sample…';
+}
+
 /* ── Live data state ────────────────────────────────────────────────────────── */
 let g_live = null;
 let g_poll_interval = null;
@@ -606,7 +622,7 @@ async function loadCharts() {
         const dSoc = { label: 'SOC',   color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } };
         g_chart_a = new uPlot(makeChartOpts(elA.offsetWidth, dPow, dSoc), dataA, elA);
       } else if (!dataA) {
-        elA.innerHTML = '<p class="chart-empty">No history data yet</p>';
+        elA.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
       }
     }
 
@@ -619,7 +635,7 @@ async function loadCharts() {
         const dTemp = { label: 'Temp',    color: '#E89C5C', dec: 1, unit: '°C' };
         g_chart_b = new uPlot(makeChartOpts(elB.offsetWidth, dVolt, dTemp), dataB, elB);
       } else if (!dataB) {
-        elB.innerHTML = '<p class="chart-empty">No history data yet</p>';
+        elB.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
       }
     }
   } catch (_) { /* charts unavailable — silently ignore */ }
@@ -903,12 +919,44 @@ async function renderSettings() {
 
       <div class="settings-section" style="margin-top:32px">
         <div class="settings-section-title">Account</div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
-        ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}
+        ${c.auth_enabled
+          ? `<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
+             ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}`
+          : `<p style="font-size:13px;color:var(--color-warning);margin-bottom:14px">
+               No password set — set one below to enable authentication.
+             </p>`}
         ${pwField('pw-new',     'New password',     'new-password',     'New password')}
         ${pwField('pw-confirm', 'Confirm new password', 'new-password', 'Repeat new password')}
         <div id="pw-feedback" class="feedback-msg"></div>
         <button class="btn btn-primary" style="margin-top:8px" onclick="changePassword()">Save password</button>
+      </div>
+
+      <div class="settings-section" style="margin-top:32px">
+        <div class="settings-section-title">System</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Firmware</label>
+            <div class="settings-info-val">${g_health ? g_health.version : '—'}</div>
+            <div class="help">${g_health ? g_health.build : ''}</div>
+          </div>
+          <div class="form-group">
+            <label>UI</label>
+            <div class="settings-info-val">h2-mvp-2</div>
+            <div class="help">Served from LittleFS</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Uptime</label>
+            <div class="settings-info-val">${g_health ? formatUptime(g_health.uptime_s) : '—'}</div>
+          </div>
+          <div class="form-group">
+            <label>Free heap</label>
+            <div class="settings-info-val">${g_health && g_health.free_heap_b
+              ? (g_health.free_heap_b / 1024).toFixed(0) + ' KB'
+              : '—'}</div>
+          </div>
+        </div>
       </div>
 
       <div class="settings-section settings-section-danger" style="margin-top:24px">
@@ -1074,16 +1122,20 @@ function togglePw(id) {
 
 /* ── Change password ────────────────────────────────────────────────────────── */
 async function changePassword() {
-  const cur = document.getElementById('pw-current').value;
-  const nw  = document.getElementById('pw-new').value;
-  const cfm = document.getElementById('pw-confirm').value;
-  const msg = document.getElementById('pw-feedback');
+  const authEnabled = g_config && g_config.auth_enabled;
+  const curEl = document.getElementById('pw-current');
+  const cur   = curEl ? curEl.value : '';
+  const nw    = document.getElementById('pw-new').value;
+  const cfm   = document.getElementById('pw-confirm').value;
+  const msg   = document.getElementById('pw-feedback');
   msg.className = 'feedback-msg';
   msg.textContent = '';
 
-  if (!cur || !nw || !cfm) {
+  if ((authEnabled && !cur) || !nw || !cfm) {
     msg.className = 'feedback-msg err';
-    msg.textContent = 'All three fields are required.';
+    msg.textContent = authEnabled
+      ? 'All three fields are required.'
+      : 'New password and confirmation are required.';
     return;
   }
   if (nw !== cfm) {
@@ -1105,7 +1157,7 @@ async function changePassword() {
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
       if (data.csrf) sessionStorage.setItem('csrf', data.csrf);
-      document.getElementById('pw-current').value = '';
+      if (curEl) curEl.value = '';
       document.getElementById('pw-new').value = '';
       document.getElementById('pw-confirm').value = '';
       msg.className = 'feedback-msg ok';
@@ -1113,7 +1165,7 @@ async function changePassword() {
     } else if (r.status === 403) {
       msg.className = 'feedback-msg err';
       msg.textContent = 'Current password is incorrect.';
-      document.getElementById('pw-current').value = '';
+      if (curEl) curEl.value = '';
     } else {
       const data = await r.json().catch(() => ({}));
       msg.className = 'feedback-msg err';
