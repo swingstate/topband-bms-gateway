@@ -522,37 +522,30 @@ const SERIES_DEFS = {
 
 function getChartConfig() {
   return {
-    a_left:  localStorage.getItem('chart_a_left')  || 'power',
-    a_right: localStorage.getItem('chart_a_right') || 'soc',
-    b_left:  localStorage.getItem('chart_b_left')  || 'voltage',
-    b_right: localStorage.getItem('chart_b_right') || 'temp',
+    a: localStorage.getItem('chart_a') || 'power',
+    b: localStorage.getItem('chart_b') || 'voltage',
   };
 }
 
 function saveChartConfig() {
-  const val = id => document.getElementById(id) && document.getElementById(id).value;
-  const keys = ['chart_a_left', 'chart_a_right', 'chart_b_left', 'chart_b_right'];
-  const ids  = ['cfg-chart-a-left', 'cfg-chart-a-right', 'cfg-chart-b-left', 'cfg-chart-b-right'];
-  keys.forEach((k, i) => { if (val(ids[i])) localStorage.setItem(k, val(ids[i])); });
+  const aEl = document.getElementById('cfg-chart-a');
+  const bEl = document.getElementById('cfg-chart-b');
+  if (aEl) localStorage.setItem('chart_a', aEl.value);
+  if (bEl) localStorage.setItem('chart_b', bEl.value);
   loadCharts();
   const el = document.getElementById('chart-cfg-feedback');
   if (el) { el.textContent = 'Applied.'; el.className = 'feedback-msg ok'; }
 }
 
-function buildUplotData(serA, serB) {
-  const src = serA || serB;
-  if (!src || !src.points || src.points.length === 0 || src.t0_epoch <= 0) return null;
-  const n = src.points.length;
+function buildUplotData(ser) {
+  if (!ser || !ser.points || ser.points.length === 0 || ser.t0_epoch <= 0) return null;
+  const n = ser.points.length;
   const xs = [];
-  for (let i = 0; i < n; i++) xs.push(src.t0_epoch + i * src.resolution_s);
-  return [
-    xs,
-    serA ? serA.points : new Array(n).fill(null),
-    serB ? serB.points : new Array(n).fill(null),
-  ];
+  for (let i = 0; i < n; i++) xs.push(ser.t0_epoch + i * ser.resolution_s);
+  return [xs, ser.points];
 }
 
-function makeChartOpts(width, dA, dB) {
+function makeChartOpts(width, def) {
   const cs = getComputedStyle(document.documentElement);
   const fgMuted   = cs.getPropertyValue('--text-muted').trim()   || '#8A7E69';
   const gridColor = cs.getPropertyValue('--border-subtle').trim() || '#D4CDB9';
@@ -563,20 +556,11 @@ function makeChartOpts(width, dA, dB) {
     series: [
       {},
       {
-        label: dA.label,
-        stroke: dA.color,
-        width: 1.5,
-        scale: 'a',
+        label: def.label,
+        stroke: def.color,
+        width: 2,
         spanGaps: false,
-        value: (u, v) => v != null ? v.toFixed(dA.dec) + ' ' + dA.unit : '—',
-      },
-      {
-        label: dB.label,
-        stroke: dB.color,
-        width: 1.5,
-        scale: 'b',
-        spanGaps: false,
-        value: (u, v) => v != null ? v.toFixed(dB.dec) + ' ' + dB.unit : '—',
+        value: (u, v) => v != null ? v.toFixed(def.dec) + ' ' + def.unit : '—',
       },
     ],
     axes: [
@@ -590,27 +574,17 @@ function makeChartOpts(width, dA, dB) {
         }),
       },
       {
-        scale: 'a',
-        stroke: dA.color,
+        scale: 'y',
+        stroke: def.color,
         grid:  { stroke: gridColor, width: 0.5 },
         ticks: { stroke: gridColor, width: 0.5 },
-        size: 48,
-        gap: 4,
-      },
-      {
-        scale: 'b',
-        side: 1,
-        stroke: dB.color,
-        grid:  { show: false },
-        ticks: { stroke: dB.color,  width: 0.5 },
-        size: 48,
+        size: 52,
         gap: 4,
       },
     ],
     scales: {
       x: { time: true },
-      a: dA.scaleRange || { auto: true },
-      b: dB.scaleRange || { auto: true },
+      y: def.scaleRange || { auto: true },
     },
     cursor: { drag: { x: false, y: false } },
     legend: { show: true },
@@ -625,35 +599,34 @@ async function loadCharts() {
   if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; }
 
   const cfg    = getChartConfig();
-  const needed = [...new Set([cfg.a_left, cfg.a_right, cfg.b_left, cfg.b_right])];
+  const needed = [...new Set([cfg.a, cfg.b])];
 
   try {
     const fetched = {};
-    await Promise.all(needed.map(async s => {
+    // Sequential fetches — avoid concurrent heap pressure on the ESP32.
+    for (const s of needed) {
       const r = await apiFetch(`/api/history?series=${s}&tier=fine`);
-      if (!r || !r.ok) return;
+      if (!r || !r.ok) continue;
       const d = await r.json();
-      // API returns { series: [ { name, tier, t0_epoch, points, ... } ] }
       fetched[s] = (d && d.series && d.series[0]) || null;
-    }));
+    }
 
-    const renderChart = (plotId, titleId, keyL, keyR) => {
+    const renderChart = (plotId, titleId, key) => {
       const el = document.getElementById(plotId);
       if (!el) return null;
-      const dL   = SERIES_DEFS[keyL];
-      const dR   = SERIES_DEFS[keyR];
-      const data = buildUplotData(fetched[keyL] || null, fetched[keyR] || null);
+      const def  = SERIES_DEFS[key];
+      const data = buildUplotData(fetched[key] || null);
       const titleEl = document.getElementById(titleId);
-      if (titleEl) titleEl.textContent = `${dL.label} / ${dR.label} — last 2 h`;
+      if (titleEl) titleEl.textContent = `${def.label} — last 2 h`;
       if (data && el.offsetWidth > 0) {
-        return new uPlot(makeChartOpts(el.offsetWidth, dL, dR), data, el);
+        return new uPlot(makeChartOpts(el.offsetWidth, def), data, el);
       }
       if (!data) el.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
       return null;
     };
 
-    g_chart_a = renderChart('chart-a-plot', 'chart-a-title', cfg.a_left,  cfg.a_right);
-    g_chart_b = renderChart('chart-b-plot', 'chart-b-title', cfg.b_left,  cfg.b_right);
+    g_chart_a = renderChart('chart-a-plot', 'chart-a-title', cfg.a);
+    g_chart_b = renderChart('chart-b-plot', 'chart-b-title', cfg.b);
   } catch (_) { /* charts unavailable — silently ignore */ }
 }
 
@@ -939,39 +912,21 @@ async function renderSettings() {
           Choose which series to display on each dashboard chart card.
           Each card has a left axis and a right axis — pick any combination.
         </p>
-        ${(chartCfg => `
+        ${(cc => `
         <div class="form-row">
           <div class="form-group">
-            <label>Chart A — left axis</label>
-            <select id="cfg-chart-a-left">
+            <label>Chart A</label>
+            <select id="cfg-chart-a">
               ${Object.entries(SERIES_DEFS).map(([k,d]) =>
-                `<option value="${k}" ${chartCfg.a_left === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+                `<option value="${k}" ${cc.a === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
               ).join('')}
             </select>
           </div>
           <div class="form-group">
-            <label>Chart A — right axis</label>
-            <select id="cfg-chart-a-right">
+            <label>Chart B</label>
+            <select id="cfg-chart-b">
               ${Object.entries(SERIES_DEFS).map(([k,d]) =>
-                `<option value="${k}" ${chartCfg.a_right === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
-              ).join('')}
-            </select>
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Chart B — left axis</label>
-            <select id="cfg-chart-b-left">
-              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
-                `<option value="${k}" ${chartCfg.b_left === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
-              ).join('')}
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Chart B — right axis</label>
-            <select id="cfg-chart-b-right">
-              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
-                `<option value="${k}" ${chartCfg.b_right === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+                `<option value="${k}" ${cc.b === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
               ).join('')}
             </select>
           </div>

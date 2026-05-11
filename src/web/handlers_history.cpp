@@ -3,11 +3,11 @@
 #include "net/ntp.h"
 #include "bus/types.h"
 #include "esp_log.h"
-#include <ArduinoJson.h>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
+#include <cmath>
 
 static const char* TAG = "web_hist";
 
@@ -38,131 +38,133 @@ static bool series_requested(const char* list, const char* target) {
   return false;
 }
 
-// ── Fine ring → JSON series ───────────────────────────────────────────────────
-// Module-level static buffers for fine/coarse reads (H1 lesson: no large arrays on stack).
+// ── Read buffers (BSS — no heap) ─────────────────────────────────────────────
 static HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY]   = {};
 static HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY] = {};
 
-static void add_fine_series(JsonDocument& doc, const char* series_name) {
-  size_t count = storage::history_store::read_fine(s_fine_buf, HISTORY_FINE_CAPACITY);
-  uint32_t base   = storage::history_store::fine_epoch_base();
-  uint32_t res    = HISTORY_FINE_RESOLUTION_S;
+// ── Zero-heap streaming JSON writer ──────────────────────────────────────────
+// Writes JSON directly to the HTTP chunked response using a 2 KB stack buffer.
+// No heap allocation at all — critical for avoiding OOM under concurrent loads.
 
-  JsonObject ser = doc["series"].add<JsonObject>();
-  ser["name"]        = series_name;
-  ser["tier"]        = "fine";
-  ser["resolution_s"]= res;
-  ser["window_s"]    = HISTORY_FINE_CAPACITY * res;
-  ser["t0_epoch"]    = base;
+struct HStream {
+  httpd_req_t* req;
+  char         buf[2048];
+  size_t       pos;
+  esp_err_t    err;
+};
 
-  JsonArray pts = ser["points"].to<JsonArray>();
-  for (size_t i = 0; i < count; i++) {
-    const HistoryFinePoint& fp = s_fine_buf[i];
-    float val = 0.0f;
-    if (strcmp(series_name, "power") == 0)       val = (float)fp.power_w;
-    else if (strcmp(series_name, "voltage") == 0) val = (float)fp.voltage_x100 / 100.0f;
-    else if (strcmp(series_name, "soc") == 0)     val = (float)fp.soc_x10 / 10.0f;
-    else if (strcmp(series_name, "temp") == 0) val = (float)fp.temp_x10 / 10.0f;
-    else {
-      pts.add(nullptr);
-      continue;
-    }
-    if (fp.flags == 0) pts.add(nullptr);  // placeholder, NTP not synced
-    else               pts.add(val);
-  }
+static void hs_flush(HStream& s) {
+  if (s.pos > 0 && s.err == ESP_OK)
+    s.err = httpd_resp_send_chunk(s.req, s.buf, (ssize_t)s.pos);
+  s.pos = 0;
 }
 
-static void add_coarse_series(JsonDocument& doc, const char* series_name) {
-  size_t count = storage::history_store::read_coarse(s_coarse_buf, HISTORY_COARSE_CAPACITY);
-  uint32_t base = storage::history_store::coarse_epoch_base();
-  uint32_t res  = HISTORY_COARSE_RESOLUTION_S;
+static void hs_raw(HStream& s, const char* data, size_t n) {
+  while (n > 0 && s.err == ESP_OK) {
+    size_t space = sizeof(s.buf) - s.pos;
+    size_t copy  = n < space ? n : space;
+    memcpy(s.buf + s.pos, data, copy);
+    s.pos += copy; n -= copy; data += copy;
+    if (s.pos == sizeof(s.buf)) hs_flush(s);
+  }
+}
+static void hs_str(HStream& s, const char* str) { hs_raw(s, str, strlen(str)); }
+static void hs_uint(HStream& s, uint32_t v) {
+  char t[12]; snprintf(t, sizeof(t), "%u", (unsigned)v); hs_str(s, t);
+}
+static void hs_int(HStream& s, int v) {
+  char t[12]; snprintf(t, sizeof(t), "%d", v); hs_str(s, t);
+}
+static void hs_f1(HStream& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.1f", v); hs_str(s, t);
+}
+static void hs_f2(HStream& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.2f", v); hs_str(s, t);
+}
 
-  JsonObject ser = doc["series"].add<JsonObject>();
-  ser["name"]        = series_name;
-  ser["tier"]        = "coarse";
-  ser["resolution_s"]= res;
-  ser["window_s"]    = (uint32_t)HISTORY_COARSE_CAPACITY * res;
-  ser["t0_epoch"]    = base;
+static void hs_fine_series(HStream& s, const char* name, bool first) {
+  size_t   count = storage::history_store::read_fine(s_fine_buf, HISTORY_FINE_CAPACITY);
+  uint32_t base  = storage::history_store::fine_epoch_base();
+  uint32_t res   = HISTORY_FINE_RESOLUTION_S;
 
-  JsonArray pts  = ser["points"].to<JsonArray>();
-  JsonArray pmin = ser["min"].to<JsonArray>();
-  JsonArray pmax = ser["max"].to<JsonArray>();
+  if (!first) hs_str(s, ",");
+  hs_str(s, "{\"name\":\""); hs_str(s, name); hs_str(s, "\"");
+  hs_str(s, ",\"tier\":\"fine\",\"resolution_s\":"); hs_uint(s, res);
+  hs_str(s, ",\"window_s\":"); hs_uint(s, HISTORY_FINE_CAPACITY * res);
+  hs_str(s, ",\"t0_epoch\":"); hs_uint(s, base);
+  hs_str(s, ",\"points\":[");
 
   for (size_t i = 0; i < count; i++) {
-    const HistoryCoarsePoint& cp = s_coarse_buf[i];
-    if (cp.t_epoch == 0) {
-      pts.add(nullptr); pmin.add(nullptr); pmax.add(nullptr);
-      continue;
-    }
-    if (strcmp(series_name, "power") == 0) {
-      pts.add((float)cp.power_avg);
-      pmin.add((float)cp.power_min);
-      pmax.add((float)cp.power_max);
-    } else if (strcmp(series_name, "voltage") == 0) {
-      pts.add((float)cp.volt_avg / 100.0f);
-      pmin.add((float)cp.volt_min / 100.0f);
-      pmax.add((float)cp.volt_max / 100.0f);
-    } else if (strcmp(series_name, "soc") == 0) {
-      // SOC stored as avg only (no min/max in coarse ring to stay within 24-byte budget).
-      pts.add((float)cp.soc_avg / 10.0f);
-      pmin.add(nullptr);
-      pmax.add(nullptr);
-    } else if (strcmp(series_name, "temp") == 0) {
-      pts.add((float)cp.temp_avg / 10.0f);
-      pmin.add((float)cp.temp_min / 10.0f);
-      pmax.add((float)cp.temp_max / 10.0f);
-    } else {
-      pts.add(nullptr); pmin.add(nullptr); pmax.add(nullptr);
-    }
+    if (i > 0) hs_str(s, ",");
+    const HistoryFinePoint& fp = s_fine_buf[i];
+    if (fp.flags == 0) { hs_str(s, "null"); continue; }
+    if      (!strcmp(name, "power"))   hs_int(s, (int)fp.power_w);
+    else if (!strcmp(name, "voltage")) hs_f2(s, (float)fp.voltage_x100 / 100.0f);
+    else if (!strcmp(name, "soc"))     hs_f1(s, (float)fp.soc_x10 / 10.0f);
+    else if (!strcmp(name, "temp"))    hs_f1(s, (float)fp.temp_x10 / 10.0f);
+    else                               hs_str(s, "null");
   }
+  hs_str(s, "]}");
+}
+
+static void hs_coarse_series(HStream& s, const char* name, bool first) {
+  size_t   count = storage::history_store::read_coarse(s_coarse_buf, HISTORY_COARSE_CAPACITY);
+  uint32_t base  = storage::history_store::coarse_epoch_base();
+  uint32_t res   = HISTORY_COARSE_RESOLUTION_S;
+
+  if (!first) hs_str(s, ",");
+  hs_str(s, "{\"name\":\""); hs_str(s, name); hs_str(s, "\"");
+  hs_str(s, ",\"tier\":\"coarse\",\"resolution_s\":"); hs_uint(s, res);
+  hs_str(s, ",\"window_s\":"); hs_uint(s, (uint32_t)HISTORY_COARSE_CAPACITY * res);
+  hs_str(s, ",\"t0_epoch\":"); hs_uint(s, base);
+  hs_str(s, ",\"points\":[");
+
+  for (size_t i = 0; i < count; i++) {
+    if (i > 0) hs_str(s, ",");
+    const HistoryCoarsePoint& cp = s_coarse_buf[i];
+    if (cp.t_epoch == 0) { hs_str(s, "null"); continue; }
+    if      (!strcmp(name, "power"))   hs_int(s, (int)cp.power_avg);
+    else if (!strcmp(name, "voltage")) hs_f2(s, (float)cp.volt_avg / 100.0f);
+    else if (!strcmp(name, "soc"))     hs_f1(s, (float)cp.soc_avg  / 10.0f);
+    else if (!strcmp(name, "temp"))    hs_f1(s, (float)cp.temp_avg / 10.0f);
+    else                               hs_str(s, "null");
+  }
+  hs_str(s, "]}");
 }
 
 namespace web {
 
 esp_err_t handle_history(httpd_req_t* req) {
   char series_buf[64] = "power";
-  char tier_buf[16]   = "coarse";
+  char tier_buf[16]   = "fine";
   query_param(req, "series", series_buf, sizeof(series_buf));
   query_param(req, "tier",   tier_buf,   sizeof(tier_buf));
 
-  bool want_fine   = (strcmp(tier_buf, "fine") == 0 || strcmp(tier_buf, "both") == 0);
+  bool want_fine   = (strcmp(tier_buf, "fine")   == 0 || strcmp(tier_buf, "both") == 0);
   bool want_coarse = (strcmp(tier_buf, "coarse") == 0 || strcmp(tier_buf, "both") == 0);
-
-  // Parse requested series list (comma-separated or "all").
   static const char* ALL_SERIES[] = { "power", "voltage", "soc", "temp" };
-
-  // ArduinoJson document. History payload can be large for coarse: 2016 × (avg+min+max)
-  // Use PSRAM-backed allocation via ArduinoJson's JsonDocument (heap-allocated).
-  // Estimate: 2016 points × 4 series × 3 arrays × ~8 chars/value ≈ 200 KB worst-case.
-  // Use streaming chunked response to avoid one huge buffer.
-  // For H2 we use the simpler single-buffer approach with a 64 KB doc,
-  // since we serve at most 48h ≈ 576 coarse points typically.
-  JsonDocument doc;
-  doc["now_ts_s"] = net::ntp::now_unix_s();
-  doc["series"].to<JsonArray>();  // initialise as array
-
-  for (const char* sname : ALL_SERIES) {
-    if (!series_requested(series_buf, sname)) continue;
-    if (want_fine)   add_fine_series(doc, sname);
-    if (want_coarse) add_coarse_series(doc, sname);
-  }
-
-  size_t est = measureJson(doc) + 1;
-  char* buf = (char*)malloc(est);
-  if (!buf) {
-    httpd_resp_set_status(req, "500 Internal Server Error");
-    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
-  }
-  size_t n = serializeJson(doc, buf, est);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-  esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)n);
-  free(buf);
 
-  if (ret != ESP_OK)
-    ESP_LOGD(TAG, "client disconnected during /api/history");
-  return ret;
+  // Stream JSON directly — zero heap allocation.
+  HStream s = { req, {}, 0, ESP_OK };
+
+  hs_str(s, "{\"now_ts_s\":"); hs_uint(s, net::ntp::now_unix_s());
+  hs_str(s, ",\"series\":[");
+
+  bool first = true;
+  for (const char* sname : ALL_SERIES) {
+    if (!series_requested(series_buf, sname)) continue;
+    if (want_fine)   { hs_fine_series(s, sname, first);   first = false; }
+    if (want_coarse) { hs_coarse_series(s, sname, first); first = false; }
+  }
+
+  hs_str(s, "]}");
+  hs_flush(s);
+  if (s.err == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);
+  else ESP_LOGD(TAG, "client disconnected during /api/history");
+  return s.err;
 }
 
 esp_err_t handle_history_export(httpd_req_t* req) {
