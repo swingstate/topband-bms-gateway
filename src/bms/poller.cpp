@@ -1,6 +1,7 @@
 #include "bms/poller.h"
 #include "bms/snapshot.h"
 #include "bms/protocol.h"
+#include "bms/energy_integrator.h"
 #include "bus/snapshot_bus.h"
 #include "safety/runSafety.h"
 #include "safety_state.h"
@@ -8,6 +9,8 @@
 #include "can/busoff.h"
 #include "bus/queues.h"
 #include "mqtt/payloads.h"
+#include "net/ntp.h"
+#include "app/boot.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -375,6 +378,22 @@ static void control_task_entry(void* param) {
         memcpy(&s_safety, &tmp, sizeof(SafetyState));
         s_safety_valid = true;
         portEXIT_CRITICAL(&s_safety_mux);
+
+        // ── Energy integration (Phase H2) ─────────────────────────────────
+        // Compute system power from new safety state and integrate kWh.
+        // dt_s: time since last cycle start, clamped to avoid stale bursts.
+        {
+          static uint32_t s_last_energy_ms = 0;
+          uint32_t now_e = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+          if (s_last_energy_ms > 0) {
+            float dt_s = (float)(now_e - s_last_energy_ms) / 1000.0f;
+            float power_w = tmp.pack_current_total * tmp.pack_voltage_avg;
+            bms::energy_integrator::integrate(power_w, dt_s,
+                                              net::ntp::now_unix_s(),
+                                              app::get_config().timezone_offset_h);
+          }
+          s_last_energy_ms = now_e;
+        }
       }
 
       // (CAN TX runs outside do_cycle — every 50 ms tick below)

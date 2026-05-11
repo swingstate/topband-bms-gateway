@@ -1,7 +1,10 @@
 #include "handlers_live.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
+#include "bms/runtime_estimator.h"
 #include "can/tx.h"
+#include "storage/energy_store.h"
+#include "net/ntp.h"
 #include "app/version.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -108,6 +111,35 @@ esp_err_t handle_live(httpd_req_t* req) {
   sb["publishes"] = bus::snapshot_bus::total_publishes();
   sb["reads"]     = bus::snapshot_bus::total_reads();
   sb["retries"]   = bus::snapshot_bus::total_read_retries();
+
+  // ── Energy counters ───────────────────────────────────────────────────────
+  // Read live from energy_store (H1 lesson: read live, not from stale snapshot).
+  JsonObject energy = doc["energy"].to<JsonObject>();
+  energy["today_in_kwh"]  = storage::energy_store::today_in_kwh();
+  energy["today_out_kwh"] = storage::energy_store::today_out_kwh();
+  energy["week_in_kwh"]   = storage::energy_store::week_in_kwh();
+  energy["week_out_kwh"]  = storage::energy_store::week_out_kwh();
+  energy["total_in_kwh"]  = storage::energy_store::total_in_kwh();
+  energy["total_out_kwh"] = storage::energy_store::total_out_kwh();
+
+  // ── Runtime estimate ──────────────────────────────────────────────────────
+  {
+    bms::runtime_estimator::RuntimeStateEst rt_state = bms::runtime_estimator::RuntimeStateEst::Idle;
+    int32_t rt_min = -1;
+    if (has_safety) {
+      rt_min = bms::runtime_estimator::estimate_min(safety, rt_state);
+    }
+    doc["runtime_est_min"] = rt_min;
+    doc["runtime_est_state"] = (rt_state == bms::runtime_estimator::RuntimeStateEst::UntilEmpty)
+                               ? "until_empty"
+                               : (rt_state == bms::runtime_estimator::RuntimeStateEst::UntilFull)
+                                 ? "until_full"
+                                 : "idle";
+  }
+
+  // ── NTP time (for settings page display) ─────────────────────────────────
+  doc["now_ts_s"]   = net::ntp::now_unix_s();
+  doc["ntp_synced"] = net::ntp::is_synced();
 
   // Estimate size then allocate.
   size_t est = measureJson(doc) + 1;

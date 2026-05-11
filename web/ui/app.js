@@ -112,9 +112,18 @@ function chargePill(current) {
   return pill('Idle', 'pill-idle');
 }
 
+function formatRuntime(min) {
+  if (min === undefined || min < 0) return '—';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 /* ── Live data state ────────────────────────────────────────────────────────── */
 let g_live = null;
 let g_poll_interval = null;
+let g_chart_a = null;
+let g_chart_b = null;
 
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
@@ -209,10 +218,10 @@ function updateMqttIndicator() {
 
 function updateLiveUI() {
   updateStatusBar();
-  // If currently on dashboard, update cards without full re-render.
   if (window.location.pathname === '/' || window.location.pathname === '/dashboard') {
     updateDashboardCards();
     updatePackCards();
+    updateEnergyRuntimeCards();
   }
 }
 
@@ -221,11 +230,46 @@ function renderDashboard() {
   const root = document.getElementById('page-root');
   root.innerHTML = `
     <div class="metrics-grid" id="metrics-grid"></div>
+    <div class="dash-summary-row">
+      <div class="card summary-card" id="energy-card">
+        <div class="metric-label">Energy Today</div>
+        <div class="energy-vals">
+          <div class="energy-dir-block">
+            <span class="energy-dir">In</span>
+            <span class="energy-val" id="energy-in">—</span>
+            <span class="metric-unit">kWh</span>
+          </div>
+          <div class="energy-dir-block">
+            <span class="energy-dir">Out</span>
+            <span class="energy-val" id="energy-out">—</span>
+            <span class="metric-unit">kWh</span>
+          </div>
+        </div>
+        <div class="metric-sub" id="energy-week"></div>
+      </div>
+      <div class="card summary-card" id="runtime-card">
+        <div class="metric-label">Runtime Estimate</div>
+        <div class="metric-value" id="runtime-val" style="font-size:28px">—</div>
+        <div class="metric-sub" id="runtime-sub">Idle</div>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div class="card chart-card">
+        <div class="chart-title">Power &amp; SOC — last 2 h</div>
+        <div id="chart-a-plot" class="chart-plot"></div>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-title">Voltage &amp; Temperature — last 2 h</div>
+        <div id="chart-b-plot" class="chart-plot"></div>
+      </div>
+    </div>
     <p class="section-header">Battery Packs</p>
     <div class="packs-grid" id="packs-grid"></div>
   `;
   updateDashboardCards();
   updatePackCards();
+  updateEnergyRuntimeCards();
+  loadCharts();
 }
 
 function updateDashboardCards() {
@@ -425,6 +469,166 @@ function renderPackCard(card, p) {
   `;
 }
 
+/* ── Energy + Runtime cards ─────────────────────────────────────────────────── */
+function updateEnergyRuntimeCards() {
+  const live   = g_live || {};
+  const energy = live.energy || {};
+
+  const inEl = document.getElementById('energy-in');
+  if (!inEl) return;  // not on dashboard
+
+  inEl.textContent = energy.today_in_kwh !== undefined ? energy.today_in_kwh.toFixed(2) : '—';
+  const outEl = document.getElementById('energy-out');
+  if (outEl) outEl.textContent = energy.today_out_kwh !== undefined ? energy.today_out_kwh.toFixed(2) : '—';
+
+  const weekEl = document.getElementById('energy-week');
+  if (weekEl) {
+    const wIn  = energy.week_in_kwh  !== undefined ? energy.week_in_kwh.toFixed(1)  : '—';
+    const wOut = energy.week_out_kwh !== undefined ? energy.week_out_kwh.toFixed(1) : '—';
+    weekEl.textContent = `Week: ${wIn} / ${wOut} kWh`;
+  }
+
+  const rtMin   = live.runtime_est_min;
+  const rtState = live.runtime_est_state || 'idle';
+  const rtEl  = document.getElementById('runtime-val');
+  const rtSub = document.getElementById('runtime-sub');
+  if (rtEl) rtEl.textContent = rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—';
+  if (rtSub) {
+    const labels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
+    rtSub.textContent = labels[rtState] || 'Idle';
+  }
+}
+
+/* ── History charts (uPlot) ─────────────────────────────────────────────────── */
+
+function buildUplotData(serA, serB) {
+  const src = serA || serB;
+  if (!src || !src.points || src.points.length === 0 || src.t0_epoch <= 0) return null;
+  const n = src.points.length;
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push(src.t0_epoch + i * src.resolution_s);
+  return [
+    xs,
+    serA ? serA.points : new Array(n).fill(null),
+    serB ? serB.points : new Array(n).fill(null),
+  ];
+}
+
+function makeChartOpts(width, dA, dB) {
+  const cs = getComputedStyle(document.documentElement);
+  const fgMuted   = cs.getPropertyValue('--text-muted').trim()   || '#8A7E69';
+  const gridColor = cs.getPropertyValue('--border-subtle').trim() || '#D4CDB9';
+  return {
+    width,
+    height: 180,
+    padding: [4, 0, 0, 0],
+    series: [
+      {},
+      {
+        label: dA.label,
+        stroke: dA.color,
+        width: 1.5,
+        scale: 'a',
+        spanGaps: false,
+        value: (u, v) => v != null ? v.toFixed(dA.dec) + ' ' + dA.unit : '—',
+      },
+      {
+        label: dB.label,
+        stroke: dB.color,
+        width: 1.5,
+        scale: 'b',
+        spanGaps: false,
+        value: (u, v) => v != null ? v.toFixed(dB.dec) + ' ' + dB.unit : '—',
+      },
+    ],
+    axes: [
+      {
+        stroke: fgMuted,
+        grid:  { stroke: gridColor, width: 0.5 },
+        ticks: { stroke: gridColor, width: 0.5 },
+        values: (u, ts) => ts.map(t => {
+          const d = new Date(t * 1000);
+          return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        }),
+      },
+      {
+        scale: 'a',
+        stroke: dA.color,
+        grid:  { stroke: gridColor, width: 0.5 },
+        ticks: { stroke: gridColor, width: 0.5 },
+        size: 48,
+        gap: 4,
+      },
+      {
+        scale: 'b',
+        side: 1,
+        stroke: dB.color,
+        grid:  { show: false },
+        ticks: { stroke: dB.color,  width: 0.5 },
+        size: 48,
+        gap: 4,
+      },
+    ],
+    scales: {
+      x: { time: true },
+      a: dA.scaleRange || { auto: true },
+      b: dB.scaleRange || { auto: true },
+    },
+    cursor: { drag: { x: false, y: false } },
+    legend: { show: true },
+  };
+}
+
+async function loadCharts() {
+  if (typeof uPlot === 'undefined') return;
+
+  const plotA = document.getElementById('chart-a-plot');
+  const plotB = document.getElementById('chart-b-plot');
+  if (!plotA || !plotB) return;
+
+  if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; }
+  if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; }
+
+  try {
+    const [rP, rS, rV, rT] = await Promise.all([
+      apiFetch('/api/history?series=power&tier=fine'),
+      apiFetch('/api/history?series=soc&tier=fine'),
+      apiFetch('/api/history?series=voltage&tier=fine'),
+      apiFetch('/api/history?series=temp&tier=fine'),
+    ]);
+    const power   = rP && rP.ok ? await rP.json() : null;
+    const soc     = rS && rS.ok ? await rS.json() : null;
+    const voltage = rV && rV.ok ? await rV.json() : null;
+    const temp    = rT && rT.ok ? await rT.json() : null;
+
+    // Chart A: Power (W) + SOC (%)
+    const dataA = buildUplotData(power, soc);
+    const elA = document.getElementById('chart-a-plot');
+    if (elA) {
+      if (dataA && elA.offsetWidth > 0) {
+        const dPow = { label: 'Power', color: '#76D2D9', dec: 0, unit: 'W' };
+        const dSoc = { label: 'SOC',   color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } };
+        g_chart_a = new uPlot(makeChartOpts(elA.offsetWidth, dPow, dSoc), dataA, elA);
+      } else if (!dataA) {
+        elA.innerHTML = '<p class="chart-empty">No history data yet</p>';
+      }
+    }
+
+    // Chart B: Voltage (V) + Temperature (°C)
+    const dataB = buildUplotData(voltage, temp);
+    const elB = document.getElementById('chart-b-plot');
+    if (elB) {
+      if (dataB && elB.offsetWidth > 0) {
+        const dVolt = { label: 'Voltage', color: '#E25548', dec: 1, unit: 'V' };
+        const dTemp = { label: 'Temp',    color: '#E89C5C', dec: 1, unit: '°C' };
+        g_chart_b = new uPlot(makeChartOpts(elB.offsetWidth, dVolt, dTemp), dataB, elB);
+      } else if (!dataB) {
+        elB.innerHTML = '<p class="chart-empty">No history data yet</p>';
+      }
+    }
+  } catch (_) { /* charts unavailable — silently ignore */ }
+}
+
 /* ── Battery page (placeholder) ─────────────────────────────────────────────── */
 function renderBattery() {
   document.getElementById('page-root').innerHTML = `
@@ -468,6 +672,11 @@ async function renderSettings() {
   }
 
   const c = g_config;
+  const nowTs     = (g_live && g_live.now_ts_s) || (g_health && g_health.now_ts_s) || 0;
+  const ntpSynced = !!(g_live && g_live.ntp_synced) || !!(g_health && g_health.ntp_synced);
+  const deviceTimeStr = nowTs > 1000000
+    ? new Date(nowTs * 1000).toLocaleString()
+    : 'Unknown';
   root.innerHTML = `
     <div class="settings-page">
       <div class="settings-section">
@@ -594,6 +803,23 @@ async function renderSettings() {
         <div class="form-group">
           <label>Timezone Offset (hours)</label>
           <input type="number" id="cfg-timezone_offset_h" value="${c.timezone_offset_h}" min="-12" max="14">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Time</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Device Time</label>
+            <div style="font-size:15px;font-weight:600;color:var(--text-primary);padding:6px 0">${deviceTimeStr}</div>
+            <div class="help">Snapshot from last live data poll</div>
+          </div>
+          <div class="form-group">
+            <label>NTP Status</label>
+            <div style="padding:6px 0">
+              <span class="charging-pill ${ntpSynced ? 'pill-charging' : 'pill-idle'}">${ntpSynced ? 'Synced' : 'Not synced'}</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1025,4 +1251,11 @@ async function checkAuthState() {
   // Poll /api/health every 10 s for MQTT indicator.
   fetchHealth();
   setInterval(fetchHealth, 10000);
+
+  // Refresh history charts every 60 s (only when dashboard is active).
+  setInterval(() => {
+    if (window.location.pathname === '/' || window.location.pathname === '/dashboard') {
+      loadCharts();
+    }
+  }, 60000);
 })();

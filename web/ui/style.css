@@ -585,6 +585,75 @@ a { text-decoration: none; color: inherit; }
 .full-overlay h2 { font-size: 20px; color: var(--text-primary); }
 .full-overlay p  { font-size: 14px; color: var(--text-muted); max-width: 360px; }
 
+/* ── Dashboard: Energy + Runtime summary row ───────────────────────────────── */
+.dash-summary-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.summary-card {
+  flex: 1;
+  min-width: 0;
+}
+.energy-vals {
+  display: flex;
+  gap: 28px;
+  margin: 8px 0 4px;
+}
+.energy-dir-block {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.energy-dir {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.energy-val {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--brand-teal);
+  line-height: 1;
+}
+
+/* ── Dashboard: Charts row ─────────────────────────────────────────────────── */
+.charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.chart-card {
+  min-width: 0;
+  overflow: hidden;
+}
+.chart-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+}
+.chart-plot { width: 100%; }
+.chart-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 40px 0;
+}
+/* uPlot legend tweaks */
+.u-legend { font-size: 11px !important; }
+.u-legend .u-label { color: var(--text-secondary) !important; }
+
+@media (max-width: 700px) {
+  .charts-row { grid-template-columns: 1fr; }
+  .dash-summary-row { flex-direction: column; }
+}
+
 /* ── Danger settings section ───────────────────────────────────────────────── */
 .settings-section-danger {
   border: 1px solid color-mix(in srgb, var(--color-alarm) 35%, transparent);
