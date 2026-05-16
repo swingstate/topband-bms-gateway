@@ -13,12 +13,16 @@ static const char* TAG = "web_hist";
 
 // ── Query-param helpers ───────────────────────────────────────────────────────
 static bool query_param(httpd_req_t* req, const char* key, char* out, size_t len) {
-  char* uri_buf = (char*)malloc(512);
-  if (!uri_buf) return false;
-  strncpy(uri_buf, req->uri, 511);
-  uri_buf[511] = '\0';
-  esp_err_t r = httpd_query_key_value(uri_buf, key, out, len);
-  free(uri_buf);
+  size_t qlen = httpd_req_get_url_query_len(req);
+  if (qlen == 0) return false;
+  qlen++;  // null terminator
+  char* qbuf = (char*)malloc(qlen);
+  if (!qbuf) return false;
+  esp_err_t r = httpd_req_get_url_query_str(req, qbuf, qlen);
+  if (r == ESP_OK) {
+    r = httpd_query_key_value(qbuf, key, out, len);
+  }
+  free(qbuf);
   return r == ESP_OK;
 }
 
