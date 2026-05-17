@@ -5,16 +5,20 @@
 #include "storage/lfs_store.h"
 #include "storage/ui_provisioner.h"
 #include "storage/boot_reasons.h"
+#include "storage/history_store.h"
+#include "storage/energy_store.h"
 #include "bus/queues.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
 #include "net/wifi.h"
+#include "net/ntp.h"
 #include "net/captdns.h"
 #include "web/server.h"
 #include "web/auth.h"
 #include "web/captive.h"
 #include "app/smoke_reader.h"
 #include "app/housekeeping.h"
+#include "app/history_task.h"
 #include "mqtt/publisher.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -204,11 +208,26 @@ void run_boot() {
     }
   }
 
+  // ── Step 8.5: History and energy stores (LittleFS must be ready) ─────────
+  {
+    bool hist_ok = storage::history_store::init();
+    bool ener_ok = storage::energy_store::init();
+    ESP_LOGI(TAG, "history_store=%s energy_store=%s",
+             hist_ok ? "ok" : "FAIL", ener_ok ? "ok" : "FAIL");
+  }
+
   // ── Step 9: Main HTTP server (STA mode only) ──────────────────────────────
   if (sta_connected) {
     web::auth::init();
     if (!web::start_httpd(g_config)) {
       ESP_LOGE(TAG, "HTTP server failed to start");
+    }
+  }
+
+  // ── Step 9.4: NTP (STA mode — non-blocking, async sync) ──────────────────
+  if (sta_connected) {
+    if (!net::ntp::start(g_config)) {
+      ESP_LOGW(TAG, "NTP start failed");
     }
   }
 
@@ -223,6 +242,13 @@ void run_boot() {
   if (sta_connected) {
     if (!app::housekeeping::start(g_config)) {
       ESP_LOGE(TAG, "Housekeeping task failed to start");
+    }
+  }
+
+  // ── Step 9.7: HistoryTask (STA mode only) ────────────────────────────────
+  if (sta_connected) {
+    if (!app::history_task::start()) {
+      ESP_LOGW(TAG, "HistoryTask failed to start — history collection disabled");
     }
   }
 

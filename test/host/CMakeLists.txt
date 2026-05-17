@@ -196,3 +196,38 @@ target_link_libraries(test_mqtt_payloads PRIVATE
   ArduinoJson
 )
 catch_discover_tests(test_mqtt_payloads)
+
+# ── test_runtime_estimator ────────────────────────────────────────────────────
+# runtime_estimator.cpp is host-portable: pure function, <cmath> only.
+add_executable(test_runtime_estimator
+  test_runtime_estimator.cpp
+  ../../src/bms/runtime_estimator.cpp
+)
+
+target_include_directories(test_runtime_estimator PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_runtime_estimator PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_runtime_estimator PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_runtime_estimator PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_runtime_estimator)
+
+# ── test_energy_integrator ────────────────────────────────────────────────────
+# energy_integrator.cpp is host-portable; its energy_store dependencies are
+# stubbed inline in the test file (no LittleFS or IDF headers needed).
+add_executable(test_energy_integrator
+  test_energy_integrator.cpp
+  ../../src/bms/energy_integrator.cpp
+)
+
+target_include_directories(test_energy_integrator PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_energy_integrator PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_energy_integrator PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_energy_integrator PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_energy_integrator)

@@ -3,6 +3,7 @@
 #include "handlers_live.h"
 #include "handlers_config.h"
 #include "handlers_actions.h"
+#include "handlers_history.h"
 #include "handlers_static.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -102,6 +103,10 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/factory_reset",             HTTP_POST, handle_factory_reset);
   reg_auth(g_server, "/api/svc/ha/discovery/send",    HTTP_POST, handle_ha_discovery_send);
   reg_auth(g_server, "/api/svc/ha/discovery/clear",   HTTP_POST, handle_ha_discovery_clear);
+
+  // ── History endpoints (Phase H2) ─────────────────────────────────────────
+  reg_auth(g_server, "/api/history",            HTTP_GET, handle_history);
+  reg_auth(g_server, "/api/history/export.csv", HTTP_GET, handle_history_export);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

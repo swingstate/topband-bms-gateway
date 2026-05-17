@@ -112,9 +112,34 @@ function chargePill(current) {
   return pill('Idle', 'pill-idle');
 }
 
+function formatRuntime(min) {
+  if (min === undefined || min < 0) return '—';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function formatUptime(s) {
+  if (!s) return '—';
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function chartEmptyMsg() {
+  if (!g_live || !g_live.ntp_synced) return 'Waiting for NTP time sync…';
+  if (!g_live.bms_count_online) return 'BMS offline — history will record when packs connect';
+  return 'Collecting first sample…';
+}
+
 /* ── Live data state ────────────────────────────────────────────────────────── */
 let g_live = null;
 let g_poll_interval = null;
+let g_chart_a = null;
+let g_chart_b = null;
 
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
@@ -209,7 +234,6 @@ function updateMqttIndicator() {
 
 function updateLiveUI() {
   updateStatusBar();
-  // If currently on dashboard, update cards without full re-render.
   if (window.location.pathname === '/' || window.location.pathname === '/dashboard') {
     updateDashboardCards();
     updatePackCards();
@@ -221,11 +245,22 @@ function renderDashboard() {
   const root = document.getElementById('page-root');
   root.innerHTML = `
     <div class="metrics-grid" id="metrics-grid"></div>
+    <div class="charts-row">
+      <div class="card chart-card">
+        <div class="chart-title" id="chart-a-title">Power / SOC — last 2 h</div>
+        <div id="chart-a-plot" class="chart-plot"></div>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-title" id="chart-b-title">Voltage / Temp — last 2 h</div>
+        <div id="chart-b-plot" class="chart-plot"></div>
+      </div>
+    </div>
     <p class="section-header">Battery Packs</p>
     <div class="packs-grid" id="packs-grid"></div>
   `;
   updateDashboardCards();
   updatePackCards();
+  loadCharts();
 }
 
 function updateDashboardCards() {
@@ -259,6 +294,11 @@ function updateDashboardCards() {
   const power = (cur !== null && volt !== null) ? cur * volt : null;
   const alarmFlags = safety.alarm_flags || 0;
   const sysMsg = safety.sys_message || 'OK';
+
+  const energy  = (g_live && g_live.energy)           || {};
+  const rtMin   = g_live && g_live.runtime_est_min;
+  const rtState = (g_live && g_live.runtime_est_state) || 'idle';
+  const rtLabels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
 
   const cards = [
     {
@@ -324,6 +364,22 @@ function updateDashboardCards() {
       sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
       color: temp > 40 ? 'var(--amber)' : 'var(--fg)',
       alarm: alarmTemp(temp),
+    },
+    {
+      label: 'Energy Today',
+      value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—',
+      unit: 'kWh in',
+      sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '',
+      color: 'var(--brand-teal)',
+      alarm: false,
+    },
+    {
+      label: 'Runtime Est.',
+      value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—',
+      unit: '',
+      sub: rtLabels[rtState] || 'Idle',
+      color: 'var(--fg)',
+      alarm: false,
     },
   ];
 
@@ -425,6 +481,155 @@ function renderPackCard(card, p) {
   `;
 }
 
+/* ── Energy + Runtime cards ─────────────────────────────────────────────────── */
+function updateEnergyRuntimeCards() {
+  const live   = g_live || {};
+  const energy = live.energy || {};
+
+  const inEl = document.getElementById('energy-in');
+  if (!inEl) return;  // not on dashboard
+
+  inEl.textContent = energy.today_in_kwh !== undefined ? energy.today_in_kwh.toFixed(2) : '—';
+  const outEl = document.getElementById('energy-out');
+  if (outEl) outEl.textContent = energy.today_out_kwh !== undefined ? energy.today_out_kwh.toFixed(2) : '—';
+
+  const weekEl = document.getElementById('energy-week');
+  if (weekEl) {
+    const wIn  = energy.week_in_kwh  !== undefined ? energy.week_in_kwh.toFixed(1)  : '—';
+    const wOut = energy.week_out_kwh !== undefined ? energy.week_out_kwh.toFixed(1) : '—';
+    weekEl.textContent = `Week: ${wIn} / ${wOut} kWh`;
+  }
+
+  const rtMin   = live.runtime_est_min;
+  const rtState = live.runtime_est_state || 'idle';
+  const rtEl  = document.getElementById('runtime-val');
+  const rtSub = document.getElementById('runtime-sub');
+  if (rtEl) rtEl.textContent = rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—';
+  if (rtSub) {
+    const labels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
+    rtSub.textContent = labels[rtState] || 'Idle';
+  }
+}
+
+/* ── History charts (uPlot) ─────────────────────────────────────────────────── */
+
+const SERIES_DEFS = {
+  power:   { label: 'Power',   color: '#76D2D9', dec: 0, unit: 'W' },
+  soc:     { label: 'SOC',     color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } },
+  voltage: { label: 'Voltage', color: '#E25548', dec: 1, unit: 'V' },
+  temp:    { label: 'Temp',    color: '#E89C5C', dec: 1, unit: '°C' },
+};
+
+function getChartConfig() {
+  return {
+    a: localStorage.getItem('chart_a') || 'power',
+    b: localStorage.getItem('chart_b') || 'voltage',
+  };
+}
+
+function saveChartConfig() {
+  const aEl = document.getElementById('cfg-chart-a');
+  const bEl = document.getElementById('cfg-chart-b');
+  if (aEl) localStorage.setItem('chart_a', aEl.value);
+  if (bEl) localStorage.setItem('chart_b', bEl.value);
+  loadCharts();
+  const el = document.getElementById('chart-cfg-feedback');
+  if (el) { el.textContent = 'Applied.'; el.className = 'feedback-msg ok'; }
+}
+
+function buildUplotData(ser) {
+  if (!ser || !ser.points || ser.points.length === 0 || ser.t0_epoch <= 0) return null;
+  const n = ser.points.length;
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push(ser.t0_epoch + i * ser.resolution_s);
+  return [xs, ser.points];
+}
+
+function makeChartOpts(width, def) {
+  const cs = getComputedStyle(document.documentElement);
+  const fgMuted   = cs.getPropertyValue('--text-muted').trim()   || '#8A7E69';
+  const gridColor = cs.getPropertyValue('--border-subtle').trim() || '#D4CDB9';
+  return {
+    width,
+    height: 180,
+    padding: [4, 0, 0, 0],
+    series: [
+      {},
+      {
+        label: def.label,
+        stroke: def.color,
+        width: 2,
+        spanGaps: false,
+        value: (u, v) => v != null ? v.toFixed(def.dec) + ' ' + def.unit : '—',
+      },
+    ],
+    axes: [
+      {
+        stroke: fgMuted,
+        grid:  { stroke: gridColor, width: 0.5 },
+        ticks: { stroke: gridColor, width: 0.5 },
+        values: (u, ts) => ts.map(t => {
+          const d = new Date(t * 1000);
+          return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        }),
+      },
+      {
+        scale: 'y',
+        stroke: def.color,
+        grid:  { stroke: gridColor, width: 0.5 },
+        ticks: { stroke: gridColor, width: 0.5 },
+        size: 52,
+        gap: 4,
+      },
+    ],
+    scales: {
+      x: { time: true },
+      y: def.scaleRange || { auto: true },
+    },
+    cursor: { drag: { x: false, y: false } },
+    legend: { show: true },
+  };
+}
+
+async function loadCharts() {
+  if (typeof uPlot === 'undefined') return;
+  if (!document.getElementById('chart-a-plot')) return;
+
+  if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; }
+  if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; }
+
+  const cfg    = getChartConfig();
+  const needed = [...new Set([cfg.a, cfg.b])];
+
+  try {
+    const fetched = {};
+    // Sequential fetches — avoid concurrent heap pressure on the ESP32.
+    for (const s of needed) {
+      const r = await apiFetch(`/api/history?series=${s}&tier=fine`);
+      if (!r || !r.ok) continue;
+      const d = await r.json();
+      fetched[s] = (d && d.series && d.series[0]) || null;
+    }
+
+    const renderChart = (plotId, titleId, key) => {
+      const el = document.getElementById(plotId);
+      if (!el) return null;
+      const def  = SERIES_DEFS[key];
+      const data = buildUplotData(fetched[key] || null);
+      const titleEl = document.getElementById(titleId);
+      if (titleEl) titleEl.textContent = `${def.label} — last 2 h`;
+      if (data && el.offsetWidth > 0) {
+        return new uPlot(makeChartOpts(el.offsetWidth, def), data, el);
+      }
+      if (!data) el.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
+      return null;
+    };
+
+    g_chart_a = renderChart('chart-a-plot', 'chart-a-title', cfg.a);
+    g_chart_b = renderChart('chart-b-plot', 'chart-b-title', cfg.b);
+  } catch (_) { /* charts unavailable — silently ignore */ }
+}
+
 /* ── Battery page (placeholder) ─────────────────────────────────────────────── */
 function renderBattery() {
   document.getElementById('page-root').innerHTML = `
@@ -468,6 +673,11 @@ async function renderSettings() {
   }
 
   const c = g_config;
+  const nowTs     = (g_live && g_live.now_ts_s) || (g_health && g_health.now_ts_s) || 0;
+  const ntpSynced = !!(g_live && g_live.ntp_synced) || !!(g_health && g_health.ntp_synced);
+  const deviceTimeStr = nowTs > 1000000
+    ? new Date(nowTs * 1000).toLocaleString()
+    : 'Unknown';
   root.innerHTML = `
     <div class="settings-page">
       <div class="settings-section">
@@ -598,6 +808,23 @@ async function renderSettings() {
       </div>
 
       <div class="settings-section">
+        <div class="settings-section-title">Time</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Device Time</label>
+            <div style="font-size:15px;font-weight:600;color:var(--text-primary);padding:6px 0">${deviceTimeStr}</div>
+            <div class="help">Snapshot from last live data poll</div>
+          </div>
+          <div class="form-group">
+            <label>NTP Status</label>
+            <div style="padding:6px 0">
+              <span class="charging-pill ${ntpSynced ? 'pill-charging' : 'pill-idle'}">${ntpSynced ? 'Synced' : 'Not synced'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-section-title">CAN / Inverter</div>
         <div class="form-row">
           <div class="form-group">
@@ -680,13 +907,77 @@ async function renderSettings() {
       </div>
 
       <div class="settings-section" style="margin-top:32px">
+        <div class="settings-section-title">Charts</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Choose which series to display on each dashboard chart card.
+          Each card has a left axis and a right axis — pick any combination.
+        </p>
+        ${(cc => `
+        <div class="form-row">
+          <div class="form-group">
+            <label>Chart A</label>
+            <select id="cfg-chart-a">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${cc.a === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Chart B</label>
+            <select id="cfg-chart-b">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${cc.b === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+        </div>
+        `)(getChartConfig())}
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-primary" onclick="saveChartConfig()">Apply</button>
+        </div>
+        <div id="chart-cfg-feedback" class="feedback-msg"></div>
+      </div>
+
+      <div class="settings-section" style="margin-top:32px">
         <div class="settings-section-title">Account</div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
-        ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}
+        ${c.auth_enabled
+          ? `<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
+             ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}`
+          : `<p style="font-size:13px;color:var(--color-warning);margin-bottom:14px">
+               No password set — set one below to enable authentication.
+             </p>`}
         ${pwField('pw-new',     'New password',     'new-password',     'New password')}
         ${pwField('pw-confirm', 'Confirm new password', 'new-password', 'Repeat new password')}
         <div id="pw-feedback" class="feedback-msg"></div>
         <button class="btn btn-primary" style="margin-top:8px" onclick="changePassword()">Save password</button>
+      </div>
+
+      <div class="settings-section" style="margin-top:32px">
+        <div class="settings-section-title">System</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Firmware</label>
+            <div class="settings-info-val">${g_health ? g_health.version : '—'}</div>
+            <div class="help">${g_health ? g_health.build : ''}</div>
+          </div>
+          <div class="form-group">
+            <label>UI</label>
+            <div class="settings-info-val">h2-mvp-2</div>
+            <div class="help">Served from LittleFS</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Uptime</label>
+            <div class="settings-info-val">${g_health ? formatUptime(g_health.uptime_s) : '—'}</div>
+          </div>
+          <div class="form-group">
+            <label>Free heap</label>
+            <div class="settings-info-val">${g_health && g_health.free_heap_b
+              ? (g_health.free_heap_b / 1024).toFixed(0) + ' KB'
+              : '—'}</div>
+          </div>
+        </div>
       </div>
 
       <div class="settings-section settings-section-danger" style="margin-top:24px">
@@ -852,16 +1143,20 @@ function togglePw(id) {
 
 /* ── Change password ────────────────────────────────────────────────────────── */
 async function changePassword() {
-  const cur = document.getElementById('pw-current').value;
-  const nw  = document.getElementById('pw-new').value;
-  const cfm = document.getElementById('pw-confirm').value;
-  const msg = document.getElementById('pw-feedback');
+  const authEnabled = g_config && g_config.auth_enabled;
+  const curEl = document.getElementById('pw-current');
+  const cur   = curEl ? curEl.value : '';
+  const nw    = document.getElementById('pw-new').value;
+  const cfm   = document.getElementById('pw-confirm').value;
+  const msg   = document.getElementById('pw-feedback');
   msg.className = 'feedback-msg';
   msg.textContent = '';
 
-  if (!cur || !nw || !cfm) {
+  if ((authEnabled && !cur) || !nw || !cfm) {
     msg.className = 'feedback-msg err';
-    msg.textContent = 'All three fields are required.';
+    msg.textContent = authEnabled
+      ? 'All three fields are required.'
+      : 'New password and confirmation are required.';
     return;
   }
   if (nw !== cfm) {
@@ -883,7 +1178,7 @@ async function changePassword() {
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
       if (data.csrf) sessionStorage.setItem('csrf', data.csrf);
-      document.getElementById('pw-current').value = '';
+      if (curEl) curEl.value = '';
       document.getElementById('pw-new').value = '';
       document.getElementById('pw-confirm').value = '';
       msg.className = 'feedback-msg ok';
@@ -891,7 +1186,7 @@ async function changePassword() {
     } else if (r.status === 403) {
       msg.className = 'feedback-msg err';
       msg.textContent = 'Current password is incorrect.';
-      document.getElementById('pw-current').value = '';
+      if (curEl) curEl.value = '';
     } else {
       const data = await r.json().catch(() => ({}));
       msg.className = 'feedback-msg err';
@@ -1025,4 +1320,11 @@ async function checkAuthState() {
   // Poll /api/health every 10 s for MQTT indicator.
   fetchHealth();
   setInterval(fetchHealth, 10000);
+
+  // Refresh history charts every 60 s (only when dashboard is active).
+  setInterval(() => {
+    if (window.location.pathname === '/' || window.location.pathname === '/dashboard') {
+      loadCharts();
+    }
+  }, 60000);
 })();

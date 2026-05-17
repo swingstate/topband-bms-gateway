@@ -3,8 +3,10 @@
 #include "net/wifi.h"
 #include "storage/lfs_store.h"
 #include "storage/config.h"
+#include "storage/ui_provisioner.h"
 #include "app/boot.h"
 #include "esp_log.h"
+#include "esp_http_server.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +14,19 @@
 static const char* TAG = "web_static";
 
 // Extension → MIME-type lookup.
+// Strips a trailing ".gz" before matching so pre-compressed files get the
+// correct Content-Type of the underlying asset.
 static const char* mime_for(const char* path) {
+  // Work on a copy with .gz stripped.
+  char tmp[256];
+  size_t plen = strlen(path);
+  if (plen > 3 && strcmp(path + plen - 3, ".gz") == 0) {
+    size_t base_len = plen - 3;
+    if (base_len >= sizeof(tmp)) base_len = sizeof(tmp) - 1;
+    memcpy(tmp, path, base_len);
+    tmp[base_len] = '\0';
+    path = tmp;
+  }
   const char* ext = strrchr(path, '.');
   if (!ext) return "application/octet-stream";
   if (strcmp(ext, ".html") == 0) return "text/html; charset=utf-8";
@@ -26,10 +40,43 @@ static const char* mime_for(const char* path) {
   return "application/octet-stream";
 }
 
+// Replaces every occurrence of `find` in `src` (length `src_len`) with
+// `replace`. Returns a new malloc'd buffer; caller must free(). Sets *out_len.
+// Returns nullptr on OOM.
+static char* multi_replace(const char* src, size_t src_len,
+                            const char* find, const char* replace,
+                            size_t* out_len) {
+  size_t find_len    = strlen(find);
+  size_t replace_len = strlen(replace);
+
+  size_t count = 0;
+  const char* p = src;
+  while ((p = strstr(p, find)) != nullptr) { count++; p += find_len; }
+
+  size_t result_len = src_len - count * find_len + count * replace_len;
+  char* out = (char*)malloc(result_len + 1);
+  if (!out) return nullptr;
+
+  char* dst = out;
+  const char* s = src;
+  const char* match;
+  while ((match = strstr(s, find)) != nullptr) {
+    size_t before = (size_t)(match - s);
+    memcpy(dst, s, before);  dst += before;
+    memcpy(dst, replace, replace_len); dst += replace_len;
+    s = match + find_len;
+  }
+  size_t tail = (size_t)((src + src_len) - s);
+  memcpy(dst, s, tail);
+  dst[tail] = '\0';
+  *out_len = result_len;
+  return out;
+}
+
 // ── Template-substitute index.html ────────────────────────────────────────────
-// Replaces {{CSRF_TOKEN}} with the live session token so JS can send it on
-// mutations.  File is read fully (< 16 KB in practice), substituted in-place,
-// then streamed to the client.  Substitution is case-exact and single-pass.
+// Two-pass substitution on the raw file bytes:
+//   {{CSRF_TOKEN}}  → live session token
+//   {{UI_VERSION}}  → cache-buster string in asset query params
 
 static esp_err_t serve_index_html(httpd_req_t* req, const char* lfs_path) {
   FILE* f = fopen(lfs_path, "rb");
@@ -48,52 +95,47 @@ static esp_err_t serve_index_html(httpd_req_t* req, const char* lfs_path) {
     return httpd_resp_sendstr(req, "{\"error\":\"File size invalid\"}");
   }
 
-  char* raw = (char*)malloc((size_t)file_size + 1);
-  if (!raw) {
+  char* buf = (char*)malloc((size_t)file_size + 1);
+  if (!buf) {
     fclose(f);
     httpd_resp_set_status(req, "500 Internal Server Error");
     return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
   }
 
-  size_t n = fread(raw, 1, (size_t)file_size, f);
+  size_t buf_len = fread(buf, 1, (size_t)file_size, f);
   fclose(f);
-  raw[n] = '\0';
+  buf[buf_len] = '\0';
 
-  const char* token = web::auth::get_csrf_token();
-  const char* placeholder = "{{CSRF_TOKEN}}";
-  size_t ph_len    = strlen(placeholder);
-  size_t token_len = strlen(token);
-
-  // Find the placeholder and replace it.
-  char* pos = strstr(raw, placeholder);
-  if (!pos) {
-    // No placeholder found — serve as-is.
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
-    esp_err_t ret = httpd_resp_send(req, raw, (ssize_t)n);
-    free(raw);
-    return ret;
+  // Pass 1: {{CSRF_TOKEN}}
+  {
+    size_t out_len;
+    char* next = multi_replace(buf, buf_len, "{{CSRF_TOKEN}}",
+                               web::auth::get_csrf_token(), &out_len);
+    free(buf);
+    if (!next) {
+      httpd_resp_set_status(req, "500 Internal Server Error");
+      return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+    }
+    buf = next; buf_len = out_len;
   }
 
-  // Build substituted output: pre + token + post.
-  size_t pre_len  = (size_t)(pos - raw);
-  size_t post_len = n - pre_len - ph_len;
-  size_t out_len  = pre_len + token_len + post_len;
-  char* out = (char*)malloc(out_len + 1);
-  if (!out) {
-    free(raw);
-    httpd_resp_set_status(req, "500 Internal Server Error");
-    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  // Pass 2: {{UI_VERSION}} (appears in ?v= query params on asset URLs)
+  {
+    size_t out_len;
+    char* next = multi_replace(buf, buf_len, "{{UI_VERSION}}",
+                               storage::ui_provisioner::UI_VERSION, &out_len);
+    free(buf);
+    if (!next) {
+      httpd_resp_set_status(req, "500 Internal Server Error");
+      return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+    }
+    buf = next; buf_len = out_len;
   }
-  memcpy(out, raw, pre_len);
-  memcpy(out + pre_len, token, token_len);
-  memcpy(out + pre_len + token_len, pos + ph_len, post_len);
-  free(raw);
 
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
-  esp_err_t ret = httpd_resp_send(req, out, (ssize_t)out_len);
-  free(out);
+  esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)buf_len);
+  free(buf);
   return ret;
 }
 
@@ -181,7 +223,20 @@ esp_err_t handle_wifi_setup_page(httpd_req_t* req) {
 }
 
 esp_err_t handle_static(httpd_req_t* req) {
-  const char* uri = req->uri;
+  // Strip query string (e.g. ?v=h2-mvp-2 cache-buster) before path lookup.
+  char uri_buf[256];
+  const char* raw_uri = req->uri;
+  const char* q = strchr(raw_uri, '?');
+  if (q) {
+    size_t plen = (size_t)(q - raw_uri);
+    if (plen >= sizeof(uri_buf)) plen = sizeof(uri_buf) - 1;
+    memcpy(uri_buf, raw_uri, plen);
+    uri_buf[plen] = '\0';
+  } else {
+    strncpy(uri_buf, raw_uri, sizeof(uri_buf) - 1);
+    uri_buf[sizeof(uri_buf) - 1] = '\0';
+  }
+  const char* uri = uri_buf;
 
   // AP mode: redirect everything to setup page.
   if (net::wifi::is_ap_mode()) {
@@ -205,11 +260,13 @@ esp_err_t handle_static(httpd_req_t* req) {
   }
 
   if (!storage::lfs::exists(lfs_path)) {
-    // Redirect unknown paths to login to avoid confusing 404s.
-    if (strcmp(lfs_path, "/lfs/ui/index.html") == 0) {
-      httpd_resp_set_status(req, "302 Found");
-      httpd_resp_set_hdr(req, "Location", "/login.html");
-      return httpd_resp_sendstr(req, "");
+    // SPA fallback: paths without a file extension are client-side routes
+    // (e.g. /dashboard, /settings). Serve index.html so the JS router takes over.
+    const char* last_seg = strrchr(uri, '/');
+    bool has_extension   = last_seg && strchr(last_seg, '.');
+    if (!has_extension) {
+      snprintf(lfs_path, sizeof(lfs_path), "/lfs/ui/index.html");
+      return serve_index_html(req, lfs_path);
     }
     httpd_resp_set_status(req, "404 Not Found");
     httpd_resp_set_type(req, "application/json");
@@ -223,18 +280,36 @@ esp_err_t handle_static(httpd_req_t* req) {
   if (is_index) return serve_index_html(req, lfs_path);
   if (is_login) return serve_login_html(req, lfs_path);
 
-  // Generic file: stream in 2 KB chunks.
-  FILE* f = fopen(lfs_path, "rb");
+  // Check if client accepts gzip and a pre-compressed companion exists.
+  char enc_buf[64] = {};
+  bool client_gzip = false;
+  if (httpd_req_get_hdr_value_str(req, "Accept-Encoding",
+                                   enc_buf, sizeof(enc_buf)) == ESP_OK) {
+    client_gzip = (strstr(enc_buf, "gzip") != nullptr);
+  }
+
+  char gz_path[608];
+  bool serve_gz = false;
+  if (client_gzip) {
+    snprintf(gz_path, sizeof(gz_path), "%s.gz", lfs_path);
+    serve_gz = storage::lfs::exists(gz_path);
+  }
+
+  const char* serve_path = serve_gz ? gz_path : lfs_path;
+  FILE* f = fopen(serve_path, "rb");
   if (!f) {
     httpd_resp_set_status(req, "500 Internal Server Error");
     return httpd_resp_sendstr(req, "{\"error\":\"File open failed\"}");
   }
 
-  const char* mime = mime_for(lfs_path);
-  httpd_resp_set_type(req, mime);
+  httpd_resp_set_type(req, mime_for(lfs_path));  // MIME from uncompressed name
   httpd_resp_set_hdr(req, "Cache-Control", "max-age=3600");
+  if (serve_gz) {
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+  }
 
-  static constexpr size_t CHUNK = 2048;
+  static constexpr size_t CHUNK = 4096;
   char* buf = (char*)malloc(CHUNK);
   if (!buf) {
     fclose(f);
@@ -247,7 +322,7 @@ esp_err_t handle_static(httpd_req_t* req) {
   while ((nr = fread(buf, 1, CHUNK, f)) > 0) {
     ret = httpd_resp_send_chunk(req, buf, (ssize_t)nr);
     if (ret != ESP_OK) {
-      ESP_LOGD(TAG, "client disconnected during static send: %s", lfs_path);
+      ESP_LOGD(TAG, "client disconnected during static send: %s", serve_path);
       break;
     }
   }

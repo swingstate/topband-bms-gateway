@@ -9,6 +9,7 @@ The UI_VERSION string is read from src/storage/ui_provisioner.h so the
 firmware constant and the tarball always agree.
 """
 
+import gzip
 import re
 import subprocess
 import tarfile
@@ -55,12 +56,29 @@ def build_tarball():
     # Build plain tar in memory, then write atomically.
     # GNU_FORMAT avoids PAX extended headers (././@PaxHeader type 'x') that
     # Python 3.8+ emits by default; microtar cannot iterate past them.
+    #
+    # For text assets (JS, CSS, HTML, SVG) we also add a pre-compressed
+    # <name>.gz companion so the HTTP server can serve gzip to capable
+    # browsers without compressing on the fly.
+    COMPRESS_EXTS = {".js", ".css", ".html", ".svg"}
+    gz_count = 0
+    gz_saved = 0
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tar:
         for src in sorted(UI_DIR.rglob("*")):
             if src.is_file():
                 arcname = src.relative_to(UI_DIR).as_posix()
                 tar.add(str(src), arcname=arcname)
+                if src.suffix.lower() in COMPRESS_EXTS:
+                    data    = src.read_bytes()
+                    gz_data = gzip.compress(data, compresslevel=9)
+                    if len(gz_data) < len(data):
+                        info      = tarfile.TarInfo(name=arcname + ".gz")
+                        info.size = len(gz_data)
+                        tar.addfile(info, io.BytesIO(gz_data))
+                        gz_count += 1
+                        gz_saved += len(data) - len(gz_data)
 
     raw = buf.getvalue()
     tmp = OUT_TAR.with_suffix(".tar.tmp")
@@ -69,7 +87,8 @@ def build_tarball():
 
     n_files = sum(1 for f in UI_DIR.rglob("*") if f.is_file())
     size_kb  = len(raw) / 1024
-    print(f"[build_ui] Packed {n_files} files → {OUT_TAR.name} "
+    print(f"[build_ui] Packed {n_files} files + {gz_count} .gz companions "
+          f"({gz_saved//1024} KB saved by gzip) → {OUT_TAR.name} "
           f"({size_kb:.1f} KB, version={ui_version})")
 
     return raw

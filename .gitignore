@@ -61,3 +61,6 @@ web/ui/ui_version.txt
 
 # ─── Dependency managers ───
 node_modules/
+# Local Claude sync helpers (not for upstream)
+claude_sync_overview.txt
+overview.sh
