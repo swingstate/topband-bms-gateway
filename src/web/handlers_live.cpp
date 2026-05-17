@@ -162,11 +162,201 @@ esp_err_t handle_live(httpd_req_t* req) {
   return ret;
 }
 
+// ── HStream helpers (same pattern as handlers_history / handlers_diag) ──────
+
+namespace {
+
+struct HS {
+  httpd_req_t* req;
+  char         buf[2048];
+  size_t       pos;
+  esp_err_t    err;
+};
+
+static void hs_flush(HS& s) {
+  if (s.pos > 0 && s.err == ESP_OK)
+    s.err = httpd_resp_send_chunk(s.req, s.buf, (ssize_t)s.pos);
+  s.pos = 0;
+}
+static void hs_raw(HS& s, const char* d, size_t n) {
+  while (n > 0 && s.err == ESP_OK) {
+    size_t sp = sizeof(s.buf) - s.pos;
+    size_t cp = n < sp ? n : sp;
+    memcpy(s.buf + s.pos, d, cp);
+    s.pos += cp; n -= cp; d += cp;
+    if (s.pos == sizeof(s.buf)) hs_flush(s);
+  }
+}
+static void hs_str(HS& s, const char* str) { hs_raw(s, str, strlen(str)); }
+static void hs_u32(HS& s, uint32_t v) {
+  char t[12]; snprintf(t, sizeof(t), "%u", (unsigned)v); hs_str(s, t);
+}
+static void hs_i32(HS& s, int32_t v) {
+  char t[12]; snprintf(t, sizeof(t), "%d", (int)v); hs_str(s, t);
+}
+static void hs_f3(HS& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.3f", v); hs_str(s, t);
+}
+static void hs_f2(HS& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.2f", v); hs_str(s, t);
+}
+static void hs_f1(HS& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.1f", v); hs_str(s, t);
+}
+static void hs_bool(HS& s, bool v) { hs_str(s, v ? "true" : "false"); }
+static void hs_jstr(HS& s, const char* v) {
+  hs_str(s, "\"");
+  for (const char* p = v; *p; p++) {
+    if (*p == '"')       hs_str(s, "\\\"");
+    else if (*p == '\\') hs_str(s, "\\\\");
+    else if (*p == '\n') hs_str(s, "\\n");
+    else                 hs_raw(s, p, 1);
+  }
+  hs_str(s, "\"");
+}
+
+// Temperature label for each sensor index.
+// First 5 positions: T1..T5, then BAL, ENV, MOS.
+static const char* temp_label(int idx) {
+  static const char* const labels[] = { "T1","T2","T3","T4","T5","T6","T7","T8" };
+  if (idx < 0 || idx >= 8) return "T?";
+  return labels[idx];
+}
+
+}  // anonymous namespace
+
 esp_err_t handle_bms_id(httpd_req_t* req) {
+  // Extract pack id from URI: /api/bms/<id>
+  const char* uri = req->uri;
+  const char* last_slash = strrchr(uri, '/');
+  if (!last_slash || *(last_slash + 1) == '\0') {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"Missing pack id\"}");
+  }
+  int pack_id = atoi(last_slash + 1);
+
+  BmsSystemSnapshot snap = {};
+  bool has_snap = bus::snapshot_bus::read(snap);
+
+  if (!has_snap || pack_id < 0 || (uint8_t)pack_id >= snap.pack_count_configured) {
+    httpd_resp_set_status(req, "404 Not Found");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"Pack not found\"}");
+  }
+
+  bms::poller::PollerStats ps = {};
+  bms::poller::get_stats(ps);
+
+  const BmsPackSnapshot& p = snap.pack[pack_id];
+  uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+  uint32_t age_ms = (p.last_seen_ms > 0 && now_ms >= p.last_seen_ms)
+                    ? (now_ms - p.last_seen_ms) : 0;
+
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_status(req, "501 Not Implemented");
-  return httpd_resp_sendstr(req,
-    "{\"error\":\"Per-pack detail coming in Phase H\",\"code\":501}");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  HS s{req, {}, 0, ESP_OK};
+
+  hs_str(s, "{");
+  hs_str(s, "\"id\":"); hs_u32(s, (uint32_t)pack_id);
+  hs_str(s, ",\"online\":"); hs_bool(s, p.online);
+  hs_str(s, ",\"last_seen_age_ms\":"); hs_u32(s, age_ms);
+  hs_str(s, ",\"soc\":"); hs_u32(s, p.soc);
+  hs_str(s, ",\"soh\":"); hs_u32(s, p.soh);
+  hs_str(s, ",\"cycles\":"); hs_u32(s, p.cycles);
+  hs_str(s, ",\"pack_v\":"); hs_f2(s, p.pack_voltage);
+  hs_str(s, ",\"current\":"); hs_f2(s, p.pack_current);
+  hs_str(s, ",\"power\":"); hs_f1(s, p.pack_voltage * p.pack_current);
+  hs_str(s, ",\"rem_ah\":"); hs_f1(s, p.rem_ah);
+  hs_str(s, ",\"full_ah\":"); hs_f1(s, p.full_ah);
+  hs_str(s, ",\"cell_count\":"); hs_u32(s, p.cell_count);
+  hs_str(s, ",\"cell_min_v\":"); hs_f3(s, p.cell_min_v);
+  hs_str(s, ",\"cell_max_v\":"); hs_f3(s, p.cell_max_v);
+  hs_str(s, ",\"cell_min_idx\":"); hs_u32(s, p.cell_min_idx);
+  hs_str(s, ",\"cell_max_idx\":"); hs_u32(s, p.cell_max_idx);
+
+  // drift in mV integer
+  int32_t drift_mv = (int32_t)(p.cell_drift_v * 1000.0f + 0.5f);
+  hs_str(s, ",\"drift_mv\":"); hs_i32(s, drift_mv);
+
+  // Cell voltages array
+  hs_str(s, ",\"cells\":[");
+  for (uint8_t c = 0; c < p.cell_count && c < 16; c++) {
+    if (c > 0) hs_str(s, ",");
+    hs_f3(s, p.cell_v[c]);
+  }
+  hs_str(s, "]");
+
+  // Temperatures: regular sensors + MOS + ENV + BAL (if non-zero)
+  hs_str(s, ",\"temps\":[");
+  bool first_temp = true;
+  for (uint8_t t = 0; t < p.temp_count && t < 8; t++) {
+    if (!first_temp) hs_str(s, ",");
+    first_temp = false;
+    hs_str(s, "{\"lbl\":"); hs_jstr(s, temp_label(t));
+    hs_str(s, ",\"val\":"); hs_f1(s, p.temp_c[t]);
+    hs_str(s, "}");
+  }
+  // Supplemental sensors when non-zero
+  if (p.mosfet_temp_c != 0.0f) {
+    if (!first_temp) hs_str(s, ",");
+    first_temp = false;
+    hs_str(s, "{\"lbl\":\"MOS\",\"val\":"); hs_f1(s, p.mosfet_temp_c); hs_str(s, "}");
+  }
+  if (p.environment_temp_c != 0.0f) {
+    if (!first_temp) hs_str(s, ",");
+    first_temp = false;
+    hs_str(s, "{\"lbl\":\"ENV\",\"val\":"); hs_f1(s, p.environment_temp_c); hs_str(s, "}");
+  }
+  if (p.balancer_temp_c != 0.0f) {
+    if (!first_temp) hs_str(s, ",");
+    hs_str(s, "{\"lbl\":\"BAL\",\"val\":"); hs_f1(s, p.balancer_temp_c); hs_str(s, "}");
+  }
+  hs_str(s, "]");
+
+  // Alarm bits as hex string
+  char alarm_hex[20];
+  snprintf(alarm_hex, sizeof(alarm_hex), "0x%016llX",
+           (unsigned long long)p.alarm_bits);
+  hs_str(s, ",\"alarm_bits\":"); hs_jstr(s, alarm_hex);
+
+  // Sysparam section
+  hs_str(s, ",\"sysparam\":{");
+  hs_str(s, "\"valid\":"); hs_bool(s, p.sysparam_valid);
+  if (p.sysparam_valid) {
+    hs_str(s, ",\"cell_high_v\":"); hs_f3(s, p.sys_cell_high_v);
+    hs_str(s, ",\"cell_low_v\":"); hs_f3(s, p.sys_cell_low_v);
+    hs_str(s, ",\"module_high_v\":"); hs_f2(s, p.sys_module_high_v);
+    hs_str(s, ",\"module_low_v\":"); hs_f2(s, p.sys_module_low_v);
+    hs_str(s, ",\"module_under_v\":"); hs_f2(s, p.sys_module_under_v);
+    hs_str(s, ",\"charge_t_min\":"); hs_f1(s, p.sys_charge_low_t);
+    hs_str(s, ",\"charge_t_max\":"); hs_f1(s, p.sys_charge_high_t);
+    hs_str(s, ",\"discharge_t_min\":"); hs_f1(s, p.sys_discharge_low_t);
+    hs_str(s, ",\"discharge_t_max\":"); hs_f1(s, p.sys_discharge_high_t);
+    hs_str(s, ",\"charge_max_a\":"); hs_f1(s, p.sys_charge_max_a);
+    hs_str(s, ",\"discharge_max_a\":"); hs_f1(s, p.sys_discharge_max_a);
+  }
+  hs_str(s, "}");
+
+  // Per-pack RS485 stats
+  const auto& ps_pack = ps.pack[pack_id];
+  uint32_t success_pct = (ps_pack.polls > 0)
+    ? (ps_pack.ok * 100u / ps_pack.polls)
+    : 0;
+  hs_str(s, ",\"rs485\":{");
+  hs_str(s, "\"polls\":"); hs_u32(s, ps_pack.polls);
+  hs_str(s, ",\"ok\":"); hs_u32(s, ps_pack.ok);
+  hs_str(s, ",\"timeouts\":"); hs_u32(s, ps_pack.timeouts);
+  hs_str(s, ",\"errors\":"); hs_u32(s, ps_pack.errors);
+  hs_str(s, ",\"success_pct\":"); hs_u32(s, success_pct);
+  hs_str(s, "}");
+
+  hs_str(s, "}");
+  hs_flush(s);
+  if (s.err == ESP_OK) s.err = httpd_resp_send_chunk(s.req, nullptr, 0);
+  return s.err;
 }
 
 }  // namespace web

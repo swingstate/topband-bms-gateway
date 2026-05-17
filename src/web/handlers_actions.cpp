@@ -4,6 +4,7 @@
 #include "app/version.h"
 #include "storage/config.h"
 #include "storage/nvs_store.h"
+#include "storage/ui_provisioner.h"
 #include "mqtt/publisher.h"
 #include "net/ntp.h"
 #include "nvs_flash.h"
@@ -41,7 +42,8 @@ esp_err_t handle_health(httpd_req_t* req) {
   doc["ok"]           = true;
   doc["uptime_s"]     = uptime_s;
   doc["auth_enabled"] = cfg.auth_enabled;
-  doc["version"]      = FW_VERSION;
+  doc["version"]      = FW_VERSION_FULL;
+  doc["ui_version"]   = storage::ui_provisioner::UI_VERSION;
   doc["build"]        = BUILD_DATE " " BUILD_TIME;
 
   JsonObject mqtt = doc["mqtt"].to<JsonObject>();

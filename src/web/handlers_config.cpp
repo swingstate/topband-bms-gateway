@@ -97,6 +97,12 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     return send_json_error(req, 400, msg);
   }
 
+  // Reject enabling auth when no password hash is stored.
+  if (new_cfg.auth_enabled && new_cfg.auth_hash[0] == '\0') {
+    ESP_LOGW(TAG, "config POST: auth_enabled=true but auth_hash is empty");
+    return send_json_error(req, 400, "Cannot enable auth without password");
+  }
+
   // Snapshot current MQTT settings for change detection before overwriting.
   const Config& old_cfg = app::get_config();
   bool mqtt_changed = (old_cfg.mqtt_enabled    != new_cfg.mqtt_enabled   ||

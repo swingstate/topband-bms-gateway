@@ -94,8 +94,8 @@ static void enter_captive_portal() {
 }
 
 void run_boot() {
-  ESP_LOGI(TAG, "TopBand BMS Gateway %s  git=%s  built=%s %s",
-           FW_VERSION, GIT_SHA, BUILD_DATE, BUILD_TIME);
+  ESP_LOGI(TAG, "boot: TopBand BMS Gateway %s  built=%s %s",
+           FW_VERSION_FULL, BUILD_DATE, BUILD_TIME);
 
   // ── Step 0: Log ring — install vprintf hook before any ESP_LOG* call ────
   diag::log_ring::init(200);
@@ -279,7 +279,7 @@ void run_boot() {
 
   // ── Step 12: Boot-complete alert ─────────────────────────────────────────
   diag::alerts::emit(diag::alerts::Severity::Info, "boot",
-                     "started, version=%s", FW_VERSION);
+                     "started, version=%s", FW_VERSION_FULL);
 
   // ── Step 13: Heartbeat loop ───────────────────────────────────────────────
   ESP_LOGI(TAG, "Boot complete — heartbeat every 5 s");
