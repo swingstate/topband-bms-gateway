@@ -4,6 +4,7 @@
 #include "bus/queues.h"
 #include "app/boot.h"
 #include "app/version.h"
+#include "diag/alerts.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_timer.h"
@@ -130,6 +131,8 @@ static void mqtt_event_handler(void* /*arg*/, esp_event_base_t /*base*/,
       s_state = mqtt::publisher::State::Connected;
       s_just_connected = true;
       portEXIT_CRITICAL(&s_mux);
+      diag::alerts::emit(diag::alerts::Severity::Info, "mqtt",
+                         "connected to %s", s_cfg.mqtt_host);
       break;
 
     case MQTT_EVENT_DISCONNECTED:
@@ -137,6 +140,7 @@ static void mqtt_event_handler(void* /*arg*/, esp_event_base_t /*base*/,
       s_state = mqtt::publisher::State::Disconnected;
       portEXIT_CRITICAL(&s_mux);
       ESP_LOGW(TAG, "MQTT disconnected — auto-reconnect pending");
+      diag::alerts::emit(diag::alerts::Severity::Warn, "mqtt", "disconnected");
       break;
 
     case MQTT_EVENT_ERROR:

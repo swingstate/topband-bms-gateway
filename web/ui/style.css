@@ -158,6 +158,24 @@ a { text-decoration: none; color: inherit; }
   cursor: not-allowed;
 }
 
+.alert-badge {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  background: var(--brand-coral);
+  color: #fff;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  pointer-events: none;
+}
+
 /* ── Main layout ───────────────────────────────────────────────────────────── */
 .main {
   flex: 1;
@@ -662,3 +680,67 @@ a { text-decoration: none; color: inherit; }
   background: color-mix(in srgb, var(--color-alarm) 5%, transparent);
 }
 .settings-section-title-danger { color: var(--color-alarm) !important; }
+
+/* ── Alerts page ───────────────────────────────────────────────────────────── */
+.alerts-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.alerts-filter-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.filter-pill {
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.filter-pill.active, .filter-pill:hover { border-color: var(--brand-teal); color: var(--brand-teal); background: color-mix(in srgb, var(--brand-teal) 10%, transparent); }
+.alert-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.alert-row:hover { background: var(--bg-card-hover); }
+.sev-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+.sev-info     { background: var(--brand-teal); }
+.sev-warn     { background: var(--color-warning); }
+.sev-error    { background: var(--brand-coral); }
+.sev-critical { background: var(--brand-coral); box-shadow: 0 0 6px var(--brand-coral); }
+.alert-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; display: flex; gap: 8px; }
+.source-pill {
+  padding: 1px 7px; border-radius: 8px;
+  font-size: 10px; font-weight: 700;
+  background: color-mix(in srgb, var(--brand-teal) 15%, transparent);
+  color: var(--brand-teal);
+}
+
+/* ── Diag page ─────────────────────────────────────────────────────────────── */
+.diag-section { margin-bottom: 24px; }
+.diag-section h3 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 8px; }
+.diag-kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; }
+.diag-kv { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
+.diag-kv span:first-child { color: var(--text-muted); }
+.diag-kv span:last-child  { font-weight: 600; color: var(--text-primary); }
+.diag-log-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.diag-tasks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.diag-tasks-table th { text-align: left; padding: 4px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
+.diag-tasks-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); }

@@ -7,6 +7,9 @@
 #include "storage/boot_reasons.h"
 #include "storage/history_store.h"
 #include "storage/energy_store.h"
+#include "storage/alerts_store.h"
+#include "diag/log_ring.h"
+#include "diag/alerts.h"
 #include "bus/queues.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
@@ -93,6 +96,9 @@ static void enter_captive_portal() {
 void run_boot() {
   ESP_LOGI(TAG, "TopBand BMS Gateway %s  git=%s  built=%s %s",
            FW_VERSION, GIT_SHA, BUILD_DATE, BUILD_TIME);
+
+  // ── Step 0: Log ring — install vprintf hook before any ESP_LOG* call ────
+  diag::log_ring::init(200);
 
   // ── Step 1: NVS ──────────────────────────────────────────────────────────
   if (!init_nvs()) {
@@ -183,6 +189,8 @@ void run_boot() {
 
     storage::boot_reasons::clear();
     ESP_LOGW(TAG, "5x reset applied — device will start in captive portal mode");
+    diag::alerts::emit(diag::alerts::Severity::Critical, "boot",
+                       "5x power-cycle reset triggered");
   }
 
   // ── Step 8: WiFi STA attempt or captive portal ────────────────────────────
@@ -208,12 +216,14 @@ void run_boot() {
     }
   }
 
-  // ── Step 8.5: History and energy stores (LittleFS must be ready) ─────────
+  // ── Step 8.5: History, energy, and alerts stores (LittleFS must be ready) ─
   {
-    bool hist_ok = storage::history_store::init();
-    bool ener_ok = storage::energy_store::init();
-    ESP_LOGI(TAG, "history_store=%s energy_store=%s",
-             hist_ok ? "ok" : "FAIL", ener_ok ? "ok" : "FAIL");
+    bool hist_ok   = storage::history_store::init();
+    bool ener_ok   = storage::energy_store::init();
+    bool alerts_ok = storage::alerts_store::init();
+    ESP_LOGI(TAG, "history_store=%s energy_store=%s alerts_store=%s",
+             hist_ok ? "ok" : "FAIL", ener_ok ? "ok" : "FAIL",
+             alerts_ok ? "ok" : "FAIL");
   }
 
   // ── Step 9: Main HTTP server (STA mode only) ──────────────────────────────
@@ -267,7 +277,11 @@ void run_boot() {
   }
 #endif
 
-  // ── Step 12: Heartbeat loop ───────────────────────────────────────────────
+  // ── Step 12: Boot-complete alert ─────────────────────────────────────────
+  diag::alerts::emit(diag::alerts::Severity::Info, "boot",
+                     "started, version=%s", FW_VERSION);
+
+  // ── Step 13: Heartbeat loop ───────────────────────────────────────────────
   ESP_LOGI(TAG, "Boot complete — heartbeat every 5 s");
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(5000));

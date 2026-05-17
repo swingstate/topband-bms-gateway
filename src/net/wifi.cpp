@@ -1,4 +1,5 @@
 #include "wifi.h"
+#include "diag/alerts.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -34,6 +35,7 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    bool was_connected = g_connected;
     g_connected = false;
     if (g_mode == net::wifi::Mode::StaConnecting && g_retry < MAX_RETRY) {
       g_retry++;
@@ -43,12 +45,24 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
       ESP_LOGE(TAG, "STA connect failed after %d retries", g_retry);
       if (g_events) xEventGroupSetBits(g_events, BIT_FAILED);
     }
+    if (was_connected) {
+      diag::alerts::emit(diag::alerts::Severity::Warn, "wifi", "disconnected");
+    }
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     g_connected = true;
     g_retry     = 0;
     g_mode      = net::wifi::Mode::StaConnected;
     ip_event_got_ip_t* ev = (ip_event_got_ip_t*)data;
     ESP_LOGI(TAG, "STA connected — IP " IPSTR, IP2STR(&ev->ip_info.ip));
+    char ssid[33] = {};
+    wifi_config_t wc = {};
+    if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK) {
+      snprintf(ssid, sizeof(ssid), "%s", (char*)wc.sta.ssid);
+    }
+    char ip_str[16] = {};
+    snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
+    diag::alerts::emit(diag::alerts::Severity::Info, "wifi",
+                       "connected to %s, IP=%s", ssid, ip_str);
     if (g_events) xEventGroupSetBits(g_events, BIT_CONNECTED);
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
     auto* ev = (wifi_event_ap_staconnected_t*)data;

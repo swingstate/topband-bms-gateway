@@ -5,6 +5,7 @@
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
 #include "can/tx.h"
+#include "storage/alerts_store.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -40,14 +41,16 @@ static void post_mqtt(const MqttPublishRequest& req) {
 static void housekeeping_task_entry(void* /*arg*/) {
   ESP_LOGI(TAG, "HousekeepingTask started on Core 1");
 
-  uint32_t last_data_ms       = 0;
-  uint32_t last_diag_ms       = 0;
-  uint32_t last_cells_ms[16]  = {};
-  uint8_t  cells_rr           = 0;
+  uint32_t last_data_ms        = 0;
+  uint32_t last_diag_ms        = 0;
+  uint32_t last_cells_ms[16]   = {};
+  uint32_t last_alert_flush_ms = 0;
+  uint8_t  cells_rr            = 0;
 
-  static constexpr uint32_t DATA_PERIOD_MS  = 5000;
-  static constexpr uint32_t DIAG_PERIOD_MS  = 30000;
-  static constexpr uint32_t CELLS_PERIOD_MS = 20000;
+  static constexpr uint32_t DATA_PERIOD_MS         = 5000;
+  static constexpr uint32_t DIAG_PERIOD_MS         = 30000;
+  static constexpr uint32_t CELLS_PERIOD_MS        = 20000;
+  static constexpr uint32_t ALERT_FLUSH_PERIOD_MS  = 300000;  // 5 min
 
   for (;;) {
     uint32_t now_ms   = (uint32_t)(esp_timer_get_time() / 1000);
@@ -55,6 +58,25 @@ static void housekeeping_task_entry(void* /*arg*/) {
     uint64_t ts_ms    = (uint64_t)(esp_timer_get_time() / 1000);
 
     const Config& cfg = app::get_config();
+
+    // ── Alert queue drain (always, regardless of MQTT state) ─────────────────
+    // Process up to 8 alerts per cycle to bound stack time; use a static
+    // buffer to keep the AlertEntry (132 B) off the task stack.
+    {
+      static AlertEntry s_alert_entry;
+      for (int i = 0; i < 8; i++) {
+        if (!q_alert) break;
+        if (xQueueReceive(q_alert, &s_alert_entry, 0) != pdTRUE) break;
+        storage::alerts_store::append(s_alert_entry);
+      }
+    }
+
+    // ── Alert ring persist every 5 min ────────────────────────────────────────
+    if ((now_ms - last_alert_flush_ms) >= ALERT_FLUSH_PERIOD_MS ||
+        last_alert_flush_ms == 0) {
+      storage::alerts_store::persist();
+      last_alert_flush_ms = now_ms;
+    }
 
     if (!cfg.mqtt_enabled) {
       vTaskDelay(pdMS_TO_TICKS(1000));

@@ -231,3 +231,41 @@ target_compile_definitions(test_energy_integrator PRIVATE ${HOST_COMPILE_DEFS})
 target_compile_options(test_energy_integrator PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_energy_integrator PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_energy_integrator)
+
+# ── test_log_ring ─────────────────────────────────────────────────────────────
+# log_ring.cpp uses #ifdef NATIVE_BUILD to skip PSRAM alloc and vprintf hook.
+add_executable(test_log_ring
+  test_log_ring.cpp
+  ../../src/diag/log_ring.cpp
+)
+
+target_include_directories(test_log_ring PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_log_ring PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_log_ring PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_log_ring PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_log_ring)
+
+# ── test_alerts ───────────────────────────────────────────────────────────────
+# alerts.cpp uses #ifdef NATIVE_BUILD to skip FreeRTOS queue and IDF timer.
+# bus/queues.cpp provides queue handles; stubs defined in test file.
+add_executable(test_alerts
+  test_alerts.cpp
+  ../../src/diag/alerts.cpp
+  # queues.cpp omitted: test_alerts.cpp provides the extern globals, and
+  # queues.cpp drags in IDF headers (esp_log.h, freertos/queue.h) that
+  # are not available in the host build.
+)
+
+target_include_directories(test_alerts PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_alerts PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_alerts PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_alerts PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_alerts)
