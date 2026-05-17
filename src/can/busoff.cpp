@@ -1,5 +1,6 @@
 #include "can/busoff.h"
 #include "can/tx.h"
+#include "diag/alerts.h"
 #include <cstring>
 
 #ifndef NATIVE_BUILD
@@ -111,6 +112,7 @@ void can::busoff::tick(uint32_t now_ms) {
       s_state       = State::BUS_OFF_DETECTED;
       s_retry_at_ms = now_ms + s_backoff_ms;
       twai_initiate_recovery();  // begins 128+11 recessive bit sequence
+      diag::alerts::emit(diag::alerts::Severity::Error, "can", "bus-off entered");
     }
   } else if (s_state == State::BUS_OFF_DETECTED) {
     if (is_running) {
@@ -141,6 +143,7 @@ void can::busoff::tick(uint32_t now_ms) {
       s_state      = State::HEALTHY;
       s_backoff_ms = 1000;
       s_consec_fails = 0;
+      diag::alerts::emit(diag::alerts::Severity::Info, "can", "bus-off recovered");
     } else if (is_bus_off && now_ms >= s_retry_at_ms) {
       // Went bus-off again during recovery window
       ESP_LOGW(TAG, "BUS-OFF re-triggered during RECOVERING — retry (backoff=%lu ms)",

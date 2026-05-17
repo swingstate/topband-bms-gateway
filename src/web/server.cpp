@@ -4,6 +4,8 @@
 #include "handlers_config.h"
 #include "handlers_actions.h"
 #include "handlers_history.h"
+#include "handlers_diag.h"
+#include "handlers_alerts.h"
 #include "handlers_static.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -42,13 +44,13 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[16];
+static AuthCtx g_auth_ctx[20];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
                      const char* uri, httpd_method_t method,
                      esp_err_t (*handler)(httpd_req_t*)) {
-  if (g_auth_ctx_count >= 16) {
+  if (g_auth_ctx_count >= 20) {
     ESP_LOGE(TAG, "reg_auth: out of context slots");
     return;
   }
@@ -107,6 +109,11 @@ bool start_httpd(const Config& /*cfg*/) {
   // ── History endpoints (Phase H2) ─────────────────────────────────────────
   reg_auth(g_server, "/api/history",            HTTP_GET, handle_history);
   reg_auth(g_server, "/api/history/export.csv", HTTP_GET, handle_history_export);
+
+  // ── Diag and alerts endpoints (Phase H3a) ─────────────────────────────────
+  reg_auth(g_server, "/api/diag",    HTTP_GET,    handle_diag);
+  reg_auth(g_server, "/api/alerts",  HTTP_GET,    handle_alerts_get);
+  reg_auth(g_server, "/api/alerts",  HTTP_DELETE, handle_alerts_delete);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

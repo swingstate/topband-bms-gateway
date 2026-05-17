@@ -11,6 +11,7 @@
 #include "mqtt/payloads.h"
 #include "net/ntp.h"
 #include "app/boot.h"
+#include "diag/alerts.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -25,6 +26,11 @@ static const char* TAG = "poller";
 
 static portMUX_TYPE  s_stats_mux   = portMUX_INITIALIZER_UNLOCKED;
 static bms::poller::PollerStats s_stats{};
+
+// Per-pack online state for alert edge detection.
+static bool s_pack_was_online[16] = {};
+// Last safety alarm_flags for all-clear edge detection.
+static uint8_t s_last_alarm_flags = 0;
 
 // ── Safety state (Phase D) ────────────────────────────────────────────────────
 // Single-slot with a critical-section copy. Phase E can upgrade to seqlock.
@@ -340,9 +346,19 @@ static void control_task_entry(void* param) {
       // ── Decay offline / update aggregates ────────────────────────────
       now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
       for (uint8_t i = 0; i < cfg.bms_count; ++i) {
+        bool was = s_pack_was_online[i];
         if (bms::decay_online_status(sys->pack[i], now_ms, bms::poller::OFFLINE_THRESHOLD_MS)) {
           ESP_LOGW(TAG, "pack[%u] went offline", i);
         }
+        bool now_online = sys->pack[i].online;
+        if (was && !now_online) {
+          diag::alerts::emit(diag::alerts::Severity::Warn, "poller",
+                             "pack %u offline", (unsigned)i + 1);
+        } else if (!was && now_online) {
+          diag::alerts::emit(diag::alerts::Severity::Info, "poller",
+                             "pack %u online", (unsigned)i + 1);
+        }
+        s_pack_was_online[i] = now_online;
       }
       bms::update_system_aggregates(*sys);
 
@@ -373,6 +389,20 @@ static void control_task_entry(void* param) {
         if (tmp.alarm_flags)
           ESP_LOGW(TAG, "safety: flags=0x%02X ccl=%.0fA dcl=%.0fA msg=%s",
                    tmp.alarm_flags, tmp.ccl_amps, tmp.dcl_amps, tmp.sys_message);
+
+        // Safety flag alert: emit on rising edge of each new flag bit.
+        {
+          uint8_t new_bits = tmp.alarm_flags & ~s_last_alarm_flags;
+          if (new_bits) {
+            diag::alerts::emit(diag::alerts::Severity::Warn, "safety",
+                               "flag 0x%02X active", (unsigned)new_bits);
+          }
+          // All-clear edge: flags just went from non-zero to zero.
+          if (s_last_alarm_flags != 0 && tmp.alarm_flags == 0) {
+            diag::alerts::emit(diag::alerts::Severity::Info, "safety", "all clear");
+          }
+          s_last_alarm_flags = tmp.alarm_flags;
+        }
 
         portENTER_CRITICAL(&s_safety_mux);
         memcpy(&s_safety, &tmp, sizeof(SafetyState));

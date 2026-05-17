@@ -1,7 +1,12 @@
 #pragma once
 #include <cstdint>
+#ifndef NATIVE_BUILD
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#else
+// Stub type for host (Catch2) builds — queues are never created in NATIVE_BUILD.
+typedef void* QueueHandle_t;
+#endif
 
 // ── Payload struct definitions ────────────────────────────────────────────────
 // All payloads are fixed-size (no pointers) so they can live in xQueue entries.

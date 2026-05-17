@@ -68,9 +68,16 @@ const routes = {
   '/dashboard':renderDashboard,
   '/battery':  renderBattery,
   '/general':  renderSettings,
+  '/alerts':   renderAlerts,
+  '/diag':     renderDiag,
 };
 
 function navigate(path) {
+  // Stop diag auto-refresh when leaving the diag page.
+  if (path !== '/diag' && g_diag_timer) {
+    clearInterval(g_diag_timer);
+    g_diag_timer = null;
+  }
   history.pushState({}, '', path);
   renderPage(path);
   // Update active sidebar item.
@@ -1115,6 +1122,330 @@ async function pollUntilOnline() {
   await poll();
 }
 
+/* ── Alerts page ─────────────────────────────────────────────────────────────── */
+
+const ALERTS_ACK_KEY = 'tbms_alerts_last_ack';
+let g_alerts_filter  = 'ALL';
+let g_alerts_skip    = 0;
+let g_alerts_data    = [];
+let g_alerts_total   = 0;
+let g_diag_timer     = null;
+
+const SEV_NAMES = ['INFO', 'WARN', 'ERROR', 'CRITICAL'];
+const SEV_CLASSES = ['sev-info', 'sev-warn', 'sev-error', 'sev-critical'];
+const SEV_MIN = { 'ALL': 0, 'INFO': 0, 'WARN': 1, 'ERROR': 2, 'CRITICAL': 3 };
+
+function fmtRelTime(epochS) {
+  if (!epochS) return '—';
+  const diff = Math.floor(Date.now() / 1000) - epochS;
+  if (diff < 60)   return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function fmtAbsTime(epochS) {
+  if (!epochS) return '—';
+  return new Date(epochS * 1000).toLocaleString();
+}
+
+async function fetchAlerts(reset) {
+  if (reset) { g_alerts_skip = 0; g_alerts_data = []; }
+  const minSev = SEV_MIN[g_alerts_filter] || 0;
+  const url = `/api/alerts?limit=50&skip=${g_alerts_skip}&min_severity=${minSev}`;
+  try {
+    const r = await apiFetch(url);
+    if (!r || !r.ok) return;
+    const d = await r.json();
+    g_alerts_total = d.total || 0;
+    if (reset) g_alerts_data = d.alerts || [];
+    else       g_alerts_data = g_alerts_data.concat(d.alerts || []);
+    g_alerts_skip += (d.alerts || []).length;
+    renderAlertsList();
+  } catch (_) {}
+}
+
+function renderAlertRow(a) {
+  const sevIdx = Math.min(a.severity_n || 0, 3);
+  const sevCls = SEV_CLASSES[sevIdx];
+  const rel    = fmtRelTime(a.ts_epoch);
+  const abs    = fmtAbsTime(a.ts_epoch);
+  return `
+    <div class="alert-row" onclick="showAlertDetail(${JSON.stringify(JSON.stringify(a))})" title="${abs}">
+      <span class="sev-dot ${sevCls}"></span>
+      <div>
+        <div style="font-size:13px;color:var(--text-primary)">${escHtml(a.message)}</div>
+        <div class="alert-meta">
+          <span>${rel}</span>
+          <span class="source-pill">${escHtml(a.source)}</span>
+        </div>
+      </div>
+      <span style="font-size:10px;font-weight:700;color:var(--text-muted)">${a.severity}</span>
+    </div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderAlertsList() {
+  const list = document.getElementById('alerts-list');
+  if (!list) return;
+  if (g_alerts_data.length === 0) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)">No alerts match the current filter.</div>';
+  } else {
+    list.innerHTML = g_alerts_data.map(renderAlertRow).join('');
+  }
+  const more = document.getElementById('alerts-load-more');
+  if (more) more.style.display = (g_alerts_skip < g_alerts_total) ? 'block' : 'none';
+  const cnt = document.getElementById('alerts-count');
+  if (cnt) cnt.textContent = `${g_alerts_total} total`;
+}
+
+function showAlertDetail(jsonStr) {
+  const a = JSON.parse(jsonStr);
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-title').textContent = `${a.severity} — ${a.source}`;
+  document.getElementById('modal-body').innerHTML =
+    `<table style="width:100%;font-size:13px;border-collapse:collapse">
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Severity</td><td><strong>${escHtml(a.severity)}</strong></td></tr>
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Source</td><td><span class="source-pill">${escHtml(a.source)}</span></td></tr>
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Time</td><td>${fmtAbsTime(a.ts_epoch)}</td></tr>
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Uptime</td><td>${formatUptime(a.uptime_s)}</td></tr>
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0;vertical-align:top">Message</td><td style="word-break:break-word">${escHtml(a.message)}</td></tr>
+    </table>`;
+  document.getElementById('modal-confirm').style.display = 'none';
+  overlay.style.display = 'flex';
+}
+
+async function clearAllAlerts() {
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-title').textContent = 'Clear All Alerts';
+  document.getElementById('modal-body').textContent = 'Delete all stored alerts? This cannot be undone.';
+  document.getElementById('modal-confirm').style.display = '';
+  document.getElementById('modal-confirm').textContent = 'Clear All';
+  overlay.style.display = 'flex';
+  document.getElementById('modal-confirm').onclick = async () => {
+    overlay.style.display = 'none';
+    try {
+      await apiFetch('/api/alerts', { method: 'DELETE' });
+      fetchAlerts(true);
+      updateAlertBadge();
+    } catch (_) {}
+  };
+}
+
+async function updateAlertBadge() {
+  try {
+    const r = await apiFetch('/api/alerts?limit=200&skip=0&min_severity=2');
+    if (!r || !r.ok) return;
+    const d = await r.json();
+    const lastAck = parseInt(localStorage.getItem(ALERTS_ACK_KEY) || '0', 10);
+    const unread = (d.alerts || []).filter(a => (a.ts_epoch || 0) > lastAck);
+    const badge = document.getElementById('alert-badge');
+    if (!badge) return;
+    if (unread.length > 0) {
+      badge.textContent = unread.length > 9 ? '9+' : String(unread.length);
+      badge.style.display = 'flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (_) {}
+}
+
+async function renderAlerts() {
+  // Acknowledge: set last-ack timestamp to now.
+  localStorage.setItem(ALERTS_ACK_KEY, String(Math.floor(Date.now() / 1000)));
+  updateAlertBadge();
+
+  const root = document.getElementById('page-root');
+  root.innerHTML = `
+    <div style="padding:24px">
+      <div class="alerts-header">
+        <h2 style="margin:0;font-size:20px">Alerts</h2>
+        <div class="alerts-filter-pills" id="filter-pills">
+          ${['ALL','CRITICAL','ERROR','WARN','INFO'].map(f =>
+            `<button class="filter-pill${f===g_alerts_filter?' active':''}" onclick="setAlertFilter('${f}')">${f}</button>`
+          ).join('')}
+        </div>
+        <span id="alerts-count" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+        <button class="btn btn-danger" style="font-size:12px;padding:4px 12px" onclick="clearAllAlerts()">Clear all</button>
+      </div>
+      <div id="alerts-list" style="border:1px solid var(--border-subtle);border-radius:var(--radius)">
+        <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
+      </div>
+      <div id="alerts-load-more" style="display:none;text-align:center;margin-top:12px">
+        <button class="btn btn-secondary" onclick="loadMoreAlerts()">Load more</button>
+      </div>
+    </div>`;
+  fetchAlerts(true);
+}
+
+function setAlertFilter(f) {
+  g_alerts_filter = f;
+  document.querySelectorAll('.filter-pill').forEach(p => {
+    p.classList.toggle('active', p.textContent === f);
+  });
+  fetchAlerts(true);
+}
+
+function loadMoreAlerts() {
+  fetchAlerts(false);
+}
+
+/* ── Diag page ──────────────────────────────────────────────────────────────── */
+
+function kvRow(k, v) {
+  return `<div class="diag-kv"><span>${escHtml(String(k))}</span><span>${escHtml(String(v))}</span></div>`;
+}
+
+function renderDiagData(d) {
+  const root = document.getElementById('diag-root');
+  if (!root) return;
+
+  const sys = d.system || {};
+  const pol = d.poller || {};
+  const can = d.can    || {};
+  const sn  = d.snapshot_bus || {};
+  const mq  = d.mqtt   || {};
+  const ntp = d.ntp    || {};
+  const lfs = d.littlefs || {};
+  const ene = d.energy || {};
+  const his = d.history || {};
+
+  const tasks = (d.tasks || []).slice().sort((a, b) => (b.stack_hwm||0) - (a.stack_hwm||0));
+
+  root.innerHTML = `
+    <div class="diag-section">
+      <h3>System</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Firmware', sys.fw || '—')}
+        ${kvRow('Uptime', formatUptime(sys.uptime_s))}
+        ${kvRow('Reset reason', sys.reset_reason || '—')}
+        ${kvRow('Free heap', (sys.free_heap||0).toLocaleString() + ' B')}
+        ${kvRow('Min heap', (sys.min_heap||0).toLocaleString() + ' B')}
+        ${kvRow('Free PSRAM', (sys.free_psram||0).toLocaleString() + ' B')}
+        ${kvRow('Build', sys.build || '—')}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>Tasks (sorted by stack HWM)</h3>
+      <table class="diag-tasks-table">
+        <thead><tr><th>Name</th><th>Stack HWM</th><th>Core</th><th>Priority</th></tr></thead>
+        <tbody>
+          ${tasks.map(t => `<tr>
+            <td>${escHtml(t.name||'?')}</td>
+            <td>${(t.stack_hwm||0).toLocaleString()} B</td>
+            <td>${t.core >= 0 ? t.core : 'any'}</td>
+            <td>${t.prio}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="diag-section">
+      <h3>Poller</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Cycles', pol.cycles_completed||0)}
+        ${kvRow('Cycle avg', (pol.cycle_avg_ms||0) + ' ms')}
+        ${kvRow('Cycle max', (pol.cycle_max_ms||0) + ' ms')}
+        ${kvRow('RS485 polls', pol.rs485_polls||0)}
+        ${kvRow('RS485 ok', pol.rs485_ok||0)}
+        ${kvRow('RS485 timeouts', pol.rs485_timeouts||0)}
+        ${kvRow('RS485 parse err', pol.rs485_parse_err||0)}
+        ${kvRow('Alarm polls ok', pol.alarm_polls_ok||0)}
+        ${kvRow('Alarm polls err', pol.alarm_polls_err||0)}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>CAN</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('TX ok', can.tx_ok||0)}
+        ${kvRow('TX fail', can.tx_fail||0)}
+        ${kvRow('TX fail streak max', can.tx_fail_streak_max||0)}
+        ${kvRow('Heartbeats', can.heartbeats||0)}
+        ${kvRow('Express sends', can.express_sends||0)}
+        ${kvRow('Bus-off count', can.bus_off_count||0)}
+        ${kvRow('Driver restarts', can.driver_restarts||0)}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>Snapshot Bus / MQTT / NTP</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('SB publishes', sn.publishes||0)}
+        ${kvRow('SB reads', sn.reads||0)}
+        ${kvRow('SB retries', sn.retries||0)}
+        ${kvRow('MQTT state', mq.state||'—')}
+        ${kvRow('MQTT publish ok', mq.publish_ok||0)}
+        ${kvRow('MQTT publish fail', mq.publish_fail||0)}
+        ${kvRow('MQTT drops', mq.publish_drops||0)}
+        ${kvRow('NTP synced', ntp.synced ? 'yes' : 'no')}
+        ${kvRow('NTP server', ntp.server||'—')}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>LittleFS / History / Energy</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('LFS total', (lfs.total_b||0).toLocaleString() + ' B')}
+        ${kvRow('LFS used', (lfs.used_b||0).toLocaleString() + ' B')}
+        ${kvRow('LFS free', (lfs.free_b||0).toLocaleString() + ' B')}
+        ${kvRow('Fine samples', his.fine_samples||0)}
+        ${kvRow('Coarse samples', his.coarse_samples||0)}
+        ${kvRow('Today in', (ene.today_in_kwh||0).toFixed(2) + ' kWh')}
+        ${kvRow('Today out', (ene.today_out_kwh||0).toFixed(2) + ' kWh')}
+        ${kvRow('Stored alerts', d.alerts_count||0)}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>Log (last ${(d.log_ring||[]).length} lines)</h3>
+      <div class="diag-log-box" id="diag-log">
+        ${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}
+      </div>
+    </div>`;
+
+  // Scroll log to bottom.
+  const logBox = document.getElementById('diag-log');
+  if (logBox) logBox.scrollTop = logBox.scrollHeight;
+}
+
+async function renderDiag() {
+  // Stop any existing refresh timer when leaving this page.
+  if (g_diag_timer) { clearInterval(g_diag_timer); g_diag_timer = null; }
+
+  const root = document.getElementById('page-root');
+  root.innerHTML = `
+    <div style="padding:24px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <h2 style="margin:0;font-size:20px">Diagnostics</h2>
+        <span style="font-size:11px;color:var(--text-muted)">Refreshes every 5 s</span>
+      </div>
+      <div id="diag-root"><div style="text-align:center;padding:40px;color:var(--text-muted)">Loading…</div></div>
+    </div>`;
+
+  const doFetch = async () => {
+    // Stop if user navigated away.
+    if (!document.getElementById('diag-root')) {
+      if (g_diag_timer) clearInterval(g_diag_timer);
+      g_diag_timer = null;
+      return;
+    }
+    try {
+      const r = await apiFetch('/api/diag');
+      if (!r || !r.ok) return;
+      const d = await r.json();
+      renderDiagData(d);
+    } catch (_) {}
+  };
+
+  await doFetch();
+  g_diag_timer = setInterval(doFetch, 5000);
+}
+
 /* ── Router ─────────────────────────────────────────────────────────────────── */
 window.addEventListener('popstate', () => renderPage(location.pathname));
 
@@ -1327,4 +1658,8 @@ async function checkAuthState() {
       loadCharts();
     }
   }, 60000);
+
+  // Poll alert badge every 60 s.
+  updateAlertBadge();
+  setInterval(updateAlertBadge, 60000);
 })();
