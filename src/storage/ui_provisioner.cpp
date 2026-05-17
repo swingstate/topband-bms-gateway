@@ -2,6 +2,7 @@
 #include "lfs_store.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "../third_party/microtar/microtar.h"
 #include <cstring>
 #include <cerrno>
@@ -37,7 +38,10 @@ static int extract_tar(const uint8_t* tar_data, size_t tar_len) {
       if (len > 0 && dir_path[len - 1] == '/') dir_path[len - 1] = '\0';
       storage::lfs::mkdir_p(dir_path);
     } else if (h.type == MTAR_TREG && h.size > 0) {
-      uint8_t* file_buf = (uint8_t*)malloc(h.size);
+      // Prefer PSRAM for large files — DRAM is tight on this firmware.
+      uint8_t* file_buf = (uint8_t*)heap_caps_malloc(
+          h.size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!file_buf) file_buf = (uint8_t*)malloc(h.size);  // DRAM fallback
       if (!file_buf) {
         ESP_LOGE(TAG, "OOM reading %s (%u B)", h.name, h.size);
       } else {
