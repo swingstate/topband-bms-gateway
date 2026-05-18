@@ -64,12 +64,14 @@ function updateClock() {
 
 /* ── Routing ───────────────────────────────────────────────────────────────── */
 const routes = {
-  '/':         renderDashboard,
-  '/dashboard':renderDashboard,
-  '/battery':  renderBattery,
-  '/general':  renderSettings,
-  '/alerts':   renderAlerts,
-  '/diag':     renderDiag,
+  '/':          renderDashboard,
+  '/dashboard': renderDashboard,
+  '/battery':   renderBattery,
+  '/general':   renderSettings,   // backward-compat alias
+  '/settings':  renderSettings,
+  '/network':   renderNetwork,
+  '/alerts':    renderAlerts,
+  '/diag':      renderDiag,
 };
 
 // Timer for per-pack detail page auto-refresh.
@@ -88,18 +90,28 @@ function navigate(path) {
     clearInterval(g_diag_timer);
     g_diag_timer = null;
   }
+  // Stop network polling when leaving the network page.
+  if (path !== '/network' && g_network_timer) {
+    clearInterval(g_network_timer);
+    g_network_timer = null;
+  }
   // Stop battery detail polling when navigating away.
   if (!path.startsWith('/battery/')) stopBatteryDetailPoll();
   history.pushState({}, '', path);
   renderPage(path);
-  // Update active sidebar item.
+  updateSidebarActive(path);
+}
+
+function updateSidebarActive(path) {
   document.querySelectorAll('.sidebar-item').forEach(el => {
     el.classList.remove('active');
     const href = el.getAttribute('href');
-    if (href && (href === path || (path === '/' && href === '/') ||
-        (path.startsWith('/battery') && href === '/battery'))) {
-      el.classList.add('active');
-    }
+    if (!href) return;
+    if (href === path) { el.classList.add('active'); return; }
+    if (path === '/' && href === '/') { el.classList.add('active'); return; }
+    if (path.startsWith('/battery') && href === '/battery') { el.classList.add('active'); return; }
+    if ((path === '/settings' || path === '/general') && href === '/settings') { el.classList.add('active'); return; }
+    if (path === '/network' && href === '/network') { el.classList.add('active'); return; }
   });
 }
 
@@ -961,6 +973,24 @@ function pwField(id, label, autocomplete, placeholder) {
     </div>`;
 }
 
+/* ── Settings sub-nav definition ────────────────────────────────────────────── */
+const SETTINGS_SECTIONS = [
+  { id: 'battery', label: 'Battery',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M20 11h2v2h-2"/></svg>' },
+  { id: 'charts',  label: 'Charts',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' },
+  { id: 'time',    label: 'Time',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
+  { id: 'mqtt',    label: 'MQTT',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg>' },
+  { id: 'account', label: 'Account',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
+  { id: 'system',  label: 'System',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>' },
+  { id: 'reset',   label: 'Reset',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>' },
+];
+
 async function renderSettings() {
   const root = document.getElementById('page-root');
   root.innerHTML = '<div class="placeholder-page"><div class="spinner"></div></div>';
@@ -974,16 +1004,59 @@ async function renderSettings() {
     return;
   }
 
-  const c = g_config;
-  const nowTs     = (g_live && g_live.now_ts_s) || (g_health && g_health.now_ts_s) || 0;
-  const ntpSynced = !!(g_live && g_live.ntp_synced) || !!(g_health && g_health.ntp_synced);
-  const deviceTimeStr = nowTs > 1000000
-    ? new Date(nowTs * 1000).toLocaleString()
-    : 'Unknown';
+  const section = (location.hash || '#battery').replace('#', '') || 'battery';
+  const activeId = SETTINGS_SECTIONS.some(s => s.id === section) ? section : 'battery';
+
   root.innerHTML = `
+    <div class="settings-layout">
+      <nav class="settings-subnav">
+        ${SETTINGS_SECTIONS.map(s => `
+          <a class="settings-subnav-item${s.id === activeId ? ' active' : ''}"
+             href="/settings#${s.id}"
+             data-section="${s.id}"
+             onclick="showSettingsSection('${s.id}'); return false;">
+            ${s.icon}
+            <span>${s.label}</span>
+          </a>
+        `).join('')}
+      </nav>
+      <div class="settings-content" id="settings-content"></div>
+    </div>
+  `;
+  renderSettingsSection(activeId);
+}
+
+function showSettingsSection(id) {
+  history.pushState({}, '', '/settings#' + id);
+  document.querySelectorAll('.settings-subnav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.section === id);
+  });
+  renderSettingsSection(id);
+}
+
+function renderSettingsSection(id) {
+  const content = document.getElementById('settings-content');
+  if (!content || !g_config) return;
+  switch (id) {
+    case 'battery': content.innerHTML = renderSettingsBattery(); break;
+    case 'charts':  content.innerHTML = renderSettingsCharts();  break;
+    case 'time':    content.innerHTML = renderSettingsTime();    break;
+    case 'mqtt':    content.innerHTML = renderSettingsMqtt();    break;
+    case 'account': content.innerHTML = renderSettingsAccount(); break;
+    case 'system':  content.innerHTML = renderSettingsSystem();  break;
+    case 'reset':   content.innerHTML = renderSettingsReset();   break;
+    default:        content.innerHTML = renderSettingsBattery(); break;
+  }
+}
+
+/* ── Settings section renderers ─────────────────────────────────────────────── */
+
+function renderSettingsBattery() {
+  const c = g_config;
+  return `
     <div class="settings-page">
       <div class="settings-section">
-        <div class="settings-section-title">Battery</div>
+        <div class="settings-section-title">Battery Packs</div>
         <div class="form-row">
           <div class="form-group">
             <label>BMS Pack Count</label>
@@ -1093,40 +1166,6 @@ async function renderSettings() {
       </div>
 
       <div class="settings-section">
-        <div class="settings-section-title">Network</div>
-        <div class="form-group">
-          <label>WiFi SSID</label>
-          <input type="text" id="cfg-wifi_ssid" value="${c.wifi_ssid || ''}">
-          <div class="help">Only the SSID is shown; password is stored separately</div>
-        </div>
-        <div class="form-group">
-          <label>NTP Server</label>
-          <input type="text" id="cfg-ntp_server" value="${c.ntp_server || ''}">
-        </div>
-        <div class="form-group">
-          <label>Timezone Offset (hours)</label>
-          <input type="number" id="cfg-timezone_offset_h" value="${c.timezone_offset_h}" min="-12" max="14">
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Time</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Device Time</label>
-            <div style="font-size:15px;font-weight:600;color:var(--text-primary);padding:6px 0">${deviceTimeStr}</div>
-            <div class="help">Snapshot from last live data poll</div>
-          </div>
-          <div class="form-group">
-            <label>NTP Status</label>
-            <div style="padding:6px 0">
-              <span class="charging-pill ${ntpSynced ? 'pill-charging' : 'pill-idle'}">${ntpSynced ? 'Synced' : 'Not synced'}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section">
         <div class="settings-section-title">CAN / Inverter</div>
         <div class="form-row">
           <div class="form-group">
@@ -1144,16 +1183,113 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div id="battery-feedback" class="feedback-msg"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveBatterySection()">Save</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSettingsCharts() {
+  const cc = getChartConfig();
+  return `
+    <div class="settings-page">
       <div class="settings-section">
-        <div class="settings-section-title">MQTT</div>
+        <div class="settings-section-title">Dashboard Charts</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Choose which data series to display on each of the two dashboard chart cards.
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Chart A</label>
+            <select id="cfg-chart-a">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${cc.a === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Chart B</label>
+            <select id="cfg-chart-b">
+              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
+                `<option value="${k}" ${cc.b === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
+              ).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-primary" onclick="saveChartConfig()">Apply</button>
+        </div>
+        <div id="chart-cfg-feedback" class="feedback-msg"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSettingsTime() {
+  const c = g_config;
+  const nowTs     = (g_live && g_live.now_ts_s) || (g_health && g_health.now_ts_s) || 0;
+  const ntpSynced = !!(g_live && g_live.ntp_synced) || !!(g_health && g_health.ntp_synced);
+  const deviceTimeStr = nowTs > 1000000 ? new Date(nowTs * 1000).toLocaleString() : 'Unknown';
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">NTP / Timezone</div>
+        <div class="form-group">
+          <label>NTP Server</label>
+          <input type="text" id="cfg-ntp_server" value="${escHtml(c.ntp_server || '')}">
+        </div>
+        <div class="form-group">
+          <label>Timezone Offset (hours)</label>
+          <input type="number" id="cfg-timezone_offset_h" value="${c.timezone_offset_h}" min="-12" max="14">
+          <div class="help">Offset from UTC, e.g. 1 for CET, 2 for CEST</div>
+        </div>
+        <div id="time-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveTimeSection()">Save</button>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Current Time</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Device Time</label>
+            <div class="settings-info-val">${deviceTimeStr}</div>
+            <div class="help">Snapshot from last live data poll</div>
+          </div>
+          <div class="form-group">
+            <label>NTP Status</label>
+            <div style="padding:4px 0">
+              <span class="charging-pill ${ntpSynced ? 'pill-charging' : 'pill-idle'}">${ntpSynced ? 'Synced' : 'Not synced'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSettingsMqtt() {
+  const c = g_config;
+  const mqttState = g_health && g_health.mqtt ? (g_health.mqtt.state || 'unknown') : 'unknown';
+  const mqttStateLabels = { connected: 'Connected', connecting: 'Connecting', disconnected: 'Disconnected', disabled: 'Disabled', failed: 'Failed' };
+  const mqttStatePill = mqttState === 'connected'
+    ? '<span class="charging-pill pill-charging">Connected</span>'
+    : `<span class="charging-pill pill-idle">${mqttStateLabels[mqttState] || mqttState}</span>`;
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">MQTT Broker</div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px">
           <input type="checkbox" id="cfg-mqtt_enabled" ${c.mqtt_enabled ? 'checked' : ''} style="width:auto">
           <label for="cfg-mqtt_enabled" style="margin:0">MQTT enabled</label>
+          <span style="margin-left:8px">${mqttStatePill}</span>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label>Broker Host / IP</label>
-            <input type="text" id="cfg-mqtt_host" value="${c.mqtt_host || ''}" placeholder="192.168.1.x">
+            <input type="text" id="cfg-mqtt_host" value="${escHtml(c.mqtt_host || '')}" placeholder="192.168.1.x">
           </div>
           <div class="form-group">
             <label>Broker Port</label>
@@ -1163,7 +1299,7 @@ async function renderSettings() {
         <div class="form-row">
           <div class="form-group">
             <label>Username</label>
-            <input type="text" id="cfg-mqtt_user" value="${c.mqtt_user || ''}" autocomplete="off">
+            <input type="text" id="cfg-mqtt_user" value="${escHtml(c.mqtt_user || '')}" autocomplete="off">
           </div>
           <div class="form-group">
             <label>Password</label>
@@ -1173,7 +1309,7 @@ async function renderSettings() {
         </div>
         <div class="form-group">
           <label>Base Topic</label>
-          <input type="text" id="cfg-mqtt_base_topic" value="${c.mqtt_base_topic || 'topband-bms'}" placeholder="topband-bms">
+          <input type="text" id="cfg-mqtt_base_topic" value="${escHtml(c.mqtt_base_topic || 'topband-bms')}" placeholder="topband-bms">
           <div class="help">Gateway appends -XXXX (last 4 MAC hex) automatically</div>
         </div>
         <div class="form-row">
@@ -1195,57 +1331,23 @@ async function renderSettings() {
           <input type="checkbox" id="cfg-ha_discovery_enabled" ${c.ha_discovery_enabled ? 'checked' : ''} style="width:auto">
           <label for="cfg-ha_discovery_enabled" style="margin:0">Home Assistant auto-discovery</label>
         </div>
-        <div class="btn-row" style="margin-top:12px">
+        <div id="mqtt-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveMqttSection()">Save</button>
           <button class="btn btn-secondary" onclick="sendHaDiscovery()">Re-send HA Discovery</button>
         </div>
       </div>
+    </div>
+  `;
+}
 
-      <div id="feedback-msg" class="feedback-msg"></div>
-
-      <div class="btn-row">
-        <button class="btn btn-primary" onclick="saveConfig()">Save Settings</button>
-        <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
-        <button class="btn btn-secondary" onclick="confirmRestart()">Restart Gateway</button>
-      </div>
-
-      <div class="settings-section" style="margin-top:32px">
-        <div class="settings-section-title">Charts</div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
-          Choose which series to display on each dashboard chart card.
-          Each card has a left axis and a right axis — pick any combination.
-        </p>
-        ${(cc => `
-        <div class="form-row">
-          <div class="form-group">
-            <label>Chart A</label>
-            <select id="cfg-chart-a">
-              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
-                `<option value="${k}" ${cc.a === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
-              ).join('')}
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Chart B</label>
-            <select id="cfg-chart-b">
-              ${Object.entries(SERIES_DEFS).map(([k,d]) =>
-                `<option value="${k}" ${cc.b === k ? 'selected' : ''}>${d.label} (${d.unit})</option>`
-              ).join('')}
-            </select>
-          </div>
-        </div>
-        `)(getChartConfig())}
-        <div class="btn-row" style="margin-top:8px">
-          <button class="btn btn-primary" onclick="saveChartConfig()">Apply</button>
-        </div>
-        <div id="chart-cfg-feedback" class="feedback-msg"></div>
-      </div>
-
-      <div class="settings-section" style="margin-top:32px">
-        <div class="settings-section-title">Account</div>
-
-        <!-- Authentication toggle -->
+function renderSettingsAccount() {
+  const c = g_config;
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">Authentication</div>
         <div style="margin-bottom:20px">
-          <div style="font-size:13px;font-weight:600;margin-bottom:8px">Authentication</div>
           ${c.auth_enabled
             ? `<div style="display:flex;align-items:center;gap:12px">
                  <span class="charging-pill pill-charging">Enabled</span>
@@ -1264,50 +1366,80 @@ async function renderSettings() {
                  </div>`)}
           <div id="auth-toggle-feedback" class="feedback-msg" style="margin-top:6px"></div>
         </div>
-
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Change Password</div>
         ${c.auth_enabled
-          ? `<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
+          ? `<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Enter current password to change it.</p>
              ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}`
           : `<p style="font-size:13px;color:var(--color-warning);margin-bottom:14px">
                No password set — set one below to enable authentication.
              </p>`}
-        ${pwField('pw-new',     'New password',     'new-password',     'New password')}
+        ${pwField('pw-new',     'New password',         'new-password', 'New password')}
         ${pwField('pw-confirm', 'Confirm new password', 'new-password', 'Repeat new password')}
         <div id="pw-feedback" class="feedback-msg"></div>
-        <button class="btn btn-primary" style="margin-top:8px" onclick="changePassword()">Save password</button>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="changePassword()">Save password</button>
+        </div>
       </div>
+    </div>
+  `;
+}
 
-      <div class="settings-section" style="margin-top:32px">
-        <div class="settings-section-title">System</div>
+function renderSettingsSystem() {
+  const h = g_health;
+  const psramKb = (h && h.free_psram_b) ? (h.free_psram_b / 1024).toFixed(0) + ' KB' : '—';
+  const heapKb  = (h && h.free_heap_b)  ? (h.free_heap_b  / 1024).toFixed(0) + ' KB' : '—';
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">System Info</div>
         <div class="form-row">
           <div class="form-group">
             <label>Firmware</label>
-            <div class="settings-info-val">${g_health ? g_health.version : '—'}</div>
-            <div class="help">${g_health ? g_health.build : ''}</div>
+            <div class="settings-info-val">${h ? escHtml(h.version) : '—'}</div>
+            <div class="help">${h ? escHtml(h.build) : ''}</div>
           </div>
           <div class="form-group">
-            <label>UI</label>
-            <div class="settings-info-val">${g_health ? (g_health.ui_version || '—') : '—'}</div>
+            <label>UI Version</label>
+            <div class="settings-info-val">${h ? escHtml(h.ui_version || '—') : '—'}</div>
             <div class="help">Served from LittleFS</div>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label>Uptime</label>
-            <div class="settings-info-val">${g_health ? formatUptime(g_health.uptime_s) : '—'}</div>
+            <div class="settings-info-val">${h ? formatUptime(h.uptime_s) : '—'}</div>
           </div>
           <div class="form-group">
-            <label>Free heap</label>
-            <div class="settings-info-val">${g_health && g_health.free_heap_b
-              ? (g_health.free_heap_b / 1024).toFixed(0) + ' KB'
-              : '—'}</div>
+            <label>Free Heap</label>
+            <div class="settings-info-val">${heapKb}</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Free PSRAM</label>
+            <div class="settings-info-val">${psramKb}</div>
           </div>
         </div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Maintenance</div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
+          <button class="btn btn-secondary" onclick="confirmRestart()">Restart Gateway</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
 
-      <div class="settings-section settings-section-danger" style="margin-top:24px">
-        <div class="settings-section-title settings-section-title-danger">Reset</div>
-        <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Factory reset</p>
+function renderSettingsReset() {
+  return `
+    <div class="settings-page">
+      <div class="settings-section settings-section-danger">
+        <div class="settings-section-title settings-section-title-danger">Factory Reset</div>
+        <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Wipe all settings</p>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
           Wipes WiFi credentials and admin password. The gateway will reboot into captive portal mode and need to be set up again from scratch.
         </p>
@@ -1316,6 +1448,292 @@ async function renderSettings() {
       </div>
     </div>
   `;
+}
+
+/* ── Section-specific save functions ────────────────────────────────────────── */
+
+async function saveSectionFields(fields, feedbackId) {
+  const msg = document.getElementById(feedbackId);
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash    = '';  // never re-send
+  cfg.mqtt_pass_obf = ''; // preserve unless section explicitly sets it
+
+  fields.forEach(([id, key, type]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (type === 'num')  cfg[key] = Number(el.value);
+    if (type === 'str')  cfg[key] = el.value;
+    if (type === 'bool') cfg[key] = el.checked;
+  });
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+    } else {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+function saveBatterySection() {
+  saveSectionFields([
+    ['cfg-bms_count',              'bms_count',              'num'],
+    ['cfg-force_cell_count',       'force_cell_count',       'num'],
+    ['cfg-charge_amps_per_pack',   'charge_amps_per_pack',   'num'],
+    ['cfg-discharge_amps_per_pack','discharge_amps_per_pack','num'],
+    ['cfg-cvl_voltage',            'cvl_voltage',            'num'],
+    ['cfg-safe_pack_volt',         'safe_pack_volt',         'num'],
+    ['cfg-safe_cell_volt',         'safe_cell_volt',         'num'],
+    ['cfg-safe_cell_drift',        'safe_cell_drift',        'num'],
+    ['cfg-charge_temp_min',        'charge_temp_min',        'num'],
+    ['cfg-charge_temp_max',        'charge_temp_max',        'num'],
+    ['cfg-discharge_temp_min',     'discharge_temp_min',     'num'],
+    ['cfg-discharge_temp_max',     'discharge_temp_max',     'num'],
+    ['cfg-temp_soft_zone',         'temp_soft_zone',         'num'],
+    ['cfg-temp_mode',              'temp_mode',              'num'],
+    ['cfg-spike_volt_max',         'spike_volt_max',         'num'],
+    ['cfg-spike_curr_max',         'spike_curr_max',         'num'],
+    ['cfg-can_protocol',           'can_protocol',           'num'],
+    ['cfg-can_enabled',            'can_enabled',            'bool'],
+  ], 'battery-feedback');
+}
+
+function saveTimeSection() {
+  saveSectionFields([
+    ['cfg-ntp_server',      'ntp_server',      'str'],
+    ['cfg-timezone_offset_h','timezone_offset_h','num'],
+  ], 'time-feedback');
+}
+
+async function saveMqttSection() {
+  const msg = document.getElementById('mqtt-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash = '';
+
+  const fields = [
+    ['cfg-mqtt_enabled',        'mqtt_enabled',        'bool'],
+    ['cfg-mqtt_host',           'mqtt_host',           'str'],
+    ['cfg-mqtt_port',           'mqtt_port',           'num'],
+    ['cfg-mqtt_user',           'mqtt_user',           'str'],
+    ['cfg-mqtt_base_topic',     'mqtt_base_topic',     'str'],
+    ['cfg-mqtt_level',          'mqtt_level',          'num'],
+    ['cfg-mqtt_diag_enabled',   'mqtt_diag_enabled',   'bool'],
+    ['cfg-ha_discovery_enabled','ha_discovery_enabled','bool'],
+  ];
+  fields.forEach(([id, key, type]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (type === 'num')  cfg[key] = Number(el.value);
+    if (type === 'str')  cfg[key] = el.value;
+    if (type === 'bool') cfg[key] = el.checked;
+  });
+
+  // MQTT password: blank means keep existing; non-blank means update.
+  const passEl = document.getElementById('cfg-mqtt_pass');
+  cfg.mqtt_pass_obf = (passEl && passEl.value.length > 0) ? passEl.value : '';
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (passEl) passEl.value = '';
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+    } else {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── Network page ────────────────────────────────────────────────────────────── */
+
+function rssiBarHtml(rssi) {
+  // Map RSSI to 0-4 bars: > -55 = 4, > -65 = 3, > -75 = 2, > -85 = 1, else 0.
+  const bars = rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : rssi >= -85 ? 1 : 0;
+  const label = bars >= 4 ? 'Excellent' : bars === 3 ? 'Good' : bars === 2 ? 'Fair' : bars === 1 ? 'Weak' : 'No signal';
+  const heights = [4, 7, 10, 14];
+  const barsHtml = heights.map((h, i) =>
+    `<div class="rssi-bar${i < bars ? ' lit' : ''}" style="height:${h}px"></div>`
+  ).join('');
+  return `<span class="rssi-bars">${barsHtml}</span><span>${rssi} dBm</span>
+          <span style="margin-left:6px;font-size:11px;color:var(--text-muted)">${label}</span>`;
+}
+
+function renderNetworkStatus(d) {
+  const root = document.getElementById('net-status-panel');
+  if (!root) return;
+  if (!d || !d.connected) {
+    root.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Not connected to any WiFi network.</p>';
+    return;
+  }
+  root.innerHTML = `
+    <div class="net-kv-grid">
+      <div class="net-kv-row"><span>SSID</span><span>${escHtml(d.ssid || '—')}</span></div>
+      <div class="net-kv-row"><span>Signal</span><span>${rssiBarHtml(d.rssi || 0)}</span></div>
+      <div class="net-kv-row"><span>IP Address</span><span>${escHtml(d.ip || '—')}</span></div>
+      <div class="net-kv-row"><span>Gateway</span><span>${escHtml(d.gateway || '—')}</span></div>
+      <div class="net-kv-row"><span>Netmask</span><span>${escHtml(d.netmask || '—')}</span></div>
+      <div class="net-kv-row"><span>DNS</span><span>${escHtml(d.dns || '—')}</span></div>
+      <div class="net-kv-row"><span>mDNS Hostname</span><span>${escHtml(d.mdns_hostname || '—')}</span></div>
+      <div class="net-kv-row"><span>Connected for</span><span>${formatUptime(d.connected_for_s || 0)}</span></div>
+    </div>
+  `;
+}
+
+async function fetchNetworkStatus() {
+  try {
+    const r = await apiFetch('/api/wifi/status');
+    if (!r || !r.ok) return;
+    const d = await r.json();
+    renderNetworkStatus(d);
+  } catch (_) {}
+}
+
+async function doWifiScan() {
+  const btn  = document.getElementById('btn-wifi-scan');
+  const list = document.getElementById('scan-results');
+  if (!btn || !list) return;
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  list.innerHTML = '<div style="padding:10px;font-size:12px;color:var(--text-muted)">Scanning for networks…</div>';
+  try {
+    const r = await apiFetch('/api/wifi/scan');
+    if (!r || !r.ok) { list.innerHTML = ''; btn.disabled = false; btn.textContent = 'Scan'; return; }
+    const networks = await r.json();
+    if (!networks.length) {
+      list.innerHTML = '<div style="padding:10px;font-size:12px;color:var(--text-muted)">No networks found.</div>';
+    } else {
+      list.innerHTML = networks.map(n => `
+        <div class="scan-row" onclick="prefillSsid(${JSON.stringify(escHtml(n.ssid))})">
+          <span class="scan-ssid">${escHtml(n.ssid)}</span>
+          <span class="scan-rssi">${n.rssi} dBm</span>
+          <span class="scan-lock">${n.secure
+            ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
+            : ''
+          }</span>
+        </div>`).join('');
+    }
+  } catch (_) {
+    list.innerHTML = '<div style="padding:10px;font-size:12px;color:var(--color-alarm)">Scan failed.</div>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Scan';
+}
+
+function prefillSsid(ssid) {
+  const inp = document.getElementById('net-ssid');
+  if (inp) { inp.value = ssid; inp.focus(); }
+  const list = document.getElementById('scan-results');
+  if (list) list.innerHTML = '';
+}
+
+function confirmWifiConnect() {
+  const ssidEl = document.getElementById('net-ssid');
+  const ssid = ssidEl ? ssidEl.value.trim() : '';
+  if (!ssid) {
+    const fb = document.getElementById('net-connect-feedback');
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = 'SSID is required.'; }
+    return;
+  }
+
+  const currentSsid = (document.getElementById('net-status-panel')
+    ? (document.getElementById('net-status-panel').querySelector('.net-kv-row span:last-child') || {}).textContent
+    : '') || '(unknown)';
+
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-title').textContent = 'Switch network?';
+  document.getElementById('modal-body').textContent =
+    `Switch to "${ssid}"? The gateway will disconnect from the current network and attempt to join the new one. If unreachable, the captive portal (TopBand-Setup-XXXX) will start automatically.`;
+  const confirmBtn = document.getElementById('modal-confirm');
+  confirmBtn.textContent = 'Connect';
+  confirmBtn.style.display = '';
+  overlay.style.display = 'flex';
+  confirmBtn.onclick = () => {
+    overlay.style.display = 'none';
+    doWifiConnect(ssid);
+  };
+}
+
+async function doWifiConnect(ssid) {
+  const passEl = document.getElementById('net-pass');
+  const pass = passEl ? passEl.value : '';
+
+  try {
+    const r = await apiFetch('/api/wifi/configure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid, password: pass }),
+    });
+    if (!r) return;
+  } catch (_) { /* device is switching — normal to lose connection */ }
+
+  showPageOverlay('Switching network…',
+    'The gateway is connecting to the new network. ' +
+    'If it cannot reach "' + ssid + '" it will fall back to the setup AP (TopBand-Setup-XXXX). ' +
+    'You may need to navigate to the new gateway IP address.');
+}
+
+async function renderNetwork() {
+  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
+
+  const root = document.getElementById('page-root');
+  root.innerHTML = `
+    <div class="network-page" style="max-width:680px;padding:0">
+      <div class="settings-section card" style="margin-bottom:16px;padding:16px">
+        <div class="settings-section-title">Current Connection</div>
+        <div id="net-status-panel">
+          <div class="placeholder-page" style="height:80px"><div class="spinner"></div></div>
+        </div>
+      </div>
+
+      <div class="settings-section card" style="padding:16px">
+        <div class="settings-section-title">Switch to a Different Network</div>
+        <div class="form-group">
+          <label>SSID</label>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="net-ssid" placeholder="Network name" style="flex:1">
+            <button class="btn btn-secondary" id="btn-wifi-scan" onclick="doWifiScan()">Scan</button>
+          </div>
+          <div id="scan-results" class="scan-list" style="display:block"></div>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <div class="pw-wrap">
+            <input type="password" id="net-pass" autocomplete="new-password" placeholder="Leave blank for open network">
+            <button type="button" class="pw-toggle" onclick="togglePw('net-pass')" title="Show/hide">${EYE_SVG}</button>
+          </div>
+        </div>
+        <div id="net-connect-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="confirmWifiConnect()">Connect to new network</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  await fetchNetworkStatus();
+  g_network_timer = setInterval(fetchNetworkStatus, 5000);
 }
 
 function readFormConfig() {
@@ -1448,6 +1866,7 @@ let g_alerts_skip    = 0;
 let g_alerts_data    = [];
 let g_alerts_total   = 0;
 let g_diag_timer     = null;
+let g_network_timer  = null;
 
 const SEV_NAMES = ['INFO', 'WARN', 'ERROR', 'CRITICAL'];
 const SEV_CLASSES = ['sev-info', 'sev-warn', 'sev-error', 'sev-critical'];
@@ -1765,7 +2184,10 @@ async function renderDiag() {
 }
 
 /* ── Router ─────────────────────────────────────────────────────────────────── */
-window.addEventListener('popstate', () => renderPage(location.pathname));
+window.addEventListener('popstate', () => {
+  renderPage(location.pathname);
+  updateSidebarActive(location.pathname);
+});
 
 /* Intercept sidebar link clicks for SPA navigation. */
 document.addEventListener('click', e => {
@@ -1885,8 +2307,12 @@ async function setAuthEnabled(enabled) {
     const data = await r.json();
     if (r.ok) {
       g_config = data;
-      // Re-render settings page to reflect new state.
-      renderSettings();
+      // Re-render just the account section (or full settings if layout not present).
+      if (document.getElementById('settings-content')) {
+        renderSettingsSection('account');
+      } else {
+        renderSettings();
+      }
     } else {
       if (msg) {
         msg.className = 'feedback-msg err';
@@ -2017,8 +2443,9 @@ async function checkAuthState() {
   // Check auth state for banner and logout-button visibility.
   checkAuthState();
 
-  // Render current page.
+  // Render current page and sync sidebar.
   renderPage(location.pathname);
+  updateSidebarActive(location.pathname);
 
   // Start live polling at 2 s.
   startPolling(2000);

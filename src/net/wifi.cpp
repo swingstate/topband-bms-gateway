@@ -6,6 +6,7 @@
 #include "esp_event.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -20,10 +21,12 @@ static constexpr EventBits_t BIT_CONNECTED = BIT0;
 static constexpr EventBits_t BIT_FAILED    = BIT1;
 static constexpr EventBits_t BIT_SCAN_DONE = BIT2;
 
-static net::wifi::Mode g_mode       = net::wifi::Mode::Off;
-static bool            g_connected  = false;
-static int             g_retry      = 0;
-static constexpr int   MAX_RETRY    = 5;
+static net::wifi::Mode g_mode        = net::wifi::Mode::Off;
+static bool            g_connected   = false;
+static int             g_retry       = 0;
+static constexpr int   MAX_RETRY     = 5;
+static int64_t         g_connect_us  = 0;          // esp_timer_get_time() at connect
+static char            g_hostname[32] = {};
 
 static esp_netif_t* g_sta_netif = nullptr;
 static esp_netif_t* g_ap_netif  = nullptr;
@@ -49,9 +52,10 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
       diag::alerts::emit(diag::alerts::Severity::Warn, "wifi", "disconnected");
     }
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-    g_connected = true;
-    g_retry     = 0;
-    g_mode      = net::wifi::Mode::StaConnected;
+    g_connected  = true;
+    g_retry      = 0;
+    g_connect_us = esp_timer_get_time();
+    g_mode       = net::wifi::Mode::StaConnected;
     ip_event_got_ip_t* ev = (ip_event_got_ip_t*)data;
     ESP_LOGI(TAG, "STA connected — IP " IPSTR, IP2STR(&ev->ip_info.ip));
     char ssid[33] = {};
@@ -116,9 +120,8 @@ bool start_sta(uint32_t timeout_ms) {
     g_sta_netif = esp_netif_create_default_wifi_sta();
     uint8_t mac[6] = {};
     esp_wifi_get_mac(WIFI_IF_STA, mac);
-    char hostname[32] = {};
-    snprintf(hostname, sizeof(hostname), "topband-bms-%02x%02x", mac[4], mac[5]);
-    esp_netif_set_hostname(g_sta_netif, hostname);
+    snprintf(g_hostname, sizeof(g_hostname), "topband-bms-%02x%02x", mac[4], mac[5]);
+    esp_netif_set_hostname(g_sta_netif, g_hostname);
   }
 
   wifi_config_t sta_cfg = {};
@@ -162,9 +165,8 @@ std::string start_ap() {
     g_sta_netif = esp_netif_create_default_wifi_sta();
     uint8_t mac[6] = {};
     esp_wifi_get_mac(WIFI_IF_STA, mac);
-    char hostname[32] = {};
-    snprintf(hostname, sizeof(hostname), "topband-bms-%02x%02x", mac[4], mac[5]);
-    esp_netif_set_hostname(g_sta_netif, hostname);
+    snprintf(g_hostname, sizeof(g_hostname), "topband-bms-%02x%02x", mac[4], mac[5]);
+    esp_netif_set_hostname(g_sta_netif, g_hostname);
   }
   if (!g_ap_netif)  g_ap_netif  = esp_netif_create_default_wifi_ap();
 
@@ -362,5 +364,56 @@ std::string get_local_ip() {
 }
 
 esp_netif_t* get_ap_netif() { return g_ap_netif; }
+
+std::string get_ssid() {
+  if (!g_connected) return {};
+  wifi_ap_record_t info = {};
+  if (esp_wifi_sta_get_ap_info(&info) != ESP_OK) return {};
+  return std::string((char*)info.ssid);
+}
+
+int8_t get_rssi() {
+  if (!g_connected) return 0;
+  wifi_ap_record_t info = {};
+  if (esp_wifi_sta_get_ap_info(&info) != ESP_OK) return 0;
+  return info.rssi;
+}
+
+void get_hostname(char* buf, size_t len) {
+  snprintf(buf, len, "%s", g_hostname);
+}
+
+IpInfo get_ip_info() {
+  IpInfo out = {};
+  snprintf(out.ip,      sizeof(out.ip),      "0.0.0.0");
+  snprintf(out.gw,      sizeof(out.gw),      "0.0.0.0");
+  snprintf(out.netmask, sizeof(out.netmask), "0.0.0.0");
+  snprintf(out.dns,     sizeof(out.dns),     "0.0.0.0");
+
+  if (!g_connected || !g_sta_netif) return out;
+
+  esp_netif_ip_info_t ip_info = {};
+  if (esp_netif_get_ip_info(g_sta_netif, &ip_info) == ESP_OK) {
+    snprintf(out.ip,      sizeof(out.ip),      IPSTR, IP2STR(&ip_info.ip));
+    snprintf(out.gw,      sizeof(out.gw),      IPSTR, IP2STR(&ip_info.gw));
+    snprintf(out.netmask, sizeof(out.netmask), IPSTR, IP2STR(&ip_info.netmask));
+  }
+
+  esp_netif_dns_info_t dns_info = {};
+  if (esp_netif_get_dns_info(g_sta_netif, ESP_NETIF_DNS_MAIN, &dns_info) == ESP_OK) {
+    if (dns_info.ip.type == ESP_IPADDR_TYPE_V4) {
+      snprintf(out.dns, sizeof(out.dns), IPSTR, IP2STR(&dns_info.ip.u_addr.ip4));
+    }
+  }
+
+  return out;
+}
+
+uint32_t connected_for_s() {
+  if (!g_connected || g_connect_us == 0) return 0;
+  int64_t now = esp_timer_get_time();
+  int64_t diff = (now - g_connect_us) / 1000000LL;
+  return (diff > 0) ? (uint32_t)diff : 0;
+}
 
 }  // namespace net::wifi

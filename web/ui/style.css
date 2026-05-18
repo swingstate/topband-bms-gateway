@@ -439,7 +439,58 @@ a { text-decoration: none; color: inherit; }
 }
 .cell-bar:hover .cell-tooltip { opacity: 1; }
 
-/* ── Settings page ─────────────────────────────────────────────────────────── */
+/* ── Settings page — sub-nav layout ───────────────────────────────────────── */
+.settings-layout {
+  display: flex;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Left sub-nav column */
+.settings-subnav {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-subtle);
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-subnav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: background 0.12s, color 0.12s;
+  text-decoration: none;
+}
+.settings-subnav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+.settings-subnav-item:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+.settings-subnav-item.active {
+  border-left-color: var(--brand-teal);
+  background: color-mix(in srgb, var(--brand-teal) 8%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Right content panel */
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  min-width: 0;
+}
+
+/* Legacy single-column settings page */
 .settings-page { max-width: 680px; }
 .settings-section { margin-bottom: 24px; }
 .settings-section-title {
@@ -721,6 +772,73 @@ a { text-decoration: none; color: inherit; }
   color: var(--brand-teal);
 }
 
+/* ── Settings info value (read-only display field) ─────────────────────────── */
+.settings-info-val {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 4px 0;
+}
+
+/* ── Network page ───────────────────────────────────────────────────────────── */
+.network-page { max-width: 680px; }
+
+.net-kv-grid {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 0;
+  font-size: 13px;
+}
+.net-kv-row {
+  display: contents;
+}
+.net-kv-row > span {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.net-kv-row > span:first-child { color: var(--text-muted); font-weight: 500; }
+.net-kv-row > span:last-child  { color: var(--text-primary); font-weight: 600; word-break: break-all; }
+
+.rssi-bars {
+  display: inline-flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 14px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.rssi-bar {
+  width: 5px;
+  border-radius: 1px;
+  background: var(--border-subtle);
+}
+.rssi-bar.lit { background: var(--brand-teal); }
+
+/* Scan results dropdown */
+.scan-list {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-page);
+  margin-top: 4px;
+}
+.scan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+}
+.scan-row:last-child { border-bottom: none; }
+.scan-row:hover { background: var(--bg-card-hover); }
+.scan-ssid { font-weight: 600; color: var(--text-primary); flex: 1; }
+.scan-rssi { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.scan-lock { color: var(--text-muted); flex-shrink: 0; }
+
 /* ── Diag page ─────────────────────────────────────────────────────────────── */
 .diag-section { margin-bottom: 24px; }
 .diag-section h3 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 8px; }
@@ -744,3 +862,34 @@ a { text-decoration: none; color: inherit; }
 .diag-tasks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .diag-tasks-table th { text-align: left; padding: 4px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
 .diag-tasks-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); }
+
+/* ── Settings sub-nav responsive ───────────────────────────────────────────── */
+@media (max-width: 1023px) and (min-width: 768px) {
+  .settings-subnav { width: 180px; }
+}
+@media (max-width: 767px) {
+  .settings-layout { flex-direction: column; }
+  .settings-subnav {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0;
+  }
+  .settings-subnav-item {
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    border-left: none;
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .settings-subnav-item.active {
+    border-bottom-color: var(--brand-teal);
+    border-left-color: transparent;
+    background: color-mix(in srgb, var(--brand-teal) 8%, transparent);
+  }
+  .settings-content { padding: 16px; }
+}
