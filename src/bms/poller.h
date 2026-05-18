@@ -38,6 +38,14 @@ struct PollerStats {
   uint32_t sysparam_polls_err;
   uint32_t cycle_max_ms;
   uint32_t cycle_avg_ms;
+
+  // Per-pack RS485 communication counters (indexed by BMS address 0..15).
+  struct PackCommStats {
+    uint32_t polls;
+    uint32_t ok;
+    uint32_t timeouts;
+    uint32_t errors;
+  } pack[16];
 };
 
 // Thread-safe stats snapshot via portENTER_CRITICAL (< 1 µs, no I/O).

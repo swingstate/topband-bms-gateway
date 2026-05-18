@@ -1,6 +1,8 @@
 #pragma once
 
-#define FW_VERSION "3.0.0-dev"
+#ifndef FW_VERSION
+#  define FW_VERSION "3.0.0-dev"
+#endif
 
 // GIT_SHA is injected by tools/git_sha_gen.py into include/git_sha.h before
 // each PlatformIO build. Fall back to "unknown" if the file is absent
@@ -13,6 +15,10 @@
 #ifndef GIT_SHA
 #  define GIT_SHA "unknown"
 #endif
+
+// Composite version string shown in health endpoint and boot log.
+// Example: "3.0.0-dev (a750b8d)" or "3.0.0-dev (a750b8d-dirty)"
+#define FW_VERSION_FULL FW_VERSION " (" GIT_SHA ")"
 
 #define BUILD_DATE __DATE__
 #define BUILD_TIME __TIME__

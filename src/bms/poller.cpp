@@ -254,9 +254,11 @@ static void control_task_entry(void* param) {
 
       for (uint8_t i = 0; i < cfg.bms_count; ++i) {
         local_stats.analog_polls_attempted++;
+        local_stats.pack[i].polls++;
 
         if (!rs485_send_request(cfg.pins.rs485_dir, i, bms::protocol::TB_CID2_ANALOG_VALUES_FIXED_POINT)) {
           local_stats.analog_polls_timeout++;
+          local_stats.pack[i].timeouts++;
           continue;
         }
 
@@ -264,6 +266,7 @@ static void control_task_entry(void* param) {
         if (!rs485_receive_frame(rx_buf, sizeof(rx_buf), rxlen)) {
           ESP_LOGD(TAG, "analog rx timeout pack=%u", i);
           local_stats.analog_polls_timeout++;
+          local_stats.pack[i].timeouts++;
           continue;
         }
 
@@ -275,6 +278,7 @@ static void control_task_entry(void* param) {
         if (herr != bms::protocol::ParseError::Ok || rtn_out != bms::protocol::TB_RTN_OK) {
           ESP_LOGW(TAG, "analog hdr err pack=%u err=%d rtn=0x%02X", i, (int)herr, rtn_out);
           local_stats.analog_polls_parse_err++;
+          local_stats.pack[i].errors++;
           continue;
         }
 
@@ -283,12 +287,14 @@ static void control_task_entry(void* param) {
         if (perr != bms::protocol::ParseError::Ok) {
           ESP_LOGW(TAG, "analog parse err pack=%u err=%d", i, (int)perr);
           local_stats.analog_polls_parse_err++;
+          local_stats.pack[i].errors++;
           continue;
         }
 
         now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
         bms::fill_from_analog(parsed, now_ms, sys->pack[i]);
         local_stats.analog_polls_ok++;
+        local_stats.pack[i].ok++;
         ESP_LOGD(TAG, "pack[%u] V=%.3f I=%.2f SOC=%u%%", i,
                  sys->pack[i].pack_voltage, sys->pack[i].pack_current, sys->pack[i].soc);
       }

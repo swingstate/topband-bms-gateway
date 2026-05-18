@@ -127,7 +127,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
 
   // ── system ────────────────────────────────────────────────────────────────
   hs_str(s, "\"system\":{");
-  hs_str(s, "\"fw\":"); hs_json_str(s, FW_VERSION);
+  hs_str(s, "\"fw\":"); hs_json_str(s, FW_VERSION_FULL);
   hs_str(s, ",\"uptime_s\":"); hs_uint(s, uptime_s);
   hs_str(s, ",\"free_heap\":"); hs_uint(s, heap_free);
   hs_str(s, ",\"min_heap\":"); hs_uint(s, heap_min);
@@ -147,7 +147,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
   }
   hs_str(s, ",\"reset_reason\":"); hs_json_str(s, reset_reason);
   hs_str(s, ",\"build\":"); hs_json_str(s, BUILD_DATE " " BUILD_TIME);
-  hs_str(s, ",\"version\":"); hs_json_str(s, FW_VERSION);
+  hs_str(s, ",\"version\":"); hs_json_str(s, FW_VERSION_FULL);
   hs_str(s, "}");
 
   // ── poller ────────────────────────────────────────────────────────────────

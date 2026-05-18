@@ -1,4 +1,4 @@
-/* TopBand BMS Gateway — Phase G dashboard JS */
+/* TopBand BMS Gateway — Phase H3b dashboard JS */
 'use strict';
 
 /* ── Auth / CSRF ────────────────────────────────────────────────────────────── */
@@ -72,23 +72,44 @@ const routes = {
   '/diag':     renderDiag,
 };
 
+// Timer for per-pack detail page auto-refresh.
+let g_battery_detail_timer = null;
+
+function stopBatteryDetailPoll() {
+  if (g_battery_detail_timer) {
+    clearInterval(g_battery_detail_timer);
+    g_battery_detail_timer = null;
+  }
+}
+
 function navigate(path) {
   // Stop diag auto-refresh when leaving the diag page.
   if (path !== '/diag' && g_diag_timer) {
     clearInterval(g_diag_timer);
     g_diag_timer = null;
   }
+  // Stop battery detail polling when navigating away.
+  if (!path.startsWith('/battery/')) stopBatteryDetailPoll();
   history.pushState({}, '', path);
   renderPage(path);
   // Update active sidebar item.
   document.querySelectorAll('.sidebar-item').forEach(el => {
     el.classList.remove('active');
     const href = el.getAttribute('href');
-    if (href === path || (path === '/' && href === '/')) el.classList.add('active');
+    if (href && (href === path || (path === '/' && href === '/') ||
+        (path.startsWith('/battery') && href === '/battery'))) {
+      el.classList.add('active');
+    }
   });
 }
 
 function renderPage(path) {
+  // Handle /battery/:n detail routes.
+  const detailMatch = path.match(/^\/battery\/(\d+)$/);
+  if (detailMatch) {
+    renderBatteryDetail(parseInt(detailMatch[1], 10));
+    return;
+  }
   const fn = routes[path] || renderDashboard;
   fn();
 }
@@ -220,6 +241,7 @@ async function fetchHealth() {
     if (r && r.ok) {
       g_health = await r.json();
       updateMqttIndicator();
+      updateAuthBanner();
     }
   } catch (_) {}
 }
@@ -241,9 +263,13 @@ function updateMqttIndicator() {
 
 function updateLiveUI() {
   updateStatusBar();
-  if (window.location.pathname === '/' || window.location.pathname === '/dashboard') {
+  updateAuthBanner();
+  const p = window.location.pathname;
+  if (p === '/' || p === '/dashboard') {
     updateDashboardCards();
     updatePackCards();
+  } else if (p === '/battery') {
+    updateBatteryOverviewCards();
   }
 }
 
@@ -637,17 +663,286 @@ async function loadCharts() {
   } catch (_) { /* charts unavailable — silently ignore */ }
 }
 
-/* ── Battery page (placeholder) ─────────────────────────────────────────────── */
+/* ── Battery overview page ──────────────────────────────────────────────────── */
 function renderBattery() {
-  document.getElementById('page-root').innerHTML = `
-    <div class="placeholder-page">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px;color:var(--fg-muted)">
-        <rect x="2" y="7" width="18" height="10" rx="2"/><path d="M20 11h2v2h-2"/>
-      </svg>
-      <h2>Battery Pack Detail</h2>
-      <p>Per-pack deep detail (cell temperatures, alarm breakdown, RS485 stats) coming in Phase H.</p>
+  stopBatteryDetailPoll();
+  const root = document.getElementById('page-root');
+  root.innerHTML = `
+    <div style="padding:24px">
+      <h2 style="margin:0 0 6px;font-size:20px">Battery Packs</h2>
+      <p id="battery-summary" style="font-size:13px;color:var(--text-muted);margin:0 0 20px"></p>
+      <div class="packs-grid" id="battery-overview-grid">
+        <div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>
+      </div>
+    </div>`;
+  updateBatteryOverviewCards();
+}
+
+function updateBatteryOverviewCards() {
+  const grid = document.getElementById('battery-overview-grid');
+  if (!grid) return;
+
+  const snap   = (g_live && g_live.snapshot) || {};
+  const packs  = snap.packs || [];
+  const safety = (g_live && g_live.safety)   || {};
+
+  const summary = document.getElementById('battery-summary');
+  if (summary) {
+    const online    = g_live ? (g_live.bms_count_online || 0) : 0;
+    const total     = g_live ? (g_live.bms_count_configured || 0) : 0;
+    const soc       = safety.soc_avg !== undefined ? fmt(safety.soc_avg, 0) + '% SOC' : '';
+    const volt      = safety.pack_voltage_avg !== undefined ? fmt(safety.pack_voltage_avg, 2) + ' V avg' : '';
+    summary.textContent = [online + '/' + total + ' online', soc, volt].filter(Boolean).join(' · ');
+  }
+
+  if (packs.length === 0) {
+    grid.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>';
+    return;
+  }
+
+  // Recreate if count changed.
+  const existing = grid.querySelectorAll('.battery-overview-card');
+  if (existing.length !== packs.length) {
+    grid.innerHTML = '';
+    packs.forEach((_, i) => {
+      const card = el('div', 'card battery-overview-card');
+      card.id = `bov-card-${i}`;
+      card.style.cursor = 'pointer';
+      card.addEventListener('click', () => navigate(`/battery/${i}`));
+      grid.appendChild(card);
+    });
+  }
+
+  packs.forEach((p, i) => {
+    const card = document.getElementById(`bov-card-${i}`);
+    if (!card) return;
+    renderBatteryOverviewCard(card, p);
+  });
+}
+
+function renderBatteryOverviewCard(card, p) {
+  const online  = p.online;
+  const cells   = p.cells || [];
+  const count   = p.cell_count || cells.length;
+  const minIdx  = p.cell_min_idx;
+  const maxIdx  = p.cell_max_idx;
+  const driftMv = Math.round((p.cell_drift_v || 0) * 1000);
+  const power   = (p.pack_voltage && p.pack_current !== undefined)
+                  ? fmt(p.pack_voltage * p.pack_current, 0) : '—';
+
+  // Mini cell bar graph
+  let barsHtml = '';
+  if (online && count > 0) {
+    cells.slice(0, count).forEach((v, i) => {
+      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
+      let cls = 'cell-ok';
+      if (i === minIdx) cls = 'cell-min';
+      else if (i === maxIdx) cls = 'cell-max';
+      barsHtml += `<div class="cell-bar ${cls}" style="height:${pct.toFixed(0)}%">
+        <div class="cell-tooltip">C${i + 1}: ${v.toFixed(3)}V</div></div>`;
+    });
+  } else {
+    for (let i = 0; i < (count || 15); i++) {
+      barsHtml += `<div class="cell-bar cell-offline" style="height:30%"></div>`;
+    }
+  }
+
+  card.className = 'card battery-overview-card' + (online ? '' : ' pack-offline');
+  card.innerHTML = `
+    <div class="pack-header">
+      <span class="pack-id">BMS ${p.bms_id + 1}</span>
+      <div class="pack-status-dot ${online ? 'online' : 'offline'}"></div>
+      <span style="font-size:12px;color:var(--fg-muted)">${online ? 'Online' : 'Offline'}</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">tap for detail ›</span>
     </div>
-  `;
+    <div class="pack-metrics">
+      <div><div class="pack-metric-label">SOC</div><div class="pack-metric-value" style="color:var(--purple)">${p.soc !== undefined ? p.soc + '%' : '—'}</div></div>
+      <div><div class="pack-metric-label">Voltage</div><div class="pack-metric-value">${fmt(p.pack_voltage, 2)} V</div></div>
+      <div><div class="pack-metric-label">Current</div><div class="pack-metric-value">${fmtA(p.pack_current)} A</div></div>
+      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${power} W</div></div>
+      <div><div class="pack-metric-label">SOH</div><div class="pack-metric-value">${p.soh !== undefined ? p.soh + '%' : '—'}</div></div>
+      <div><div class="pack-metric-label">Drift</div><div class="pack-metric-value" style="color:${driftMv > 50 ? 'var(--amber)' : 'var(--fg)'}">${driftMv} mV</div></div>
+      <div><div class="pack-metric-label">Temp</div><div class="pack-metric-value">${fmt(p.temp_avg_c, 1)} °C</div></div>
+      <div><div class="pack-metric-label">Cells</div><div class="pack-metric-value">${count}S</div></div>
+    </div>
+    <div class="cell-graph">${barsHtml}</div>`;
+}
+
+/* ── Battery detail page ────────────────────────────────────────────────────── */
+function renderBatteryDetail(packId) {
+  stopBatteryDetailPoll();
+  const root = document.getElementById('page-root');
+  root.innerHTML = `
+    <div style="padding:24px" id="bms-detail-root">
+      <div style="margin-bottom:16px">
+        <a href="/battery" class="back-link" onclick="navigate('/battery');return false;">
+          ← Battery overview
+        </a>
+      </div>
+      <div id="bms-detail-content">
+        <div style="padding:40px;text-align:center;color:var(--text-muted)">Loading…</div>
+      </div>
+    </div>`;
+
+  const doFetch = async () => {
+    if (!document.getElementById('bms-detail-root')) {
+      stopBatteryDetailPoll();
+      return;
+    }
+    try {
+      const r = await apiFetch(`/api/bms/${packId}`);
+      if (!r) return;
+      if (r.status === 404) {
+        const c = document.getElementById('bms-detail-content');
+        if (c) c.innerHTML = `<p style="color:var(--text-muted)">Pack ${packId + 1} not found or not configured.</p>`;
+        return;
+      }
+      if (!r.ok) return;
+      const d = await r.json();
+      renderBmsDetailContent(packId, d);
+    } catch (_) {}
+  };
+
+  doFetch();
+  g_battery_detail_timer = setInterval(doFetch, 2000);
+}
+
+function renderBmsDetailContent(packId, d) {
+  const content = document.getElementById('bms-detail-content');
+  if (!content) return;
+
+  const online = d.online;
+  const statusCls = online
+    ? (d.alarm_bits && d.alarm_bits !== '0x0000000000000000' ? 'alarm' : 'pill-charging')
+    : 'pill-discharging';
+  const statusLabel = online
+    ? (d.alarm_bits && d.alarm_bits !== '0x0000000000000000' ? 'Alarm' : 'Online')
+    : 'Offline';
+
+  // Live values table
+  const lvRows = [
+    ['Pack voltage', fmt(d.pack_v, 2) + ' V'],
+    ['Current', fmtA(d.current) + ' A'],
+    ['Power', fmt(d.power, 0) + ' W'],
+    ['SOC', d.soc !== undefined ? d.soc + '%' : '—'],
+    ['SOH', d.soh !== undefined ? d.soh + '%' : '—'],
+    ['Cycles', d.cycles !== undefined ? d.cycles : '—'],
+    ['Capacity remaining', fmt(d.rem_ah, 1) + ' Ah'],
+    ['Capacity full', fmt(d.full_ah, 1) + ' Ah'],
+    ['Cell count', d.cell_count !== undefined ? d.cell_count + 'S' : '—'],
+    ['Cell min', fmt(d.cell_min_v, 3) + ' V'],
+    ['Cell max', fmt(d.cell_max_v, 3) + ' V'],
+    ['Cell drift', (d.drift_mv !== undefined ? d.drift_mv + ' mV' : '—')],
+  ];
+
+  // Cell voltage bar chart
+  const cells = d.cells || [];
+  const count = d.cell_count || cells.length;
+  const minIdx = d.cell_min_idx;
+  const maxIdx = d.cell_max_idx;
+  let cellBarsHtml = '';
+  if (online && count > 0) {
+    const vMin = cells.slice(0, count).reduce((a, b) => Math.min(a, b), Infinity);
+    const vMax = cells.slice(0, count).reduce((a, b) => Math.max(a, b), -Infinity);
+    const yPad = 0.02;
+    cells.slice(0, count).forEach((v, i) => {
+      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
+      let cls = 'cell-ok';
+      if (i === minIdx) cls = 'cell-min';
+      else if (i === maxIdx) cls = 'cell-max';
+      cellBarsHtml += `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:16px">
+          <div style="font-size:10px;color:var(--text-muted)">${v.toFixed(3)}</div>
+          <div style="flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end">
+            <div class="cell-bar ${cls}" style="height:${pct.toFixed(0)}%;min-height:4px">
+              <div class="cell-tooltip">C${i + 1}: ${v.toFixed(3)}V</div>
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted)">${i + 1}</div>
+        </div>`;
+    });
+  }
+
+  // Temps section
+  const temps = d.temps || [];
+  const tempRows = temps.map(t => {
+    const warn = g_config && (t.val > (g_config.charge_temp_max - 5) ||
+                               t.val < (g_config.charge_temp_min + 5));
+    return `<div style="display:flex;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--border-subtle)">
+      <span>${escHtml(t.lbl)}</span>
+      <span style="font-weight:600;color:${warn ? 'var(--brand-coral)' : 'inherit'}">${fmt(t.val, 1)} °C</span>
+    </div>`;
+  }).join('');
+
+  // Sysparam section
+  const sp = d.sysparam || {};
+  let sysparamHtml = '<p style="font-size:13px;color:var(--text-muted)">Not yet polled (round-robin, up to 5 min)</p>';
+  if (sp.valid) {
+    sysparamHtml = `
+      <div class="diag-kv-grid">
+        ${kvRow('Cell OVP', fmt(sp.cell_high_v, 3) + ' V')}
+        ${kvRow('Cell UVP', fmt(sp.cell_low_v, 3) + ' V')}
+        ${kvRow('Module high', fmt(sp.module_high_v, 2) + ' V')}
+        ${kvRow('Module low', fmt(sp.module_low_v, 2) + ' V')}
+        ${kvRow('Module under-V', fmt(sp.module_under_v, 2) + ' V')}
+        ${kvRow('Charge temp range', fmt(sp.charge_t_min, 1) + ' … ' + fmt(sp.charge_t_max, 1) + ' °C')}
+        ${kvRow('Discharge temp range', fmt(sp.discharge_t_min, 1) + ' … ' + fmt(sp.discharge_t_max, 1) + ' °C')}
+        ${kvRow('Max charge A', fmt(sp.charge_max_a, 1) + ' A')}
+        ${kvRow('Max discharge A', fmt(sp.discharge_max_a, 1) + ' A')}
+      </div>`;
+  }
+
+  // RS485 stats section
+  const rs = d.rs485 || {};
+  const rsHtml = `
+    <div class="diag-kv-grid">
+      ${kvRow('Polls', rs.polls || 0)}
+      ${kvRow('OK', rs.ok || 0)}
+      ${kvRow('Timeouts', rs.timeouts || 0)}
+      ${kvRow('Errors', rs.errors || 0)}
+      ${kvRow('Success', (rs.success_pct || 0) + '%')}
+    </div>`;
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <h2 style="margin:0;font-size:22px">Pack ${packId + 1}</h2>
+      <span class="charging-pill ${statusCls}">${statusLabel}</span>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Live Values</div>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        ${lvRows.map(([k, v]) => `
+          <tr>
+            <td style="padding:5px 8px;color:var(--text-muted);width:55%">${k}</td>
+            <td style="padding:5px 8px;font-weight:600">${v}</td>
+          </tr>`).join('')}
+      </table>
+    </div>
+
+    ${count > 0 ? `
+    <div class="settings-section">
+      <div class="settings-section-title">Cell Voltages</div>
+      <div style="display:flex;gap:4px;height:140px;align-items:stretch;margin-top:8px">
+        ${cellBarsHtml}
+      </div>
+    </div>` : ''}
+
+    ${temps.length > 0 ? `
+    <div class="settings-section">
+      <div class="settings-section-title">Temperatures</div>
+      ${tempRows}
+    </div>` : ''}
+
+    <div class="settings-section">
+      <div class="settings-section-title">Pack Limits (sysparam)</div>
+      ${sysparamHtml}
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">RS485 Statistics</div>
+      ${rsHtml}
+    </div>`;
 }
 
 /* ── Settings page ─────────────────────────────────────────────────────────── */
@@ -947,6 +1242,29 @@ async function renderSettings() {
 
       <div class="settings-section" style="margin-top:32px">
         <div class="settings-section-title">Account</div>
+
+        <!-- Authentication toggle -->
+        <div style="margin-bottom:20px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">Authentication</div>
+          ${c.auth_enabled
+            ? `<div style="display:flex;align-items:center;gap:12px">
+                 <span class="charging-pill pill-charging">Enabled</span>
+                 <button class="btn btn-secondary" style="font-size:12px;padding:4px 12px"
+                         onclick="confirmDisableAuth()">Disable</button>
+               </div>`
+            : (c.auth_hash
+              ? `<div style="display:flex;align-items:center;gap:12px">
+                   <span class="charging-pill pill-discharging">Disabled</span>
+                   <button class="btn btn-primary" style="font-size:12px;padding:4px 12px"
+                           onclick="enableAuth()">Enable</button>
+                 </div>`
+              : `<div style="display:flex;align-items:center;gap:12px">
+                   <span class="charging-pill pill-idle">Disabled</span>
+                   <span style="font-size:12px;color:var(--text-muted)">Set a password first to enable authentication</span>
+                 </div>`)}
+          <div id="auth-toggle-feedback" class="feedback-msg" style="margin-top:6px"></div>
+        </div>
+
         ${c.auth_enabled
           ? `<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Change admin password</p>
              ${pwField('pw-current', 'Current password', 'current-password', 'Current password')}`
@@ -969,7 +1287,7 @@ async function renderSettings() {
           </div>
           <div class="form-group">
             <label>UI</label>
-            <div class="settings-info-val">h2-mvp-2</div>
+            <div class="settings-info-val">${g_health ? (g_health.ui_version || '—') : '—'}</div>
             <div class="help">Served from LittleFS</div>
           </div>
         </div>
@@ -1529,6 +1847,60 @@ async function changePassword() {
   }
 }
 
+/* ── Auth toggle ─────────────────────────────────────────────────────────────── */
+function confirmDisableAuth() {
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-title').textContent = 'Disable authentication?';
+  document.getElementById('modal-body').textContent =
+    'This will turn off login protection. Anyone on your network will be able to view live data, ' +
+    'change settings, and trigger a factory reset. This is intended for trusted networks only.';
+  const confirmBtn = document.getElementById('modal-confirm');
+  confirmBtn.textContent = 'Disable';
+  confirmBtn.style.display = '';
+  overlay.style.display = 'flex';
+  confirmBtn.onclick = async () => {
+    overlay.style.display = 'none';
+    await setAuthEnabled(false);
+  };
+}
+
+async function enableAuth() {
+  await setAuthEnabled(true);
+}
+
+async function setAuthEnabled(enabled) {
+  const msg = document.getElementById('auth-toggle-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+  try {
+    const cfg = Object.assign({}, g_config);
+    cfg.auth_enabled = enabled;
+    cfg.auth_hash = '';        // redacted — server keeps existing hash
+    cfg.mqtt_pass_obf = '';    // redacted
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      // Re-render settings page to reflect new state.
+      renderSettings();
+    } else {
+      if (msg) {
+        msg.className = 'feedback-msg err';
+        msg.textContent = data.error || 'Failed to update authentication state.';
+      }
+    }
+  } catch (e) {
+    if (msg) {
+      msg.className = 'feedback-msg err';
+      msg.textContent = 'Network error: ' + e.message;
+    }
+  }
+}
+
 /* ── HA Discovery ───────────────────────────────────────────────────────────── */
 async function sendHaDiscovery() {
   const msg = document.getElementById('feedback-msg');
@@ -1591,17 +1963,20 @@ async function doFactoryReset() {
   }
 }
 
-/* ── Auth-disabled banner ────────────────────────────────────────────────────── */
+/* ── Auth-disabled banner (reactive on each health/live poll) ─────────────── */
+function updateAuthBanner() {
+  // Use g_health.auth_enabled when available; avoids a separate /api/config call.
+  const authEnabled = g_health ? g_health.auth_enabled : undefined;
+  if (authEnabled === undefined) return;
+  const banner    = document.getElementById('auth-banner');
+  const logoutBtn = document.getElementById('logout-btn');
+  if (banner)    banner.style.display    = authEnabled === false ? 'flex' : 'none';
+  if (logoutBtn) logoutBtn.style.display = authEnabled !== false ? 'inline-flex' : 'none';
+}
+
 async function checkAuthState() {
-  try {
-    const r = await apiFetch('/api/config');
-    if (!r || !r.ok) return;
-    const cfg = await r.json();
-    const banner  = document.getElementById('auth-banner');
-    const logoutBtn = document.getElementById('logout-btn');
-    if (banner)    banner.style.display    = cfg.auth_enabled === false ? 'flex' : 'none';
-    if (logoutBtn) logoutBtn.style.display = cfg.auth_enabled !== false ? 'inline-flex' : 'none';
-  } catch (_) {}
+  // Called once at boot; subsequent updates come from updateAuthBanner() on each poll.
+  updateAuthBanner();
 }
 
 /* ── Boot ───────────────────────────────────────────────────────────────────── */
