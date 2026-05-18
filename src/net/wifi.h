@@ -78,6 +78,13 @@ std::vector<ScanResult> scan(uint32_t timeout_ms = 5000);
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
+struct IpInfo {
+  char ip[24];
+  char gw[24];
+  char netmask[24];
+  char dns[24];
+};
+
 Mode get_state();
 
 bool is_connected();   // true if Mode == StaConnected
@@ -88,6 +95,21 @@ void get_ip(char* buf, size_t len);
 
 // Return STA IP as std::string (empty if not connected).
 std::string get_local_ip();
+
+// Return connected SSID (empty if not in STA mode).
+std::string get_ssid();
+
+// Return STA RSSI in dBm. Returns 0 if not connected.
+int8_t get_rssi();
+
+// Fill buf with the mDNS hostname set during init (e.g. "topband-bms-91c4").
+void get_hostname(char* buf, size_t len);
+
+// Return full IP info (ip, gw, netmask, dns). Fields are "0.0.0.0" if unavailable.
+IpInfo get_ip_info();
+
+// Seconds since STA connected; 0 if not connected.
+uint32_t connected_for_s();
 
 // Expose the AP netif for captdns to query the gateway IP.
 esp_netif_t* get_ap_netif();

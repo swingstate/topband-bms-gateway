@@ -7,12 +7,14 @@
 #include "storage/ui_provisioner.h"
 #include "mqtt/publisher.h"
 #include "net/ntp.h"
+#include "net/wifi.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <ArduinoJson.h>
@@ -57,7 +59,8 @@ esp_err_t handle_health(httpd_req_t* req) {
   doc["now_ts_s"]   = net::ntp::now_unix_s();
   doc["ntp_synced"] = net::ntp::is_synced();
 
-  doc["free_heap_b"] = esp_get_free_heap_size();
+  doc["free_heap_b"]  = esp_get_free_heap_size();
+  doc["free_psram_b"] = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
   char body[1024];
   size_t n = serializeJson(doc, body, sizeof(body));
@@ -205,6 +208,106 @@ esp_err_t handle_ha_discovery_clear(httpd_req_t* req) {
   }
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+// ── WiFi status / scan / configure (main STA server) ─────────────────────────
+
+esp_err_t handle_wifi_status_get(httpd_req_t* req) {
+  net::wifi::IpInfo ip = net::wifi::get_ip_info();
+  std::string ssid     = net::wifi::get_ssid();
+  int8_t rssi          = net::wifi::get_rssi();
+  uint32_t conn_s      = net::wifi::connected_for_s();
+
+  char hostname[32] = {};
+  net::wifi::get_hostname(hostname, sizeof(hostname));
+
+  char mdns[64] = {};
+  snprintf(mdns, sizeof(mdns), "%s.local", hostname);
+
+  JsonDocument doc;
+  doc["connected"]       = net::wifi::is_connected();
+  doc["ssid"]            = ssid;
+  doc["rssi"]            = rssi;
+  doc["ip"]              = ip.ip;
+  doc["gateway"]         = ip.gw;
+  doc["netmask"]         = ip.netmask;
+  doc["dns"]             = ip.dns;
+  doc["mdns_hostname"]   = mdns;
+  doc["connected_for_s"] = conn_s;
+
+  char body[512];
+  size_t n = serializeJson(doc, body, sizeof(body));
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  return httpd_resp_send(req, body, (ssize_t)n);
+}
+
+esp_err_t handle_wifi_scan_get(httpd_req_t* req) {
+  auto results = net::wifi::scan(5000);
+
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto& r : results) {
+    JsonObject o = arr.add<JsonObject>();
+    o["ssid"]   = r.ssid;
+    o["rssi"]   = r.rssi;
+    o["secure"] = r.secure;
+  }
+
+  size_t est = measureJson(doc) + 1;
+  char* buf = (char*)malloc(est);
+  if (!buf) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
+  }
+  size_t n = serializeJson(doc, buf, est);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)n);
+  free(buf);
+  return ret;
+}
+
+esp_err_t handle_wifi_configure_post(httpd_req_t* req) {
+  char body[512] = {};
+  size_t remaining = req->content_len;
+  if (remaining == 0 || remaining >= sizeof(body)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"bad body\"}");
+  }
+  size_t total = 0;
+  while (remaining > 0) {
+    int n = httpd_req_recv(req, body + total, remaining);
+    if (n <= 0) break;
+    total     += (size_t)n;
+    remaining -= (size_t)n;
+  }
+  body[total] = '\0';
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body) != DeserializationError::Ok) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"JSON parse error\"}");
+  }
+
+  const char* ssid = doc["ssid"]     | "";
+  const char* pass = doc["password"] | "";
+  if (ssid[0] == '\0') {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"error\":\"ssid required\"}");
+  }
+
+  // Persist credentials and kick off async connect. On success the gateway
+  // reboots and comes up on the new network. On failure it falls back to AP.
+  net::wifi::save_creds(ssid, pass);
+  net::wifi::start_connection_async(ssid, pass, 30000);
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req,
+      "{\"ok\":true,\"status\":\"connecting\"}");
 }
 
 }  // namespace web

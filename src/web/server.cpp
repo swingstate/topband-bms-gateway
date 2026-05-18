@@ -44,13 +44,13 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[20];
+static AuthCtx g_auth_ctx[24];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
                      const char* uri, httpd_method_t method,
                      esp_err_t (*handler)(httpd_req_t*)) {
-  if (g_auth_ctx_count >= 20) {
+  if (g_auth_ctx_count >= 24) {
     ESP_LOGE(TAG, "reg_auth: out of context slots");
     return;
   }
@@ -99,7 +99,10 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/bms/*",        HTTP_GET,  handle_bms_id);
   reg_auth(g_server, "/api/config",       HTTP_GET,  handle_config_get);
   reg_auth(g_server, "/api/config",       HTTP_POST, handle_config_post);
-  reg_auth(g_server, "/api/wifi",         HTTP_POST, handle_wifi_post);
+  reg_auth(g_server, "/api/wifi",              HTTP_POST, handle_wifi_post);
+  reg_auth(g_server, "/api/wifi/status",       HTTP_GET,  handle_wifi_status_get);
+  reg_auth(g_server, "/api/wifi/scan",         HTTP_GET,  handle_wifi_scan_get);
+  reg_auth(g_server, "/api/wifi/configure",    HTTP_POST, handle_wifi_configure_post);
   reg_auth(g_server, "/api/restart",      HTTP_POST, handle_restart);
   reg_auth(g_server, "/api/backup",                    HTTP_GET,  handle_backup);
   reg_auth(g_server, "/api/factory_reset",             HTTP_POST, handle_factory_reset);
