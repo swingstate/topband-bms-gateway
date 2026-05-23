@@ -10,6 +10,7 @@ idf_component_register(
     "app/boot.cpp"
     "app/smoke_reader.cpp"
     "app/history_task.cpp"
+    "app/self_test.cpp"
     "storage/config.cpp"
     "storage/nvs_store.cpp"
     "storage/lfs_store.cpp"
@@ -45,6 +46,7 @@ idf_component_register(
     "web/handlers_history.cpp"
     "web/handlers_diag.cpp"
     "web/handlers_alerts.cpp"
+    "web/handlers_ota.cpp"
     "web/handlers_static.cpp"
     "mqtt/topics.cpp"
     "mqtt/payloads.cpp"
@@ -74,4 +76,5 @@ idf_component_register(
     esp_rom
     mbedtls
     mqtt
+    app_update
 )

@@ -1,4 +1,5 @@
 #include "bms/poller.h"
+#include "app/self_test.h"
 #include "bms/snapshot.h"
 #include "bms/protocol.h"
 #include "bms/energy_integrator.h"
@@ -211,6 +212,7 @@ static void control_task_entry(void* param) {
     for (uint8_t i = 0; i < 16; ++i) bms::init_pack_snapshot_offline(sys->pack[i], i);
     bus::snapshot_bus::publish();
     ESP_LOGI(TAG, "Initial snapshot published (all packs offline)");
+    app::self_test::mark_passed(app::self_test::SNAPSHOT_PUBLISHED);
   }
 
   // ── Loop state ───────────────────────────────────────────────────────────
@@ -228,6 +230,7 @@ static void control_task_entry(void* param) {
   bms::poller::PollerStats local_stats{};
 
   TickType_t  tick_start = xTaskGetTickCount();
+  app::self_test::mark_passed(app::self_test::CONTROLTASK_ALIVE);
 
   for (;;) {
     uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);

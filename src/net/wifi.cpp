@@ -1,4 +1,5 @@
 #include "wifi.h"
+#include "app/self_test.h"
 #include "diag/alerts.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -67,6 +68,7 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
     diag::alerts::emit(diag::alerts::Severity::Info, "wifi",
                        "connected to %s, IP=%s", ssid, ip_str);
+    app::self_test::mark_passed(app::self_test::WIFI_CONNECTED);
     if (g_events) xEventGroupSetBits(g_events, BIT_CONNECTED);
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
     auto* ev = (wifi_event_ap_staconnected_t*)data;

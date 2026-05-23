@@ -234,13 +234,14 @@ function updateStatusBar() {
     const online = g_live.bms_count_online || 0;
     const total  = g_live.bms_count_configured || 0;
     bmsEl.textContent = `BMS ${online}/${total}`;
+    bmsEl.className = 'status-pill pill-bms' + (total > 0 && online < total ? ' alarm' : '');
   }
 
   const canEl = document.getElementById('status-can');
   if (canEl) {
     const hasAlarm = (safety.alarm_flags || 0) !== 0;
     const txFail   = (can.tx_fail || 0) > 0;
-    canEl.textContent = hasAlarm ? 'CAN alarm' : (txFail ? 'CAN fail' : 'CAN ok');
+    canEl.textContent = 'CAN';
     canEl.className = 'status-pill pill-can' + (hasAlarm || txFail ? ' alarm' : '');
   }
 }
@@ -252,10 +253,28 @@ async function fetchHealth() {
     const r = await fetch('/api/health', { cache: 'no-store' });
     if (r && r.ok) {
       g_health = await r.json();
+      updateWifiIndicator();
       updateMqttIndicator();
       updateAuthBanner();
     }
   } catch (_) {}
+}
+
+function updateWifiIndicator() {
+  const el = document.getElementById('status-wifi');
+  if (!el) return;
+  const wifi = g_health && g_health.wifi;
+  if (!wifi || !wifi.connected) {
+    el.className = 'status-pill pill-wifi off';
+    el.textContent = 'WiFi';
+    return;
+  }
+  const rssi = wifi.rssi;
+  let mod = '';
+  if      (rssi < -75) mod = ' weak';
+  else if (rssi < -60) mod = ' fair';
+  el.className = 'status-pill pill-wifi' + mod;
+  el.textContent = 'WiFi';
 }
 
 function updateMqttIndicator() {
@@ -263,11 +282,11 @@ function updateMqttIndicator() {
   if (!mqttEl) return;
   const h = g_health;
   if (!h || !h.mqtt || !h.mqtt.enabled) {
-    mqttEl.style.display = 'none';
+    mqttEl.className = 'status-pill pill-mqtt off';
+    mqttEl.textContent = 'MQTT';
     return;
   }
   const state = h.mqtt.state || 'unknown';
-  mqttEl.style.display = 'inline-flex';
   const labels = { connected: 'MQTT ok', connecting: 'MQTT…', disconnected: 'MQTT off', failed: 'MQTT err' };
   mqttEl.textContent = labels[state] || 'MQTT';
   mqttEl.className = 'status-pill pill-mqtt' + (state === 'connected' ? '' : ' alarm');
@@ -1424,6 +1443,36 @@ function renderSettingsSystem() {
         </div>
       </div>
       <div class="settings-section">
+        <div class="settings-section-title">Firmware Update</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label>Current firmware</label>
+            <div class="settings-info-val">${h ? escHtml(h.version) : '—'}</div>
+            <div class="help">${h ? escHtml(h.build || '') : ''}</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label>Firmware file (.bin)</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="file" id="ota-file-input" accept=".bin" style="display:none" onchange="otaFileChanged(event)">
+              <button class="btn btn-secondary" onclick="document.getElementById('ota-file-input').click()">Choose file</button>
+              <span id="ota-file-info" style="font-size:12px;color:var(--text-muted)">No file selected</span>
+            </div>
+            <div id="ota-hash" style="font-size:11px;color:var(--text-muted);margin-top:4px;word-break:break-all"></div>
+          </div>
+        </div>
+        <div id="ota-progress" style="display:none;margin:8px 0">
+          <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">
+            <div id="ota-progress-bar" style="background:var(--brand-teal,#76D2D9);height:100%;width:0%;transition:width 0.2s"></div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="ota-upload-btn" class="btn btn-primary" disabled onclick="startOtaUpload()">Upload &amp; install</button>
+        </div>
+        <div id="ota-status" class="feedback-msg" style="margin-top:8px"></div>
+      </div>
+      <div class="settings-section">
         <div class="settings-section-title">Maintenance</div>
         <div class="btn-row">
           <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
@@ -1821,6 +1870,187 @@ async function confirmRestart() {
     'This page will reconnect automatically when the gateway comes back online.');
   // Wait 3 s (device restarts in 2 s) then poll until it responds with low uptime.
   setTimeout(pollUntilOnline, 3000);
+}
+
+/* ── OTA firmware update ─────────────────────────────────────────────────────── */
+
+let g_ota_file   = null;
+let g_ota_sha256 = null;
+
+async function otaFileChanged(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  g_ota_file   = file;
+  g_ota_sha256 = null;
+
+  const infoEl   = document.getElementById('ota-file-info');
+  const hashEl   = document.getElementById('ota-hash');
+  const uploadBtn = document.getElementById('ota-upload-btn');
+
+  if (infoEl)    infoEl.textContent    = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
+  if (hashEl)    hashEl.textContent    = 'Computing SHA-256…';
+  if (uploadBtn) uploadBtn.disabled    = true;
+
+  try {
+    const buf = await file.arrayBuffer();
+    let hex;
+    if (crypto.subtle) {
+      // Secure context (HTTPS or localhost): use native SubtleCrypto.
+      const hb = await crypto.subtle.digest('SHA-256', buf);
+      hex = Array.from(new Uint8Array(hb))
+                 .map(b => b.toString(16).padStart(2, '0')).join('');
+    } else {
+      // Non-secure context (plain HTTP on LAN): crypto.subtle is undefined.
+      // Fall back to vendored js-sha256 (web/ui/lib/sha256.min.js).
+      hex = sha256(buf);
+    }
+    g_ota_sha256 = hex;
+    if (hashEl)    hashEl.textContent = 'SHA-256: ' + hex.substring(0, 16) + '…';
+    if (uploadBtn) uploadBtn.disabled = false;
+  } catch (e) {
+    if (hashEl) hashEl.textContent = 'Error computing hash: ' + e.message;
+  }
+}
+
+function startOtaUpload() {
+  if (!g_ota_file || !g_ota_sha256) return;
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-title').textContent = 'Install firmware?';
+  document.getElementById('modal-body').innerHTML =
+    '<p>The gateway will reboot and run a 5-minute self-test. ' +
+    'If the new firmware fails, the previous version is restored automatically.</p>' +
+    '<p style="font-size:11px;color:var(--text-muted);margin-top:6px;word-break:break-all">' +
+    'SHA-256: ' + escHtml(g_ota_sha256) + '</p>';
+  document.getElementById('modal-confirm').style.display = '';
+  document.getElementById('modal-confirm').textContent   = 'Install';
+  overlay.style.display = 'flex';
+  document.getElementById('modal-confirm').onclick = () => {
+    overlay.style.display = 'none';
+    doOtaUpload();
+  };
+}
+
+function doOtaUpload() {
+  const statusEl   = document.getElementById('ota-status');
+  const progressEl = document.getElementById('ota-progress');
+  const progressBar = document.getElementById('ota-progress-bar');
+  const uploadBtn  = document.getElementById('ota-upload-btn');
+
+  if (uploadBtn)  uploadBtn.disabled = true;
+  if (statusEl)   { statusEl.className = 'feedback-msg'; statusEl.textContent = 'Uploading…'; }
+  if (progressEl) progressEl.style.display = 'block';
+  if (progressBar) progressBar.style.width = '0%';
+
+  const prevVersion = g_health ? g_health.version : null;
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/ota/upload');
+  xhr.setRequestHeader('Content-Type',       'application/octet-stream');
+  xhr.setRequestHeader('X-CSRF-Token',       CSRF_TOKEN);
+  xhr.setRequestHeader('X-Firmware-SHA256',  g_ota_sha256);
+
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable && progressBar) {
+      progressBar.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%';
+    }
+  };
+
+  xhr.onload = function() {
+    if (progressBar) progressBar.style.width = '100%';
+    if (xhr.status === 200) {
+      if (statusEl) { statusEl.className = 'feedback-msg ok'; statusEl.textContent = 'Upload complete. Installing…'; }
+      setTimeout(function() {
+        showPageOverlay('Installing firmware…',
+          'The gateway is rebooting. The new firmware will run a 5-minute self-test.');
+        setTimeout(function() { pollOtaStatusUntilDone(prevVersion); }, 10000);
+      }, 500);
+    } else {
+      let msg = 'Upload failed';
+      try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
+      if (statusEl)   { statusEl.className = 'feedback-msg err'; statusEl.textContent = msg; }
+      if (progressEl) progressEl.style.display = 'none';
+      if (uploadBtn)  uploadBtn.disabled = false;
+    }
+  };
+
+  xhr.onerror = function() {
+    if (statusEl)   { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error during upload'; }
+    if (progressEl) progressEl.style.display = 'none';
+    if (uploadBtn)  uploadBtn.disabled = false;
+  };
+
+  xhr.send(g_ota_file);
+}
+
+function pollOtaStatusUntilDone(prevVersion) {
+  const MAX_POLLS = 100;  // ~5 min at 3 s intervals
+  let polls = 0;
+
+  function updateOverlay(title, body) {
+    const ov = document.getElementById('full-overlay');
+    if (ov) ov.innerHTML =
+      '<div class="spinner" style="width:36px;height:36px;border-width:3px"></div>' +
+      '<h2>' + title + '</h2><p>' + body + '</p>';
+  }
+
+  function poll() {
+    polls++;
+    fetch('/api/health', { cache: 'no-store' })
+      .then(function(hr) {
+        if (!hr.ok) throw new Error('not up');
+        return hr.json();
+      })
+      .then(function(hd) {
+        // Device is back online.
+        if (prevVersion && hd.version === prevVersion) {
+          // Same version as before — rollback likely occurred.
+          updateOverlay('Update failed',
+            'The previous firmware has been restored. Check the Alerts page for details.');
+          return;
+        }
+        // New version (or no previous version to compare) — check self-test.
+        return apiFetch('/api/ota/status')
+          .then(function(sr) {
+            if (!sr || !sr.ok) return;
+            return sr.json();
+          })
+          .then(function(sd) {
+            if (!sd) return;
+            const st = sd.self_test || {};
+            if (st.in_progress) {
+              const c = st.checks || {};
+              const passed = [
+                c.wifi_connected     && 'WiFi',
+                c.http_server_up     && 'HTTP',
+                c.snapshot_published && 'BMS',
+                c.controltask_alive  && 'Control',
+              ].filter(Boolean).join(', ') || 'none';
+              updateOverlay('Self-test in progress…',
+                'Checks: ' + passed + ' | ' + (st.elapsed_s || 0) + 's / ' + (st.deadline_s || 300) + 's');
+              if (polls < MAX_POLLS) setTimeout(poll, 3000);
+              else updateOverlay('Timeout', 'Could not confirm update. Check the device directly.');
+            } else if (sd.running_state === 'valid') {
+              const ver = hd && hd.version ? escHtml(hd.version) : '?';
+              updateOverlay('Update successful', 'Now running firmware ' + ver + '.');
+              setTimeout(function() {
+                const ov = document.getElementById('full-overlay');
+                if (ov) ov.style.display = 'none';
+                window.location.reload();
+              }, 3000);
+            } else {
+              if (polls < MAX_POLLS) setTimeout(poll, 3000);
+              else updateOverlay('Timeout', 'Could not confirm update. Check the device directly.');
+            }
+          });
+      })
+      .catch(function() {
+        // Device not up yet — keep polling.
+        if (polls < MAX_POLLS) setTimeout(poll, 3000);
+        else updateOverlay('Timeout', 'Gateway did not come back online. Check the device directly.');
+      });
+  }
+
+  poll();
 }
 
 function showPageOverlay(title, body) {
