@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include <ArduinoJson.h>
 #include <cstdio>
 #include <cstring>
@@ -141,9 +142,11 @@ esp_err_t handle_live(httpd_req_t* req) {
   doc["now_ts_s"]   = net::ntp::now_unix_s();
   doc["ntp_synced"] = net::ntp::is_synced();
 
-  // Estimate size then allocate.
+  // Estimate size then allocate. PSRAM preferred: this JSON can be 5-20 KB and
+  // is allocated/freed on every /api/live poll, fragmenting internal heap.
   size_t est = measureJson(doc) + 1;
-  char* buf = (char*)malloc(est);
+  char* buf = (char*)heap_caps_malloc(est, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buf) buf = (char*)malloc(est);
   if (!buf) {
     httpd_resp_set_status(req, "500 Internal Server Error");
     return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");

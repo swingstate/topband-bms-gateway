@@ -7,6 +7,7 @@
 #include "app/boot.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
+#include "esp_heap_caps.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -54,7 +55,8 @@ static char* multi_replace(const char* src, size_t src_len,
   while ((p = strstr(p, find)) != nullptr) { count++; p += find_len; }
 
   size_t result_len = src_len - count * find_len + count * replace_len;
-  char* out = (char*)malloc(result_len + 1);
+  char* out = (char*)heap_caps_malloc(result_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!out) out = (char*)malloc(result_len + 1);
   if (!out) return nullptr;
 
   char* dst = out;
@@ -95,10 +97,12 @@ static esp_err_t serve_index_html(httpd_req_t* req, const char* lfs_path) {
     return httpd_resp_sendstr(req, "{\"error\":\"File size invalid\"}");
   }
 
-  char* buf = (char*)malloc((size_t)file_size + 1);
+  char* buf = (char*)heap_caps_malloc((size_t)file_size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buf) buf = (char*)malloc((size_t)file_size + 1);
   if (!buf) {
     fclose(f);
     httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
   }
 
@@ -160,10 +164,12 @@ static esp_err_t serve_login_html(httpd_req_t* req, const char* lfs_path) {
     return httpd_resp_sendstr(req, "{\"error\":\"File size invalid\"}");
   }
 
-  char* raw = (char*)malloc((size_t)file_size + 1);
+  char* raw = (char*)heap_caps_malloc((size_t)file_size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!raw) raw = (char*)malloc((size_t)file_size + 1);
   if (!raw) {
     fclose(f);
     httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
   }
 
@@ -189,10 +195,12 @@ static esp_err_t serve_login_html(httpd_req_t* req, const char* lfs_path) {
   size_t pre_len  = (size_t)(pos - raw);
   size_t post_len = n - pre_len - ph_len;
   size_t out_len  = pre_len + value_len + post_len;
-  char* out = (char*)malloc(out_len + 1);
+  char* out = (char*)heap_caps_malloc(out_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!out) out = (char*)malloc(out_len + 1);
   if (!out) {
     free(raw);
     httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"error\":\"OOM\"}");
   }
   memcpy(out, raw, pre_len);
