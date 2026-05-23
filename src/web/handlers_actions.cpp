@@ -55,6 +55,10 @@ esp_err_t handle_health(httpd_req_t* req) {
   mqtt["publish_fail"]  = mqtt::publisher::get_publish_fail();
   mqtt["publish_drops"] = mqtt::publisher::get_publish_drops();
 
+  JsonObject wifi_o = doc["wifi"].to<JsonObject>();
+  wifi_o["connected"] = net::wifi::is_connected();
+  wifi_o["rssi"]      = (int)net::wifi::get_rssi();
+
   // NTP status — used by Settings → Time section.
   doc["now_ts_s"]   = net::ntp::now_unix_s();
   doc["ntp_synced"] = net::ntp::is_synced();
@@ -62,7 +66,7 @@ esp_err_t handle_health(httpd_req_t* req) {
   doc["free_heap_b"]  = esp_get_free_heap_size();
   doc["free_psram_b"] = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
-  char body[1024];
+  char body[1152];
   size_t n = serializeJson(doc, body, sizeof(body));
   if (n == 0) {
     httpd_resp_set_status(req, "500 Internal Server Error");

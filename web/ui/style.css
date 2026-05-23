@@ -214,6 +214,13 @@ a { text-decoration: none; color: inherit; }
 .pill-can.alarm { background: var(--brand-coral); color: #fff; }
 .pill-mqtt { background: var(--brand-teal); color: var(--brand-aubergine); }
 .pill-mqtt.alarm { background: var(--brand-coral); color: #fff; }
+/* WiFi signal quality */
+.pill-wifi       { background: var(--color-success); color: #fff; }
+.pill-wifi.fair  { background: var(--color-warning);  color: #fff; }
+.pill-wifi.weak  { background: var(--brand-coral);    color: #fff; }
+/* Gray/off state shared by wifi + mqtt when not connected / disabled */
+.pill-wifi.off,
+.pill-mqtt.off   { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
 
 .topbar-time { font-size: 13px; font-weight: 600; color: var(--text-muted); min-width: 40px; text-align: right; }
 

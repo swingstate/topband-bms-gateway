@@ -252,10 +252,28 @@ async function fetchHealth() {
     const r = await fetch('/api/health', { cache: 'no-store' });
     if (r && r.ok) {
       g_health = await r.json();
+      updateWifiIndicator();
       updateMqttIndicator();
       updateAuthBanner();
     }
   } catch (_) {}
+}
+
+function updateWifiIndicator() {
+  const el = document.getElementById('status-wifi');
+  if (!el) return;
+  const wifi = g_health && g_health.wifi;
+  if (!wifi || !wifi.connected) {
+    el.className = 'status-pill pill-wifi off';
+    el.textContent = 'WiFi';
+    return;
+  }
+  const rssi = wifi.rssi;
+  let mod = '';
+  if      (rssi < -75) mod = ' weak';
+  else if (rssi < -60) mod = ' fair';
+  el.className = 'status-pill pill-wifi' + mod;
+  el.textContent = 'WiFi';
 }
 
 function updateMqttIndicator() {
@@ -263,11 +281,11 @@ function updateMqttIndicator() {
   if (!mqttEl) return;
   const h = g_health;
   if (!h || !h.mqtt || !h.mqtt.enabled) {
-    mqttEl.style.display = 'none';
+    mqttEl.className = 'status-pill pill-mqtt off';
+    mqttEl.textContent = 'MQTT';
     return;
   }
   const state = h.mqtt.state || 'unknown';
-  mqttEl.style.display = 'inline-flex';
   const labels = { connected: 'MQTT ok', connecting: 'MQTT…', disconnected: 'MQTT off', failed: 'MQTT err' };
   mqttEl.textContent = labels[state] || 'MQTT';
   mqttEl.className = 'status-pill pill-mqtt' + (state === 'connected' ? '' : ' alarm');
