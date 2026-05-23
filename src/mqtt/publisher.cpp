@@ -259,6 +259,10 @@ bool start(const Config& cfg) {
   mcfg.session.last_will.retain    = 1;
   // Auto-reconnect every 5 s — adequate for a local broker
   mcfg.network.reconnect_timeout_ms = 5000;
+  // Internal MQTT task must run below httpd (pri 4) to avoid starving HTTP
+  // handlers. Default is CONFIG_MQTT_TASK_PRIORITY = 5, which preempts httpd.
+  mcfg.task.priority   = 3;
+  mcfg.task.stack_size = 6144;
 
   if (cfg.mqtt_user[0] != '\0') {
     mcfg.credentials.username = cfg.mqtt_user;
