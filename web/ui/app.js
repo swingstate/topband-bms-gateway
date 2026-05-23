@@ -1873,10 +1873,18 @@ async function otaFileChanged(event) {
   if (uploadBtn) uploadBtn.disabled    = true;
 
   try {
-    const buf    = await file.arrayBuffer();
-    const hb     = await crypto.subtle.digest('SHA-256', buf);
-    const hex    = Array.from(new Uint8Array(hb))
-                        .map(b => b.toString(16).padStart(2, '0')).join('');
+    const buf = await file.arrayBuffer();
+    let hex;
+    if (crypto.subtle) {
+      // Secure context (HTTPS or localhost): use native SubtleCrypto.
+      const hb = await crypto.subtle.digest('SHA-256', buf);
+      hex = Array.from(new Uint8Array(hb))
+                 .map(b => b.toString(16).padStart(2, '0')).join('');
+    } else {
+      // Non-secure context (plain HTTP on LAN): crypto.subtle is undefined.
+      // Fall back to vendored js-sha256 (web/ui/lib/sha256.min.js).
+      hex = sha256(buf);
+    }
     g_ota_sha256 = hex;
     if (hashEl)    hashEl.textContent = 'SHA-256: ' + hex.substring(0, 16) + '…';
     if (uploadBtn) uploadBtn.disabled = false;
