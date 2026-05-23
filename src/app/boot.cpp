@@ -22,6 +22,7 @@
 #include "app/smoke_reader.h"
 #include "app/housekeeping.h"
 #include "app/history_task.h"
+#include "app/self_test.h"
 #include "mqtt/publisher.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -99,6 +100,10 @@ void run_boot() {
 
   // ── Step 0: Log ring — install vprintf hook before any ESP_LOG* call ────
   diag::log_ring::init(200);
+
+  // ── Step 0.5: OTA self-test init ─────────────────────────────────────────
+  // Must run before WiFi and task creation. No-op on normal boots.
+  app::self_test::init();
 
   // ── Step 1: NVS ──────────────────────────────────────────────────────────
   if (!init_nvs()) {

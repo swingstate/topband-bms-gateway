@@ -6,7 +6,9 @@
 #include "handlers_history.h"
 #include "handlers_diag.h"
 #include "handlers_alerts.h"
+#include "handlers_ota.h"
 #include "handlers_static.h"
+#include "app/self_test.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 
@@ -118,8 +120,14 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/alerts",  HTTP_GET,    handle_alerts_get);
   reg_auth(g_server, "/api/alerts",  HTTP_DELETE, handle_alerts_delete);
 
+  // ── OTA endpoints (Phase I) ─────────────────────────────────────���─────────
+  reg_auth(g_server, "/api/ota/upload", HTTP_POST, web::handlers_ota::handler_ota_upload);
+  reg_auth(g_server, "/api/ota/status", HTTP_GET,  web::handlers_ota::handler_ota_status);
+
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);
+
+  app::self_test::mark_passed(app::self_test::HTTP_SERVER_UP);
 
   ESP_LOGI(TAG, "HTTP server started on port 80 (auth enabled)");
   return true;
