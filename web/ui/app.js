@@ -234,13 +234,14 @@ function updateStatusBar() {
     const online = g_live.bms_count_online || 0;
     const total  = g_live.bms_count_configured || 0;
     bmsEl.textContent = `BMS ${online}/${total}`;
+    bmsEl.className = 'status-pill pill-bms' + (total > 0 && online < total ? ' alarm' : '');
   }
 
   const canEl = document.getElementById('status-can');
   if (canEl) {
     const hasAlarm = (safety.alarm_flags || 0) !== 0;
     const txFail   = (can.tx_fail || 0) > 0;
-    canEl.textContent = hasAlarm ? 'CAN alarm' : (txFail ? 'CAN fail' : 'CAN ok');
+    canEl.textContent = 'CAN';
     canEl.className = 'status-pill pill-can' + (hasAlarm || txFail ? ' alarm' : '');
   }
 }
