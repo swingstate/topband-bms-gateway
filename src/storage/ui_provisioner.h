@@ -9,7 +9,7 @@ namespace storage::ui_provisioner {
 
 // UI bundle version. Bump whenever web/ui/ files change.
 // Must stay in sync with web/ui/ui_version.txt (written by web/build_ui.py).
-constexpr const char* UI_VERSION = "i-mvp-5";
+constexpr const char* UI_VERSION = "i-mvp-6";
 
 // Call once during boot after lfs::init(). Extracts if needed.
 // Logs extraction progress at INFO level.
