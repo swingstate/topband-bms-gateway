@@ -95,6 +95,9 @@ static void publish_request(const MqttPublishRequest& req) {
     case MqttPublishRequest::Topic::Cells:
       tlen = mqtt::topics::build_cells(s_effective_base, req.pack_id, topic, sizeof(topic));
       break;
+    case MqttPublishRequest::Topic::IndividualValue:
+      tlen = mqtt::topics::build(s_effective_base, req.topic_suffix, topic, sizeof(topic));
+      break;
     default:
       return;
   }
