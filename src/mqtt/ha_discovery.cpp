@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include <cstring>
 #include <cstdio>
+#include <cctype>
 
 static const char* TAG = "ha_disc";
 
@@ -76,7 +77,17 @@ static void build_device_block(JsonDocument& doc, const char* device_uid) {
   char ident[48];
   snprintf(ident, sizeof(ident), "topband_bms_%s", device_uid + 12 /*skip "topband_bms_"*/);
   dev["identifiers"].to<JsonArray>().add(ident);
-  dev["name"]         = "TopBand BMS Gateway";
+
+  // device_uid = "topband_bms_xxxxxxxxxxxx" (12-char hex MAC).
+  // Append the last 4 hex chars (last 2 MAC bytes) uppercased so multiple
+  // gateways on the same broker are distinguishable in the HA device list.
+  char tail[5];
+  snprintf(tail, sizeof(tail), "%s", device_uid + 20);
+  for (char* p = tail; *p; p++) *p = (char)toupper((unsigned char)*p);
+  char dev_name[40];
+  snprintf(dev_name, sizeof(dev_name), "TopBand BMS Gateway %s", tail);
+
+  dev["name"]         = dev_name;
   dev["manufacturer"] = "TopBand";
   dev["model"]        = "ESP32-S3";
   dev["sw_version"]   = FW_VERSION;
