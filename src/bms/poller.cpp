@@ -468,7 +468,9 @@ static void control_task_entry(void* param) {
     // cycle completes s_safety_valid is false and no frames are sent.
     if (s_safety_valid) {
       // Direct read within ControlTask (sole writer on Core 0) — no lock needed.
-      can::tx::can_tx_if_due(s_safety, now_ms);
+      // Read protocol live from app::get_config() so a UI change takes effect
+      // on the next CAN cycle without reboot (architecture §4.5, Phase J1+J2).
+      can::tx::can_tx_if_due(s_safety, now_ms, app::get_config().can_protocol);
     }
     can::busoff::tick(now_ms);
 

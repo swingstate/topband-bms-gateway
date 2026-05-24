@@ -148,13 +148,15 @@ target_link_libraries(test_safety PRIVATE
 catch_discover_tests(test_safety)
 
 # ── test_can_victron ──────────────────────────────────────────────────────────
-# victron.cpp, tx.cpp (NATIVE_BUILD stub), and busoff.cpp (NATIVE_BUILD mock).
-# All three are host-portable when compiled with NATIVE_BUILD defined.
+# victron.cpp, pylontech.cpp, sma.cpp, tx.cpp (NATIVE_BUILD stub), busoff.cpp.
+# tx.cpp dispatches to all three protocol builders; all must be linked together.
 # Reads JSON fixtures from test/host/fixtures/v267/ (safety) and
 # test/host/fixtures/v267_can/ (CAN expected frames).
 add_executable(test_can_victron
   test_can_victron.cpp
   ../../src/can/victron.cpp
+  ../../src/can/pylontech.cpp
+  ../../src/can/sma.cpp
   ../../src/can/tx.cpp
   ../../src/can/busoff.cpp
 )
@@ -175,6 +177,49 @@ target_link_libraries(test_can_victron PRIVATE
   nlohmann_json::nlohmann_json
 )
 catch_discover_tests(test_can_victron)
+
+# ── test_can_pylontech ────────────────────────────────────────────────────────
+# All three protocol builders + tx.cpp (NATIVE_BUILD stub) + busoff.cpp.
+# tx.cpp references all three builders; they must all be linked together.
+add_executable(test_can_pylontech
+  test_can_pylontech.cpp
+  ../../src/can/pylontech.cpp
+  ../../src/can/victron.cpp
+  ../../src/can/sma.cpp
+  ../../src/can/tx.cpp
+  ../../src/can/busoff.cpp
+)
+
+target_include_directories(test_can_pylontech PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_can_pylontech PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_can_pylontech PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_can_pylontech PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_can_pylontech)
+
+# ── test_can_sma ──────────────────────────────────────────────────────────────
+# All three protocol builders + tx.cpp (NATIVE_BUILD stub) + busoff.cpp.
+add_executable(test_can_sma
+  test_can_sma.cpp
+  ../../src/can/sma.cpp
+  ../../src/can/victron.cpp
+  ../../src/can/pylontech.cpp
+  ../../src/can/tx.cpp
+  ../../src/can/busoff.cpp
+)
+
+target_include_directories(test_can_sma PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_can_sma PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_can_sma PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_can_sma PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_can_sma)
 
 # ── test_mqtt_payloads ────────────────────────────────────────────────────────
 # payloads.cpp and topics.cpp are host-portable (ArduinoJson only, no IDF).
