@@ -106,7 +106,8 @@
 
     <!-- Auth-disabled banner (shown after 5x reset) -->
     <div class="auth-disabled-banner" id="auth-banner" style="display:none">
-      Auth disabled — set a new password to re-enable security.
+      <span>Auth disabled — set a new password to re-enable security.</span>
+      <button class="auth-banner-close" onclick="dismissAuthBanner()" title="Dismiss">&#215;</button>
     </div>
 
     <!-- Page content (SPA routing) -->

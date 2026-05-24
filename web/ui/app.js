@@ -304,6 +304,27 @@ function updateLiveUI() {
   }
 }
 
+/* ── Dashboard value-color helpers ─────────────────────────────────────────── */
+function socColor(soc) {
+  if (soc === null || soc === undefined) return 'var(--text-primary)';
+  if (soc < 10)  return 'var(--red)';
+  if (soc < 20)  return 'var(--amber)';
+  return 'var(--accent)';
+}
+function driftColor(driftV) {
+  if (driftV === null || driftV === undefined) return 'var(--text-primary)';
+  const mv = driftV * 1000;
+  if (mv >= 175) return 'var(--red)';
+  if (mv >= 100) return 'var(--amber)';
+  return 'var(--accent)';
+}
+function cellVColor(v) {
+  if (v === null || v === undefined) return 'var(--text-primary)';
+  if (v < 2.80 || v > 3.55)                               return 'var(--red)';
+  if ((v >= 2.80 && v < 3.00) || (v > 3.45 && v <= 3.55)) return 'var(--amber)';
+  return 'var(--accent)';
+}
+
 /* ── Dashboard ─────────────────────────────────────────────────────────────── */
 function renderDashboard() {
   const root = document.getElementById('page-root');
@@ -370,15 +391,15 @@ function updateDashboardCards() {
       value: soc !== null ? fmt(soc, 0) : '—',
       unit: '%',
       sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '',
-      color: 'var(--purple)',
+      color: socColor(soc),
       alarm: alarmSoc(soc),
     },
     {
       label: 'Power',
-      value: power !== null ? fmt(Math.abs(power), 0) : '—',
+      value: power !== null ? fmt(power, 0) : '—',
       unit: 'W',
       sub: chargePill(cur),
-      color: cur > 0 ? 'var(--accent)' : (cur < 0 ? 'var(--amber)' : 'var(--fg-muted)'),
+      color: 'var(--text-primary)',
       alarm: false,
     },
     {
@@ -386,7 +407,7 @@ function updateDashboardCards() {
       value: cur !== null ? fmtA(cur) : '—',
       unit: 'A',
       sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`,
-      color: 'var(--fg)',
+      color: 'var(--text-primary)',
       alarm: false,
     },
     {
@@ -394,7 +415,7 @@ function updateDashboardCards() {
       value: volt !== null ? fmt(volt, 2) : '—',
       unit: 'V',
       sub: `CVL ${fmt(cvl, 2)} V`,
-      color: 'var(--blue)',
+      color: 'var(--text-primary)',
       alarm: alarmVolt(volt),
     },
     {
@@ -402,7 +423,7 @@ function updateDashboardCards() {
       value: cellMin !== null ? fmt(cellMin, 3) : '—',
       unit: 'V',
       sub: '',
-      color: 'var(--blue)',
+      color: cellVColor(cellMin),
       alarm: alarmCellMin(cellMin),
     },
     {
@@ -410,7 +431,7 @@ function updateDashboardCards() {
       value: cellMax !== null ? fmt(cellMax, 3) : '—',
       unit: 'V',
       sub: '',
-      color: 'var(--fg)',
+      color: cellVColor(cellMax),
       alarm: alarmCellMax(cellMax),
     },
     {
@@ -418,7 +439,7 @@ function updateDashboardCards() {
       value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—',
       unit: 'mV',
       sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">⚠ Imbalance</span>' : 'Normal',
-      color: cellDrift > 0.05 ? 'var(--amber)' : 'var(--accent)',
+      color: driftColor(cellDrift),
       alarm: alarmDrift(cellDrift),
     },
     {
@@ -426,7 +447,7 @@ function updateDashboardCards() {
       value: temp !== null ? fmt(temp, 1) : '—',
       unit: '°C',
       sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
-      color: temp > 40 ? 'var(--amber)' : 'var(--fg)',
+      color: 'var(--text-primary)',
       alarm: alarmTemp(temp),
     },
     {
@@ -434,7 +455,7 @@ function updateDashboardCards() {
       value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—',
       unit: 'kWh in',
       sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '',
-      color: 'var(--brand-teal)',
+      color: 'var(--text-primary)',
       alarm: false,
     },
     {
@@ -442,7 +463,7 @@ function updateDashboardCards() {
       value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—',
       unit: '',
       sub: rtLabels[rtState] || 'Idle',
-      color: 'var(--fg)',
+      color: 'var(--text-primary)',
       alarm: false,
     },
   ];
@@ -2626,13 +2647,22 @@ async function doFactoryReset() {
 }
 
 /* ── Auth-disabled banner (reactive on each health/live poll) ─────────────── */
+function dismissAuthBanner() {
+  sessionStorage.setItem('auth_banner_dismissed', 'true');
+  const banner = document.getElementById('auth-banner');
+  if (banner) banner.style.display = 'none';
+}
+
 function updateAuthBanner() {
   // Use g_health.auth_enabled when available; avoids a separate /api/config call.
   const authEnabled = g_health ? g_health.auth_enabled : undefined;
   if (authEnabled === undefined) return;
   const banner    = document.getElementById('auth-banner');
   const logoutBtn = document.getElementById('logout-btn');
-  if (banner)    banner.style.display    = authEnabled === false ? 'flex' : 'none';
+  if (banner) {
+    const dismissed = sessionStorage.getItem('auth_banner_dismissed') === 'true';
+    banner.style.display = (authEnabled === false && !dismissed) ? 'flex' : 'none';
+  }
   if (logoutBtn) logoutBtn.style.display = authEnabled !== false ? 'inline-flex' : 'none';
 }
 

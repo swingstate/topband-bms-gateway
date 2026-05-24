@@ -14,7 +14,8 @@ static const char* TAG = "ha_disc";
 // ── Entity table ──────────────────────────────────────────────────────────────
 
 struct EntityDef {
-  const char* key;            // unique_id suffix and value_template key
+  const char* key;            // unique_id suffix and HA entity key
+  const char* topic_suffix;   // MQTT topic suffix for this value (e.g. "/soc")
   const char* name;           // human-readable HA entity name
   const char* device_class;   // HA device class (nullptr = no class)
   const char* unit;           // unit_of_measurement (nullptr = none)
@@ -22,23 +23,28 @@ struct EntityDef {
   const char* icon;           // optional icon override (nullptr = default)
 };
 
+// Each entity uses its own individual plain-text topic (no value_template needed).
 static const EntityDef SYSTEM_ENTITIES[] = {
-  { "soc_avg",           "TopBand BMS — SOC Average",            "battery",     "%",  "measurement", nullptr },
-  { "soh_avg",           "TopBand BMS — SOH Average",            nullptr,       "%",  "measurement", "mdi:battery-heart" },
-  { "pack_voltage_avg",  "TopBand BMS — Pack Voltage",           "voltage",     "V",  "measurement", nullptr },
-  { "pack_current_total","TopBand BMS — Total Current",          "current",     "A",  "measurement", nullptr },
-  { "pack_power_w",      "TopBand BMS — Pack Power",             "power",       "W",  "measurement", nullptr },
-  { "temp_avg",          "TopBand BMS — Temp Average",           "temperature", "°C", "measurement", nullptr },
-  { "temp_max",          "TopBand BMS — Temp Max",               "temperature", "°C", "measurement", nullptr },
-  { "cell_v_min",        "TopBand BMS — Cell Voltage Min",       "voltage",     "V",  "measurement", nullptr },
-  { "cell_v_max",        "TopBand BMS — Cell Voltage Max",       "voltage",     "V",  "measurement", nullptr },
-  { "cell_v_drift",      "TopBand BMS — Cell Voltage Drift",     "voltage",     "V",  "measurement", nullptr },
-  { "cvl_v",             "TopBand BMS — Charge Voltage Limit",   "voltage",     "V",  "measurement", nullptr },
-  { "ccl_a",             "TopBand BMS — Charge Current Limit",   "current",     "A",  "measurement", nullptr },
-  { "dcl_a",             "TopBand BMS — Discharge Current Limit","current",     "A",  "measurement", nullptr },
-  { "alarm_flags",       "TopBand BMS — Alarm Flags",            nullptr,       nullptr, nullptr,    "mdi:alarm-light" },
-  { "bms_count_online",  "TopBand BMS — Packs Online",           nullptr,       nullptr, "measurement", "mdi:battery-charging" },
-  { "sys_message",       "TopBand BMS — System Message",         nullptr,       nullptr, nullptr,    "mdi:message-alert" },
+  { "soc",              "/soc",              "TopBand BMS — SOC",                    "battery",     "%",   "measurement",       nullptr },
+  { "soh",              "/soh",              "TopBand BMS — SOH",                    nullptr,       "%",   "measurement",       "mdi:battery-heart" },
+  { "voltage",          "/voltage",          "TopBand BMS — Pack Voltage",           "voltage",     "V",   "measurement",       nullptr },
+  { "current",          "/current",          "TopBand BMS — Total Current",          "current",     "A",   "measurement",       nullptr },
+  { "power",            "/power",            "TopBand BMS — Pack Power",             "power",       "W",   "measurement",       nullptr },
+  { "temperature",      "/temperature",      "TopBand BMS — Temperature",            "temperature", "°C",  "measurement",       nullptr },
+  { "cell_v_min",       "/cell_v_min",       "TopBand BMS — Cell Voltage Min",       "voltage",     "V",   "measurement",       nullptr },
+  { "cell_v_max",       "/cell_v_max",       "TopBand BMS — Cell Voltage Max",       "voltage",     "V",   "measurement",       nullptr },
+  { "cell_drift",       "/cell_drift",       "TopBand BMS — Cell Drift",             "voltage",     "V",   "measurement",       nullptr },
+  { "cvl",              "/cvl",              "TopBand BMS — Charge Voltage Limit",   "voltage",     "V",   "measurement",       nullptr },
+  { "ccl",              "/ccl",              "TopBand BMS — Charge Current Limit",   "current",     "A",   "measurement",       nullptr },
+  { "dcl",              "/dcl",              "TopBand BMS — Discharge Current Limit","current",     "A",   "measurement",       nullptr },
+  { "alarm_flags",      "/alarm_flags",      "TopBand BMS — Alarm Flags",            nullptr,       nullptr, nullptr,           "mdi:alarm-light" },
+  { "bms_online",       "/bms_online",       "TopBand BMS — Packs Online",           nullptr,       nullptr, "measurement",     "mdi:battery-charging" },
+  { "bms_configured",   "/bms_configured",   "TopBand BMS — Packs Configured",       nullptr,       nullptr, "measurement",     "mdi:battery-charging" },
+  { "sys_message",      "/sys_message",      "TopBand BMS — System Message",         nullptr,       nullptr, nullptr,           "mdi:message-alert" },
+  { "energy_today_in",  "/energy_today_in",  "TopBand BMS — Energy In Today",        "energy",      "kWh", "total_increasing",  nullptr },
+  { "energy_today_out", "/energy_today_out", "TopBand BMS — Energy Out Today",       "energy",      "kWh", "total_increasing",  nullptr },
+  { "runtime_est_min",  "/runtime_est_min",  "TopBand BMS — Runtime Estimate",       nullptr,       "min", "measurement",       "mdi:timer-outline" },
+  { "runtime_est_state","/runtime_est_state","TopBand BMS — Runtime State",          nullptr,       nullptr, nullptr,           "mdi:timer-outline" },
 };
 static constexpr size_t N_SYSTEM = sizeof(SYSTEM_ENTITIES) / sizeof(SYSTEM_ENTITIES[0]);
 
@@ -98,7 +104,6 @@ static void publish_system_entity(esp_mqtt_client_handle_t client,
                                    const char* device_uid,
                                    const char* effective_base) {
   char disc_topic[160];
-  // unique_id composed with device_uid
   char uid_key[64];
   snprintf(uid_key, sizeof(uid_key), "%s_%s", device_uid, ent.key);
   if (!mqtt::topics::build_ha_discovery(device_uid, ent.key, disc_topic, sizeof(disc_topic))) {
@@ -106,21 +111,17 @@ static void publish_system_entity(esp_mqtt_client_handle_t client,
     return;
   }
 
-  // Build availability + state topic paths
+  // Each entity has its own plain-text state topic — no value_template needed.
   char avail_topic[128];
   char state_topic[128];
-  mqtt::topics::build(effective_base, mqtt::topics::STATUS, avail_topic, sizeof(avail_topic));
-  mqtt::topics::build(effective_base, mqtt::topics::DATA,   state_topic, sizeof(state_topic));
-
-  char vt[64];
-  snprintf(vt, sizeof(vt), "{{ value_json.%s }}", ent.key);
+  mqtt::topics::build(effective_base, mqtt::topics::STATUS,    avail_topic, sizeof(avail_topic));
+  mqtt::topics::build(effective_base, ent.topic_suffix, state_topic, sizeof(state_topic));
 
   JsonDocument doc;
-  doc["name"]                = ent.name;
-  doc["state_topic"]         = state_topic;
-  doc["value_template"]      = vt;
-  doc["unique_id"]           = uid_key;
-  doc["availability_topic"]  = avail_topic;
+  doc["name"]               = ent.name;
+  doc["state_topic"]        = state_topic;
+  doc["unique_id"]          = uid_key;
+  doc["availability_topic"] = avail_topic;
   if (ent.device_class) doc["device_class"]       = ent.device_class;
   if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
   if (ent.state_class)  doc["state_class"]         = ent.state_class;
@@ -229,11 +230,16 @@ void cleanup_stale(esp_mqtt_client_handle_t client, const Config& cfg,
   ESP_LOGI(TAG, "HA discovery cleanup: firmware changed from '%s' to '%s'",
            stored, FW_VERSION);
 
-  // V2.67-era topic names that no longer exist in V3.0.
+  // Keys renamed or dropped between V2.67/V3.0-dev and this build.
   // Publishing empty retained payload removes the stale entity from HA.
   static const char* STALE_KEYS[] = {
     "diag_loop_max_ms",
     "diag_handler_max_ms",
+    // Renamed in iter/ui-polish-mqtt: individual plain-text topics replaced
+    // the JSON-based system entity keys from earlier V3.0-dev builds.
+    "soc_avg", "soh_avg", "pack_voltage_avg", "pack_current_total",
+    "pack_power_w", "temp_avg", "temp_max", "cell_v_drift",
+    "cvl_v", "ccl_a", "dcl_a", "bms_count_online",
   };
   for (const char* key : STALE_KEYS) {
     char disc_topic[160];
