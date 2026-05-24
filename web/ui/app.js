@@ -1207,33 +1207,31 @@ function renderSettingsBattery() {
 
       <div class="settings-section">
         <div class="settings-section-title">CAN / Inverter</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Inverter Protocol</label>
-            <div class="radio-group" style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-              <label class="radio-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                <input type="radio" name="can_protocol_radio" value="0" ${c.can_protocol === 0 ? 'checked' : ''}>
-                <span>Victron <span style="color:var(--text-muted);font-size:12px">(Default, HIL-verified)</span></span>
-              </label>
-              <label class="radio-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                <input type="radio" name="can_protocol_radio" value="1" ${c.can_protocol === 1 ? 'checked' : ''}>
-                <span>Pylontech <span style="color:var(--text-muted);font-size:12px">(Spec-derived, community-validated)</span></span>
-              </label>
-              <label class="radio-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                <input type="radio" name="can_protocol_radio" value="2" ${c.can_protocol === 2 ? 'checked' : ''}>
-                <span>SMA <span style="color:var(--text-muted);font-size:12px">(Spec-derived, community-validated)</span></span>
-              </label>
-            </div>
-            <div class="help" style="margin-top:8px;color:var(--text-muted)">
-              Pylontech and SMA implementations are derived from spec and from the V2.67 firmware reference.
-              The maintainer cannot HIL-verify these against their respective inverters.
-              Reports from users with Pylontech or SMA hardware are welcome.
-            </div>
+        <div class="form-group">
+          <label>Inverter Protocol</label>
+          <div class="proto-options">
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="0" ${c.can_protocol === 0 ? 'checked' : ''}>
+              <span class="proto-name">Victron</span><span class="proto-desc">— HIL-verified</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="1" ${c.can_protocol === 1 ? 'checked' : ''}>
+              <span class="proto-name">Pylontech</span><span class="proto-desc">— Spec-derived, community-validated</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="2" ${c.can_protocol === 2 ? 'checked' : ''}>
+              <span class="proto-name">SMA</span><span class="proto-desc">— Spec-derived, community-validated</span>
+            </label>
           </div>
-          <div class="form-group" style="display:flex;align-items:flex-start;gap:8px;padding-top:20px">
-            <input type="checkbox" id="cfg-can_enabled" ${c.can_enabled ? 'checked' : ''} style="width:auto;margin-top:2px">
-            <label for="cfg-can_enabled" style="margin:0">CAN TX enabled</label>
+          <div class="help" style="margin-top:8px">
+            Pylontech and SMA implementations are derived from spec.
+            The maintainer cannot HIL-verify these against their respective inverters.
+            Reports from users with Pylontech or SMA hardware are welcome.
           </div>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-can_enabled" ${c.can_enabled ? 'checked' : ''} style="width:auto;accent-color:var(--brand-teal)">
+          <label for="cfg-can_enabled" style="margin:0;font-weight:normal;color:var(--text-primary)">CAN TX enabled</label>
         </div>
       </div>
 
