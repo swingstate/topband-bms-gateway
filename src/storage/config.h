@@ -93,7 +93,15 @@ struct Config {
   char mqtt_user[32];
   char mqtt_pass_obf[64];          // obfuscated, see architecture §8.7
   char mqtt_base_topic[64];
-  enum class MqttLevel : uint8_t { Off = 0, PerPack = 1, PerCell = 2 };
+  // Off=0, StatusOnly=1, DataSystem=2, PerPack=3 (NEW), PerCell=4 (shifted from 3).
+  // NVS migration: stored value 3 (old PerCell) is upgraded to 4 on first load.
+  enum class MqttLevel : uint8_t {
+    Off        = 0,
+    StatusOnly = 1,
+    DataSystem = 2,
+    PerPack    = 3,
+    PerCell    = 4,
+  };
   MqttLevel mqtt_level;
   bool mqtt_diag_enabled;
   bool ha_discovery_enabled;

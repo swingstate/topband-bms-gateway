@@ -689,6 +689,35 @@ a { text-decoration: none; color: inherit; }
 .full-overlay h2 { font-size: 20px; color: var(--text-primary); }
 .full-overlay p  { font-size: 14px; color: var(--text-muted); max-width: 360px; }
 
+/* ── Toast notification ──────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(16px);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--brand-teal, #76D2D9);
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  z-index: 1100;
+  max-width: 480px;
+  text-align: center;
+  pointer-events: none;
+}
+.toast.toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.toast.toast-warn {
+  border-left-color: var(--yellow, #F5A623);
+}
+
 /* ── Dashboard: Energy + Runtime summary row ───────────────────────────────── */
 .dash-summary-row {
   display: flex;

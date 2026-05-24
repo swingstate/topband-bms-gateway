@@ -49,6 +49,7 @@ static const EntityDef SYSTEM_ENTITIES[] = {
 static constexpr size_t N_SYSTEM = sizeof(SYSTEM_ENTITIES) / sizeof(SYSTEM_ENTITIES[0]);
 
 // Per-pack entity suffixes appended as "pack_{n}_{key}"
+// Published at PerCell level (state_topic = JSON cells topic, needs value_template).
 struct PackEntityDef {
   const char* key;
   const char* name_fmt;      // sprintf format, receives pack number (1-based)
@@ -63,6 +64,34 @@ static const PackEntityDef PACK_ENTITIES[] = {
   { "alarm_bits","TopBand BMS — Pack %u Alarms",  nullptr,    nullptr },
 };
 static constexpr size_t N_PACK = sizeof(PACK_ENTITIES) / sizeof(PACK_ENTITIES[0]);
+
+// Per-pack plain-text entities: published at PerPack level.
+// state_topic = {base}/pack{N}/{topic_suffix}  (plain text, no value_template).
+// Each pack gets its own HA sub-device parented to the gateway device.
+struct PlainPackEntityDef {
+  const char* topic_suffix;   // MQTT topic suffix, e.g. "soc"
+  const char* uid_key;        // entity unique_id part appended after "p{N}_"
+  const char* name_fmt;       // sprintf format, pack number inserted where %u appears
+  const char* device_class;
+  const char* unit;
+  const char* state_class;
+  bool        is_binary;      // true → binary_sensor component
+};
+
+static const PlainPackEntityDef PLAIN_PACK_ENTITIES[] = {
+  { "soc",         "soc",      "TopBand BMS Pack %u — SOC",         "battery",     "%",   "measurement", false },
+  { "voltage",     "voltage",  "TopBand BMS Pack %u — Voltage",     "voltage",     "V",   "measurement", false },
+  { "current",     "current",  "TopBand BMS Pack %u — Current",     "current",     "A",   "measurement", false },
+  { "power",       "power",    "TopBand BMS Pack %u — Power",       "power",       "W",   "measurement", false },
+  { "temperature", "temp",     "TopBand BMS Pack %u — Temperature", "temperature", "\xc2\xb0" "C", "measurement", false },
+  { "cell_v_min",  "cvmin",    "TopBand BMS Pack %u — Cell V Min",  "voltage",     "V",   "measurement", false },
+  { "cell_v_max",  "cvmax",    "TopBand BMS Pack %u — Cell V Max",  "voltage",     "V",   "measurement", false },
+  { "cell_drift",  "cdrift",   "TopBand BMS Pack %u — Cell Drift",  "voltage",     "V",   "measurement", false },
+  { "soh",         "soh",      "TopBand BMS Pack %u — SOH",         nullptr,       "%",   "measurement", false },
+  { "cycles",      "cycles",   "TopBand BMS Pack %u — Cycles",      nullptr,       nullptr, nullptr,     false },
+  { "online",      "online",   "TopBand BMS Pack %u — Online",      "connectivity",nullptr, nullptr,     true  },
+};
+static constexpr size_t N_PLAIN_PACK = sizeof(PLAIN_PACK_ENTITIES) / sizeof(PLAIN_PACK_ENTITIES[0]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -181,14 +210,82 @@ static void publish_pack_entity(esp_mqtt_client_handle_t client,
   publish_one(client, disc_topic, buf, (int)n);
 }
 
+static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
+                                       uint8_t pack_idx,
+                                       const PlainPackEntityDef& ent,
+                                       const char* device_uid,
+                                       const char* effective_base) {
+  const uint8_t pack_n = pack_idx + 1;   // 1-based
+
+  // entity unique_id: "{device_uid}_p{N}_{uid_key}"
+  char uid_key[48];
+  snprintf(uid_key, sizeof(uid_key), "%s_p%u_%s", device_uid, (unsigned)pack_n, ent.uid_key);
+
+  // Discovery topic: sensor or binary_sensor component
+  char disc_topic[180];
+  snprintf(disc_topic, sizeof(disc_topic),
+           ent.is_binary ? "homeassistant/binary_sensor/%s/config"
+                         : "homeassistant/sensor/%s/config",
+           uid_key);
+
+  char avail_topic[128];
+  char state_topic[128];
+  mqtt::topics::build(effective_base, mqtt::topics::STATUS, avail_topic, sizeof(avail_topic));
+  // state_topic = {effective_base}/pack{N}/{topic_suffix}
+  snprintf(state_topic, sizeof(state_topic), "%s/pack%u/%s",
+           effective_base, (unsigned)pack_n, ent.topic_suffix);
+
+  char name[64];
+  snprintf(name, sizeof(name), ent.name_fmt, (unsigned)pack_n);
+
+  // Sub-device block: each pack is its own device, parented to the gateway.
+  // gateway identifier = "topband_bms_XXXX" (device_uid itself)
+  char pack_dev_id[52];
+  snprintf(pack_dev_id, sizeof(pack_dev_id), "%s_p%u", device_uid, (unsigned)pack_n);
+  char pack_dev_name[40];
+  snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Pack %u", (unsigned)pack_n);
+
+  JsonDocument doc;
+  doc["name"]               = name;
+  doc["state_topic"]        = state_topic;
+  doc["unique_id"]          = uid_key;
+  doc["availability_topic"] = avail_topic;
+  if (ent.device_class) doc["device_class"]       = ent.device_class;
+  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
+  if (ent.state_class)  doc["state_class"]         = ent.state_class;
+  if (ent.is_binary) {
+    // binary_sensor needs explicit payload mapping for "true"/"false" strings
+    doc["payload_on"]  = "true";
+    doc["payload_off"] = "false";
+  }
+
+  JsonObject dev = doc["device"].to<JsonObject>();
+  dev["identifiers"].to<JsonArray>().add(pack_dev_id);
+  dev["name"]         = pack_dev_name;
+  dev["manufacturer"] = "TopBand";
+  // via_device links this sub-device to the main gateway device in HA
+  dev["via_device"]   = device_uid;
+
+  char buf[700];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  if (n == 0) {
+    ESP_LOGW(TAG, "Plain-pack discovery overflow for %s", uid_key);
+    return;
+  }
+  publish_one(client, disc_topic, buf, (int)n);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 namespace mqtt::ha_discovery {
 
 void publish_all(esp_mqtt_client_handle_t client, const Config& cfg,
                  const char* device_uid, const char* effective_base) {
-  ESP_LOGI(TAG, "Publishing HA discovery (%zu system + %u×%zu pack entities)",
-           N_SYSTEM, (unsigned)cfg.bms_count, N_PACK);
+  const bool have_per_pack = (cfg.mqtt_level >= Config::MqttLevel::PerPack);
+  const bool have_per_cell = (cfg.mqtt_level >= Config::MqttLevel::PerCell);
+
+  ESP_LOGI(TAG, "Publishing HA discovery (%zu system, per_pack=%d, per_cell=%d)",
+           N_SYSTEM, (int)have_per_pack, (int)have_per_cell);
 
   for (size_t i = 0; i < N_SYSTEM; ++i) {
     publish_system_entity(client, SYSTEM_ENTITIES[i], device_uid, effective_base);
@@ -196,11 +293,24 @@ void publish_all(esp_mqtt_client_handle_t client, const Config& cfg,
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 
-  // Per-pack entities (use per-pack cells topic as state_topic)
-  for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
-    for (size_t i = 0; i < N_PACK; ++i) {
-      publish_pack_entity(client, p, PACK_ENTITIES[i], device_uid, effective_base);
-      vTaskDelay(pdMS_TO_TICKS(10));
+  // Plain-text per-pack entities (retained individual topics): at PerPack level+
+  if (have_per_pack) {
+    for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
+      for (size_t i = 0; i < N_PLAIN_PACK; ++i) {
+        publish_plain_pack_entity(client, p, PLAIN_PACK_ENTITIES[i],
+                                   device_uid, effective_base);
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+    }
+  }
+
+  // JSON cells-based per-pack entities (need value_template): at PerCell level
+  if (have_per_cell) {
+    for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
+      for (size_t i = 0; i < N_PACK; ++i) {
+        publish_pack_entity(client, p, PACK_ENTITIES[i], device_uid, effective_base);
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
     }
   }
 

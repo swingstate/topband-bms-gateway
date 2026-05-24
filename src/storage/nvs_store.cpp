@@ -79,6 +79,15 @@ bool loadConfig(Config& out) {
     return false;
   }
 
+  // Per-pack level insertion migration: old PerCell was value 3, now value 4.
+  // Any config saved before this change with mqtt_level==3 meant "Per-cell";
+  // upgrade it in-place and persist so subsequent boots need no migration.
+  if (static_cast<uint8_t>(out.mqtt_level) == 3) {
+    out.mqtt_level = Config::MqttLevel::PerCell;
+    ESP_LOGI(TAG, "mqtt_level migrated: 3 (old PerCell) -> 4 (new PerCell)");
+    saveConfig(out);  // best-effort; failure is non-critical, migrates again next boot
+  }
+
   return true;
 }
 

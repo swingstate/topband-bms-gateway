@@ -84,7 +84,7 @@ static Config make_default() {
 
   c.mqtt_enabled         = false;
   c.mqtt_port            = 1883;
-  c.mqtt_level           = Config::MqttLevel::PerPack;
+  c.mqtt_level           = Config::MqttLevel::StatusOnly;
   c.mqtt_diag_enabled    = false;
   c.ha_discovery_enabled = false;
   c.mqtt_full_publish    = false;

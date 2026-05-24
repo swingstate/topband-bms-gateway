@@ -1375,7 +1375,8 @@ function renderSettingsMqtt() {
               <option value="0" ${c.mqtt_level === 0 ? 'selected' : ''}>Disabled</option>
               <option value="1" ${c.mqtt_level === 1 ? 'selected' : ''}>Status only</option>
               <option value="2" ${c.mqtt_level === 2 ? 'selected' : ''}>Data (system)</option>
-              <option value="3" ${c.mqtt_level === 3 ? 'selected' : ''}>Per-cell</option>
+              <option value="3" ${c.mqtt_level === 3 ? 'selected' : ''}>Per-pack</option>
+              <option value="4" ${c.mqtt_level === 4 ? 'selected' : ''}>Per-cell</option>
             </select>
           </div>
           <div class="form-group" style="display:flex;align-items:center;gap:8px;padding-top:20px">
@@ -2038,74 +2039,106 @@ function doOtaUpload() {
 }
 
 function pollOtaStatusUntilDone(prevVersion) {
-  const MAX_POLLS = 100;  // ~5 min at 3 s intervals
-  let polls = 0;
+  const POLL_INTERVAL_MS = 3000;
+  const TIMEOUT_MS       = 180000;  // 3 min
+  let elapsed = 0;
 
   function updateOverlay(title, body) {
     const ov = document.getElementById('full-overlay');
     if (ov) ov.innerHTML =
       '<div class="spinner" style="width:36px;height:36px;border-width:3px"></div>' +
-      '<h2>' + title + '</h2><p>' + body + '</p>';
+      '<h2>' + escHtml(title) + '</h2><p>' + body + '</p>';
+  }
+
+  // Finish: hide overlay, SPA-navigate to /settings#system, show toast.
+  function finish(newVer, timedOut) {
+    const ov = document.getElementById('full-overlay');
+    if (ov) ov.style.display = 'none';
+    history.pushState({}, '', '/settings#system');
+    renderPage('/settings');
+    updateSidebarActive('/settings');
+    if (timedOut) {
+      showToast('Update timeout — check version, gateway may have rolled back', 'warn');
+    } else {
+      showToast('Firmware updated to ' + escHtml(newVer || '?'));
+    }
   }
 
   function poll() {
-    polls++;
-    fetch('/api/health', { cache: 'no-store' })
-      .then(function(hr) {
-        if (!hr.ok) throw new Error('not up');
-        return hr.json();
-      })
-      .then(function(hd) {
-        // Device is back online.
-        if (prevVersion && hd.version === prevVersion) {
-          // Same version as before — rollback likely occurred.
-          updateOverlay('Update failed',
-            'The previous firmware has been restored. Check the Alerts page for details.');
+    elapsed += POLL_INTERVAL_MS;
+
+    Promise.all([
+      fetch('/api/health',     { cache: 'no-store' }).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+      fetch('/api/ota/status', { cache: 'no-store' }).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    ]).then(function(results) {
+      const hd = results[0];
+      const sd = results[1];
+
+      // Device not yet reachable — keep waiting.
+      if (!hd) {
+        if (elapsed >= TIMEOUT_MS) { finish(null, true); return; }
+        updateOverlay('Installing firmware…', 'Waiting for gateway to come back online…');
+        setTimeout(poll, POLL_INTERVAL_MS);
+        return;
+      }
+
+      // Success criteria: version changed OR ota status reports "valid".
+      const versionChanged = !prevVersion || hd.version !== prevVersion;
+      const runningValid   = sd && sd.running_state === 'valid';
+
+      if (versionChanged || runningValid) {
+        const st = (sd && sd.self_test) ? sd.self_test : {};
+        if (st.in_progress) {
+          // Self-test still running — show progress but keep polling.
+          const c = st.checks || {};
+          const passed = [
+            c.wifi_connected     && 'WiFi',
+            c.http_server_up     && 'HTTP',
+            c.snapshot_published && 'BMS',
+            c.controltask_alive  && 'Control',
+          ].filter(Boolean).join(', ') || 'none';
+          updateOverlay('Self-test in progress…',
+            'Checks: ' + passed + ' | ' + (st.elapsed_s || 0) + 's / ' + (st.deadline_s || 300) + 's');
+          if (elapsed >= TIMEOUT_MS) { finish(hd.version, true); return; }
+          setTimeout(poll, POLL_INTERVAL_MS);
           return;
         }
-        // New version (or no previous version to compare) — check self-test.
-        return apiFetch('/api/ota/status')
-          .then(function(sr) {
-            if (!sr || !sr.ok) return;
-            return sr.json();
-          })
-          .then(function(sd) {
-            if (!sd) return;
-            const st = sd.self_test || {};
-            if (st.in_progress) {
-              const c = st.checks || {};
-              const passed = [
-                c.wifi_connected     && 'WiFi',
-                c.http_server_up     && 'HTTP',
-                c.snapshot_published && 'BMS',
-                c.controltask_alive  && 'Control',
-              ].filter(Boolean).join(', ') || 'none';
-              updateOverlay('Self-test in progress…',
-                'Checks: ' + passed + ' | ' + (st.elapsed_s || 0) + 's / ' + (st.deadline_s || 300) + 's');
-              if (polls < MAX_POLLS) setTimeout(poll, 3000);
-              else updateOverlay('Timeout', 'Could not confirm update. Check the device directly.');
-            } else if (sd.running_state === 'valid') {
-              const ver = hd && hd.version ? escHtml(hd.version) : '?';
-              updateOverlay('Update successful', 'Now running firmware ' + ver + '.');
-              setTimeout(function() {
-                const ov = document.getElementById('full-overlay');
-                if (ov) ov.style.display = 'none';
-                window.location.reload();
-              }, 3000);
-            } else {
-              if (polls < MAX_POLLS) setTimeout(poll, 3000);
-              else updateOverlay('Timeout', 'Could not confirm update. Check the device directly.');
-            }
-          });
-      })
-      .catch(function() {
-        // Device not up yet — keep polling.
-        if (polls < MAX_POLLS) setTimeout(poll, 3000);
-        else updateOverlay('Timeout', 'Gateway did not come back online. Check the device directly.');
-      });
+        // Self-test complete (or not in progress) — done.
+        finish(hd.version, false);
+        return;
+      }
+
+      // Same version back online — rollback occurred.
+      updateOverlay('Update failed',
+        'The previous firmware has been restored. Check the Alerts page for details.');
+      setTimeout(function() {
+        const ov = document.getElementById('full-overlay');
+        if (ov) ov.style.display = 'none';
+        history.pushState({}, '', '/settings#system');
+        renderPage('/settings');
+        updateSidebarActive('/settings');
+        showToast('Update failed — firmware rolled back', 'warn');
+      }, 3000);
+    });
   }
 
-  poll();
+  setTimeout(poll, POLL_INTERVAL_MS);
+}
+
+// Show a brief toast notification. type: 'info' (default) | 'warn'.
+function showToast(message, type) {
+  const toast = document.createElement('div');
+  toast.className = 'toast' + (type === 'warn' ? ' toast-warn' : '');
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  // Trigger fade-in on next paint, then auto-dismiss after 4 s.
+  requestAnimationFrame(function() {
+    toast.classList.add('toast-visible');
+    setTimeout(function() {
+      toast.classList.remove('toast-visible');
+      setTimeout(function() { toast.remove(); }, 400);
+    }, 4000);
+  });
 }
 
 function showPageOverlay(title, body) {

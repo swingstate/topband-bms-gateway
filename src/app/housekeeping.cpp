@@ -218,7 +218,63 @@ static void housekeeping_task_entry(void* /*arg*/) {
       last_diag_ms = now_ms;
     }
 
-    // ── Per-cell publishing every 20 s at PerCell level ───────────────────────
+    // ── Per-pack plain-text retained topics every 5 s at PerPack level ─────────
+    // Published together with the system data block above.
+    // When a pack is offline only "online=false" is published; retained values
+    // from the last online period remain available to subscribers.
+    if (cfg.mqtt_level >= Config::MqttLevel::PerPack) {
+      uint8_t n_packs = s_snap.pack_count_configured;
+      for (uint8_t pi = 0; pi < n_packs && pi < 16; ++pi) {
+        const BmsPackSnapshot& pp = s_snap.pack[pi];
+        const uint8_t  pack_n = pi + 1;     // 1-indexed label
+
+        // Helper: build and post a single retained IndividualValue publish.
+        // Reuses the module-level s_req to keep the per-pack loop off the stack.
+        auto post_pack = [&](const char* suffix, const char* value) {
+          s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
+          s_req.pack_id  = pi;
+          s_req.retained = true;
+          snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix),
+                   "/pack%u/%s", (unsigned)pack_n, suffix);
+          size_t vlen = strlen(value);
+          memcpy(s_req.payload, value, vlen + 1);
+          s_req.payload_len = (uint16_t)vlen;
+          post_mqtt(s_req);
+        };
+
+        // "online" is always published (tells subscribers whether pack is active).
+        post_pack("online", pp.online ? "true" : "false");
+
+        if (!pp.online) continue;
+
+        // Remaining values only when online; char val[32] keeps stack minimal.
+        char val[32];
+        snprintf(val, sizeof(val), "%u",   (unsigned)pp.soc);
+        post_pack("soc", val);
+        snprintf(val, sizeof(val), "%.2f", pp.pack_voltage);
+        post_pack("voltage", val);
+        snprintf(val, sizeof(val), "%.1f", pp.pack_current);
+        post_pack("current", val);
+        snprintf(val, sizeof(val), "%d",
+                 (int)(pp.pack_voltage * pp.pack_current));
+        post_pack("power", val);
+        // Use temp_avg_c (computed by fill_from_analog) as representative temp.
+        snprintf(val, sizeof(val), "%.1f", pp.temp_avg_c);
+        post_pack("temperature", val);
+        snprintf(val, sizeof(val), "%.3f", pp.cell_min_v);
+        post_pack("cell_v_min", val);
+        snprintf(val, sizeof(val), "%.3f", pp.cell_max_v);
+        post_pack("cell_v_max", val);
+        snprintf(val, sizeof(val), "%.3f", pp.cell_drift_v);
+        post_pack("cell_drift", val);
+        snprintf(val, sizeof(val), "%u",   (unsigned)pp.soh);
+        post_pack("soh", val);
+        snprintf(val, sizeof(val), "%u",   (unsigned)pp.cycles);
+        post_pack("cycles", val);
+      }
+    }
+
+    // ── Per-cell JSON publishing every 20 s at PerCell level ────────────────────
     if (cfg.mqtt_level >= Config::MqttLevel::PerCell) {
       bus::snapshot_bus::read(s_snap);
       uint8_t n_packs = s_snap.pack_count_configured;
