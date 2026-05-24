@@ -12,8 +12,11 @@ bool init(const Config& cfg);
 // Called from ControlTask every 50 ms tick (architecture §3.1 Phase C).
 // Internally checks whether 1000 ms heartbeat is due, or whether alarm_flags
 // has transitioned since the last send (express send on rising edge).
+// protocol is read live by the caller (poller.cpp via app::get_config()) so
+// switching protocol takes effect on the next CAN cycle without reboot.
 // Returns true if frames were transmitted this tick.
-bool can_tx_if_due(const SafetyState& current, uint32_t now_ms);
+bool can_tx_if_due(const SafetyState& current, uint32_t now_ms,
+                   Config::CanProtocol protocol = Config::CanProtocol::Victron);
 
 // Low-level single-frame enqueue. Called by victron::send_all_victron.
 // In IDF builds: calls twai_transmit with 10 ms timeout.

@@ -1,5 +1,7 @@
 #include "can/tx.h"
 #include "can/victron.h"
+#include "can/pylontech.h"
+#include "can/sma.h"
 #include "can/busoff.h"
 #include <cstring>
 
@@ -90,7 +92,8 @@ bool can::tx::enqueue(uint32_t id, const uint8_t data[8]) {
 
 // ── Heartbeat / express cadence ───────────────────────────────────────────────
 
-bool can::tx::can_tx_if_due(const SafetyState& current, uint32_t now_ms) {
+bool can::tx::can_tx_if_due(const SafetyState& current, uint32_t now_ms,
+                             Config::CanProtocol protocol) {
   bool heartbeat_due = (now_ms - s_last_tx_ms >= HEARTBEAT_INTERVAL_MS);
   bool alarm_changed = (current.alarm_flags != s_last_alarm);
 
@@ -98,7 +101,19 @@ bool can::tx::can_tx_if_due(const SafetyState& current, uint32_t now_ms) {
     return false;
   }
 
-  bool ok = can::victron::send_all_victron(current);
+  bool ok = false;
+  switch (protocol) {
+    case Config::CanProtocol::Pylontech:
+      ok = can::pylontech::send_all_pylontech(current);
+      break;
+    case Config::CanProtocol::SMA:
+      ok = can::sma::send_all_sma(current);
+      break;
+    case Config::CanProtocol::Victron:
+    default:
+      ok = can::victron::send_all_victron(current);
+      break;
+  }
 
   if (heartbeat_due) {
     s_stats.heartbeats++;
