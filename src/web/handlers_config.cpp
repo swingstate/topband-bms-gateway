@@ -4,7 +4,6 @@
 #include "storage/config.h"
 #include "storage/nvs_store.h"
 #include "net/wifi.h"
-#include "mqtt/publisher.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -13,6 +12,13 @@
 #include <cstring>
 
 static const char* TAG = "web_cfg";
+
+// Delayed restart — same pattern as handlers_actions. Lets the HTTP response
+// flush before esp_restart() fires.
+static void deferred_restart(void* /*arg*/) {
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  esp_restart();
+}
 
 // Max request body for config JSON: 4 KB is plenty.
 static constexpr size_t CFG_BODY_MAX = 4096;
@@ -119,10 +125,17 @@ esp_err_t handle_config_post(httpd_req_t* req) {
 
   ESP_LOGI(TAG, "Config saved via HTTP POST /api/config");
 
-  // Reconnect MQTT when connection-relevant settings changed.
+  // MQTT settings changed: restart instead of calling reconfigure() inline.
+  // esp_mqtt_client_destroy() blocks the httpd worker task with portMAX_DELAY
+  // while the internal MQTT task finishes its TCP attempt — Rule 1 violation.
+  // Restart is consistent with how WiFi changes are applied.
   if (mqtt_changed) {
-    ESP_LOGI(TAG, "MQTT settings changed — reconfiguring publisher");
-    mqtt::publisher::reconfigure(new_cfg);
+    ESP_LOGI(TAG, "MQTT settings changed — rebooting in 2 s");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req,
+        "{\"ok\":true,\"restart_required\":true,\"rebooting_in_s\":2}");
+    xTaskCreate(deferred_restart, "mqtt_restart", 2048, nullptr, 1, nullptr);
+    return ESP_OK;
   }
 
   // Return the saved config.

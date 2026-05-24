@@ -72,8 +72,11 @@ static void hs_json_str(HStream& s, const char* v) {
 static constexpr size_t LOG_SNAPSHOT_SIZE = 200 * 121 + 1;  // 200 lines × 121 B
 
 static void hs_log_ring(HStream& s) {
-  // Heap-allocate the snapshot buffer (24 KB is too large for the stack).
-  char* snap = static_cast<char*>(malloc(LOG_SNAPSHOT_SIZE));
+  // Heap-allocate the snapshot buffer (24 KB). PSRAM preferred to avoid
+  // fragmenting the internal heap with this large one-shot allocation.
+  char* snap = static_cast<char*>(
+      heap_caps_malloc(LOG_SNAPSHOT_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!snap) snap = static_cast<char*>(malloc(LOG_SNAPSHOT_SIZE));
   if (!snap) {
     hs_str(s, "\"log_ring\":[]");
     return;

@@ -1844,8 +1844,14 @@ async function saveConfig() {
     const data = await r.json();
     if (r.ok) {
       g_config = data;
-      msg.className = 'feedback-msg ok';
-      msg.textContent = 'Settings saved.';
+      if (data.restart_required) {
+        msg.className = 'feedback-msg ok';
+        msg.textContent = 'Settings saved. Device restarting…';
+        setTimeout(() => location.reload(), 5000);
+      } else {
+        msg.className = 'feedback-msg ok';
+        msg.textContent = 'Settings saved.';
+      }
     } else {
       msg.className = 'feedback-msg err';
       msg.textContent = data.error || 'Save failed.';

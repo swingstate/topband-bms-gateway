@@ -40,6 +40,10 @@ static char s_effective_base[80] = {};
 // device_uid for HA discovery: "topband_bms_xxxxxxxxxxxx" (full MAC, 12 hex chars).
 static char s_device_uid[32] = {};
 
+// HA discovery is sent only once per boot. Cleared by trigger_ha_discovery()
+// so the user can force a re-send from the UI without rebooting.
+static bool s_ha_discovery_done = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static void compute_mac_identifiers(const Config& cfg) {
@@ -181,7 +185,7 @@ static void mqtt_task_entry(void* /*arg*/) {
       // if the user enables discovery while MQTT is already connected.
       bool ha_en = app::get_config().ha_discovery_enabled;
 
-      if (ha_en) {
+      if (ha_en && !s_ha_discovery_done) {
         // Snapshot s_cfg once under lock for the discovery calls.
         Config cfg_snap;
         portENTER_CRITICAL(&s_mux);
@@ -189,6 +193,7 @@ static void mqtt_task_entry(void* /*arg*/) {
         portEXIT_CRITICAL(&s_mux);
         mqtt::ha_discovery::cleanup_stale(s_client, cfg_snap, s_device_uid, s_effective_base);
         mqtt::ha_discovery::publish_all(s_client, cfg_snap, s_device_uid, s_effective_base);
+        s_ha_discovery_done = true;
       }
     }
 
@@ -259,6 +264,10 @@ bool start(const Config& cfg) {
   mcfg.session.last_will.retain    = 1;
   // Auto-reconnect every 5 s — adequate for a local broker
   mcfg.network.reconnect_timeout_ms = 5000;
+  // Internal MQTT task must run below httpd (pri 4) to avoid starving HTTP
+  // handlers. Default is CONFIG_MQTT_TASK_PRIORITY = 5, which preempts httpd.
+  mcfg.task.priority   = 3;
+  mcfg.task.stack_size = 6144;
 
   if (cfg.mqtt_user[0] != '\0') {
     mcfg.credentials.username = cfg.mqtt_user;
@@ -383,9 +392,11 @@ void trigger_ha_discovery() {
   portENTER_CRITICAL(&s_mux);
   if (s_state == State::Connected) {
     s_just_connected = true;
-    // Force discovery enabled for this one cycle; the live config is authoritative
-    // for subsequent connects. Admin explicitly requested this, so bypass the flag.
+    // Force discovery enabled and clear the once-per-boot guard so the
+    // admin-requested re-send actually fires. The live config is authoritative
+    // for automatic reconnects.
     s_cfg.ha_discovery_enabled = true;
+    s_ha_discovery_done = false;
   }
   portEXIT_CRITICAL(&s_mux);
 }
