@@ -239,10 +239,14 @@ function updateStatusBar() {
 
   const canEl = document.getElementById('status-can');
   if (canEl) {
-    const hasAlarm = (safety.alarm_flags || 0) !== 0;
-    const txFail   = (can.tx_fail || 0) > 0;
     canEl.textContent = 'CAN';
-    canEl.className = 'status-pill pill-can' + (hasAlarm || txFail ? ' alarm' : '');
+    if (!g_config || !g_config.can_enabled) {
+      canEl.className = 'status-pill pill-can off';
+    } else {
+      const hasAlarm = (safety.alarm_flags || 0) !== 0;
+      const txFail   = (can.tx_fail || 0) > 0 || (can.bus_off_count || 0) > 0;
+      canEl.className = 'status-pill pill-can' + (hasAlarm || txFail ? ' alarm' : '');
+    }
   }
 }
 
@@ -1211,15 +1215,19 @@ function renderSettingsBattery() {
           <label>Inverter Protocol</label>
           <div class="proto-options">
             <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="0" ${c.can_protocol === 0 ? 'checked' : ''}>
+              <input type="radio" name="can_protocol_radio" value="-1" ${!c.can_enabled ? 'checked' : ''}>
+              <span class="proto-name">Disabled</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="0" ${c.can_enabled && c.can_protocol === 0 ? 'checked' : ''}>
               <span class="proto-name">Victron</span><span class="proto-desc">— HIL-verified</span>
             </label>
             <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="1" ${c.can_protocol === 1 ? 'checked' : ''}>
+              <input type="radio" name="can_protocol_radio" value="1" ${c.can_enabled && c.can_protocol === 1 ? 'checked' : ''}>
               <span class="proto-name">Pylontech</span><span class="proto-desc">— Spec-derived, community-validated</span>
             </label>
             <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="2" ${c.can_protocol === 2 ? 'checked' : ''}>
+              <input type="radio" name="can_protocol_radio" value="2" ${c.can_enabled && c.can_protocol === 2 ? 'checked' : ''}>
               <span class="proto-name">SMA</span><span class="proto-desc">— Spec-derived, community-validated</span>
             </label>
           </div>
@@ -1228,10 +1236,6 @@ function renderSettingsBattery() {
             The maintainer cannot HIL-verify these against their respective inverters.
             Reports from users with Pylontech or SMA hardware are welcome.
           </div>
-        </div>
-        <div class="form-group" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="cfg-can_enabled" ${c.can_enabled ? 'checked' : ''} style="width:auto;accent-color:var(--brand-teal)">
-          <label for="cfg-can_enabled" style="margin:0;font-weight:normal;color:var(--text-primary)">CAN TX enabled</label>
         </div>
       </div>
 
@@ -1574,9 +1578,15 @@ async function saveSectionFields(fields, feedbackId, overrides) {
 }
 
 function saveBatterySection() {
-  // Read radio group for can_protocol before calling saveSectionFields.
   const protoChecked = document.querySelector('input[name="can_protocol_radio"]:checked');
-  const protoOverride = protoChecked ? Number(protoChecked.value) : g_config.can_protocol;
+  const protoVal = protoChecked ? Number(protoChecked.value) : null;
+
+  let overrides = {};
+  if (protoVal === -1) {
+    overrides = { can_enabled: false };
+  } else if (protoVal !== null && protoVal >= 0) {
+    overrides = { can_enabled: true, can_protocol: protoVal };
+  }
 
   saveSectionFields([
     ['cfg-bms_count',              'bms_count',              'num'],
@@ -1595,8 +1605,7 @@ function saveBatterySection() {
     ['cfg-temp_mode',              'temp_mode',              'num'],
     ['cfg-spike_volt_max',         'spike_volt_max',         'num'],
     ['cfg-spike_curr_max',         'spike_curr_max',         'num'],
-    ['cfg-can_enabled',            'can_enabled',            'bool'],
-  ], 'battery-feedback', { can_protocol: protoOverride });
+  ], 'battery-feedback', overrides);
 }
 
 function saveTimeSection() {

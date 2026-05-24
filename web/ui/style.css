@@ -221,7 +221,8 @@ a { text-decoration: none; color: inherit; }
 .pill-wifi.weak  { background: var(--brand-coral);    color: #fff; }
 /* Gray/off state shared by wifi + mqtt when not connected / disabled */
 .pill-wifi.off,
-.pill-mqtt.off   { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-mqtt.off,
+.pill-can.off    { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
 
 .topbar-time { font-size: 13px; font-weight: 600; color: var(--text-muted); min-width: 40px; text-align: right; }
 
