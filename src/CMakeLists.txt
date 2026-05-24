@@ -31,6 +31,8 @@ idf_component_register(
     "safety/filters.cpp"
     "safety/runSafety.cpp"
     "can/victron.cpp"
+    "can/pylontech.cpp"
+    "can/sma.cpp"
     "can/tx.cpp"
     "can/busoff.cpp"
     "net/wifi.cpp"
