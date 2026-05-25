@@ -291,7 +291,7 @@ function updateMqttIndicator() {
     return;
   }
   const state = h.mqtt.state || 'unknown';
-  const labels = { connected: 'MQTT ok', connecting: 'MQTT…', disconnected: 'MQTT off', failed: 'MQTT err' };
+  const labels = { connected: 'MQTT', connecting: 'MQTT…', disconnected: 'MQTT off', failed: 'MQTT err' };
   mqttEl.textContent = labels[state] || 'MQTT';
   mqttEl.className = 'status-pill pill-mqtt' + (state === 'connected' ? '' : ' alarm');
 }
