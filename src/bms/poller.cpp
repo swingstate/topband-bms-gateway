@@ -467,10 +467,12 @@ static void control_task_entry(void* param) {
     // Uses the most recently committed SafetyState. Before the first poll
     // cycle completes s_safety_valid is false and no frames are sent.
     if (s_safety_valid) {
-      // Direct read within ControlTask (sole writer on Core 0) — no lock needed.
-      // Read protocol live from app::get_config() so a UI change takes effect
-      // on the next CAN cycle without reboot (architecture §4.5, Phase J1+J2).
-      can::tx::can_tx_if_due(s_safety, now_ms, app::get_config().can_protocol);
+      // Read config live — protocol and can_enabled both take effect on the
+      // next tick without reboot (architecture §4.5, Phase J1+J2).
+      const Config& cfg = app::get_config();
+      if (cfg.can_enabled) {
+        can::tx::can_tx_if_due(s_safety, now_ms, cfg.can_protocol);
+      }
     }
     can::busoff::tick(now_ms);
 
