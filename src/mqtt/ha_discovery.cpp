@@ -52,16 +52,16 @@ static constexpr size_t N_SYSTEM = sizeof(SYSTEM_ENTITIES) / sizeof(SYSTEM_ENTIT
 // Published at PerCell level (state_topic = JSON cells topic, needs value_template).
 struct PackEntityDef {
   const char* key;
-  const char* name_fmt;      // sprintf format, receives pack number (1-based)
+  const char* name_fmt;      // sprintf format: %s = gateway tail (4-char), %u = pack number (1-based)
   const char* device_class;
   const char* unit;
 };
 
 static const PackEntityDef PACK_ENTITIES[] = {
-  { "voltage",   "TopBand BMS — Pack %u Voltage", "voltage",  "V"  },
-  { "current",   "TopBand BMS — Pack %u Current", "current",  "A"  },
-  { "soc",       "TopBand BMS — Pack %u SOC",     "battery",  "%"  },
-  { "alarm_bits","TopBand BMS — Pack %u Alarms",  nullptr,    nullptr },
+  { "voltage",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Voltage", "voltage",  "V"  },
+  { "current",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Current", "current",  "A"  },
+  { "soc",       "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 SOC",     "battery",  "%"  },
+  { "alarm_bits","TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Alarms",  nullptr,    nullptr },
 };
 static constexpr size_t N_PACK = sizeof(PACK_ENTITIES) / sizeof(PACK_ENTITIES[0]);
 
@@ -71,7 +71,7 @@ static constexpr size_t N_PACK = sizeof(PACK_ENTITIES) / sizeof(PACK_ENTITIES[0]
 struct PlainPackEntityDef {
   const char* topic_suffix;   // MQTT topic suffix, e.g. "soc"
   const char* uid_key;        // entity unique_id part appended after "p{N}_"
-  const char* name_fmt;       // sprintf format, pack number inserted where %u appears
+  const char* name_fmt;       // sprintf format: %s = gateway tail (4-char), %u = pack number
   const char* device_class;
   const char* unit;
   const char* state_class;
@@ -79,17 +79,17 @@ struct PlainPackEntityDef {
 };
 
 static const PlainPackEntityDef PLAIN_PACK_ENTITIES[] = {
-  { "soc",         "soc",      "TopBand BMS Pack %u — SOC",         "battery",     "%",   "measurement", false },
-  { "voltage",     "voltage",  "TopBand BMS Pack %u — Voltage",     "voltage",     "V",   "measurement", false },
-  { "current",     "current",  "TopBand BMS Pack %u — Current",     "current",     "A",   "measurement", false },
-  { "power",       "power",    "TopBand BMS Pack %u — Power",       "power",       "W",   "measurement", false },
-  { "temperature", "temp",     "TopBand BMS Pack %u — Temperature", "temperature", "\xc2\xb0" "C", "measurement", false },
-  { "cell_v_min",  "cvmin",    "TopBand BMS Pack %u — Cell V Min",  "voltage",     "V",   "measurement", false },
-  { "cell_v_max",  "cvmax",    "TopBand BMS Pack %u — Cell V Max",  "voltage",     "V",   "measurement", false },
-  { "cell_drift",  "cdrift",   "TopBand BMS Pack %u — Cell Drift",  "voltage",     "V",   "measurement", false },
-  { "soh",         "soh",      "TopBand BMS Pack %u — SOH",         nullptr,       "%",   "measurement", false },
-  { "cycles",      "cycles",   "TopBand BMS Pack %u — Cycles",      nullptr,       nullptr, nullptr,     false },
-  { "online",      "online",   "TopBand BMS Pack %u — Online",      "connectivity",nullptr, nullptr,     true  },
+  { "soc",         "soc",      "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 SOC",         "battery",     "%",   "measurement", false },
+  { "voltage",     "voltage",  "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Voltage",     "voltage",     "V",   "measurement", false },
+  { "current",     "current",  "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Current",     "current",     "A",   "measurement", false },
+  { "power",       "power",    "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Power",       "power",       "W",   "measurement", false },
+  { "temperature", "temp",     "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Temperature", "temperature", "\xc2\xb0" "C", "measurement", false },
+  { "cell_v_min",  "cvmin",    "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Cell V Min",  "voltage",     "V",   "measurement", false },
+  { "cell_v_max",  "cvmax",    "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Cell V Max",  "voltage",     "V",   "measurement", false },
+  { "cell_drift",  "cdrift",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Cell Drift",  "voltage",     "V",   "measurement", false },
+  { "soh",         "soh",      "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 SOH",         nullptr,       "%",   "measurement", false },
+  { "cycles",      "cycles",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Cycles",      nullptr,       nullptr, nullptr,     false },
+  { "online",      "online",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Online",      "connectivity",nullptr, nullptr,     true  },
 };
 static constexpr size_t N_PLAIN_PACK = sizeof(PLAIN_PACK_ENTITIES) / sizeof(PLAIN_PACK_ENTITIES[0]);
 
@@ -185,8 +185,11 @@ static void publish_pack_entity(esp_mqtt_client_handle_t client,
   mqtt::topics::build(effective_base, mqtt::topics::STATUS, avail_topic, sizeof(avail_topic));
   mqtt::topics::build_cells(effective_base, pack_idx, state_topic, sizeof(state_topic));
 
+  char tail[5];
+  snprintf(tail, sizeof(tail), "%s", device_uid + 20);
+  for (char* p = tail; *p; p++) *p = (char)toupper((unsigned char)*p);
   char name[64];
-  snprintf(name, sizeof(name), ent.name_fmt, (unsigned)(pack_idx + 1));
+  snprintf(name, sizeof(name), ent.name_fmt, tail, (unsigned)(pack_idx + 1));
 
   char uid_key[64];
   snprintf(uid_key, sizeof(uid_key), "%s_%s", device_uid, entity_key);
@@ -235,15 +238,19 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   snprintf(state_topic, sizeof(state_topic), "%s/pack%u/%s",
            effective_base, (unsigned)pack_n, ent.topic_suffix);
 
+  char tail[5];
+  snprintf(tail, sizeof(tail), "%s", device_uid + 20);
+  for (char* p = tail; *p; p++) *p = (char)toupper((unsigned char)*p);
   char name[64];
-  snprintf(name, sizeof(name), ent.name_fmt, (unsigned)pack_n);
+  snprintf(name, sizeof(name), ent.name_fmt, tail, (unsigned)pack_n);
 
   // Sub-device block: each pack is its own device, parented to the gateway.
   // gateway identifier = "topband_bms_XXXX" (device_uid itself)
   char pack_dev_id[52];
   snprintf(pack_dev_id, sizeof(pack_dev_id), "%s_p%u", device_uid, (unsigned)pack_n);
   char pack_dev_name[40];
-  snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Pack %u", (unsigned)pack_n);
+  snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Gateway %s Pack %u",
+           tail, (unsigned)pack_n);
 
   JsonDocument doc;
   doc["name"]               = name;
@@ -297,14 +304,18 @@ static void publish_cell_entity(esp_mqtt_client_handle_t client,
   snprintf(state_topic, sizeof(state_topic), "%s/pack%u/cell_v_%02u",
            effective_base, (unsigned)pack_n, (unsigned)cell_n);
 
+  char tail[5];
+  snprintf(tail, sizeof(tail), "%s", device_uid + 20);
+  for (char* p = tail; *p; p++) *p = (char)toupper((unsigned char)*p);
   char name[64];
-  snprintf(name, sizeof(name), "TopBand BMS Pack %u \xe2\x80\x94 Cell V %02u",
-           (unsigned)pack_n, (unsigned)cell_n);
+  snprintf(name, sizeof(name), "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Cell V %02u",
+           tail, (unsigned)pack_n, (unsigned)cell_n);
 
   char pack_dev_id[52];
   snprintf(pack_dev_id, sizeof(pack_dev_id), "%s_p%u", device_uid, (unsigned)pack_n);
   char pack_dev_name[40];
-  snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Pack %u", (unsigned)pack_n);
+  snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Gateway %s Pack %u",
+           tail, (unsigned)pack_n);
 
   JsonDocument doc;
   doc["name"]                = name;
