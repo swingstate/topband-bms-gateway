@@ -296,6 +296,27 @@ static void housekeeping_task_entry(void* /*arg*/) {
             s_req.payload_len = (uint16_t)nb;
             post_mqtt(s_req);
           }
+
+          // Individual per-cell retained plain-text topics: {base}/pack{N}/cell_v_{NN}
+          {
+            const BmsPackSnapshot& pcell = s_snap.pack[pi];
+            const uint8_t pack_n  = pi + 1;
+            const uint8_t cell_lim = (pcell.cell_count < 16) ? pcell.cell_count : 16;
+            for (uint8_t ci = 0; ci < cell_lim; ++ci) {
+              char cval[12];
+              snprintf(cval, sizeof(cval), "%.3f", pcell.cell_v[ci]);
+              s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
+              s_req.pack_id  = pi;
+              s_req.retained = true;
+              snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix),
+                       "/pack%u/cell_v_%02u", (unsigned)pack_n, (unsigned)(ci + 1));
+              size_t vlen = strlen(cval);
+              memcpy(s_req.payload, cval, vlen + 1);
+              s_req.payload_len = (uint16_t)vlen;
+              post_mqtt(s_req);
+            }
+          }
+
           last_cells_ms[pi] = now_ms;
           break;
         }

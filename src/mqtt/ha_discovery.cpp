@@ -125,7 +125,7 @@ static void build_device_block(JsonDocument& doc, const char* device_uid) {
   dev["name"]         = dev_name;
   dev["manufacturer"] = "TopBand";
   dev["model"]        = "ESP32-S3";
-  dev["sw_version"]   = FW_VERSION;
+  dev["sw_version"]   = FW_VERSION_FULL;
 }
 
 static void publish_system_entity(esp_mqtt_client_handle_t client,
@@ -263,6 +263,7 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   dev["identifiers"].to<JsonArray>().add(pack_dev_id);
   dev["name"]         = pack_dev_name;
   dev["manufacturer"] = "TopBand";
+  dev["sw_version"]   = FW_VERSION_FULL;
   // via_device links this sub-device to the main gateway device in HA
   dev["via_device"]   = device_uid;
 
@@ -270,6 +271,61 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   size_t n = serializeJson(doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Plain-pack discovery overflow for %s", uid_key);
+    return;
+  }
+  publish_one(client, disc_topic, buf, (int)n);
+}
+
+static void publish_cell_entity(esp_mqtt_client_handle_t client,
+                                 uint8_t pack_idx,
+                                 uint8_t cell_idx,       // 0-based
+                                 const char* device_uid,
+                                 const char* effective_base) {
+  const uint8_t pack_n = pack_idx + 1;
+  const uint8_t cell_n = cell_idx + 1;  // 1-based, zero-padded in topic
+
+  char uid_key[64];
+  snprintf(uid_key, sizeof(uid_key), "%s_p%u_cell_v_%02u",
+           device_uid, (unsigned)pack_n, (unsigned)cell_n);
+
+  char disc_topic[180];
+  snprintf(disc_topic, sizeof(disc_topic), "homeassistant/sensor/%s/config", uid_key);
+
+  char avail_topic[128];
+  char state_topic[128];
+  mqtt::topics::build(effective_base, mqtt::topics::STATUS, avail_topic, sizeof(avail_topic));
+  snprintf(state_topic, sizeof(state_topic), "%s/pack%u/cell_v_%02u",
+           effective_base, (unsigned)pack_n, (unsigned)cell_n);
+
+  char name[64];
+  snprintf(name, sizeof(name), "TopBand BMS Pack %u \xe2\x80\x94 Cell V %02u",
+           (unsigned)pack_n, (unsigned)cell_n);
+
+  char pack_dev_id[52];
+  snprintf(pack_dev_id, sizeof(pack_dev_id), "%s_p%u", device_uid, (unsigned)pack_n);
+  char pack_dev_name[40];
+  snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Pack %u", (unsigned)pack_n);
+
+  JsonDocument doc;
+  doc["name"]                = name;
+  doc["state_topic"]         = state_topic;
+  doc["unique_id"]           = uid_key;
+  doc["availability_topic"]  = avail_topic;
+  doc["device_class"]        = "voltage";
+  doc["unit_of_measurement"] = "V";
+  doc["state_class"]         = "measurement";
+
+  JsonObject dev = doc["device"].to<JsonObject>();
+  dev["identifiers"].to<JsonArray>().add(pack_dev_id);
+  dev["name"]         = pack_dev_name;
+  dev["manufacturer"] = "TopBand";
+  dev["sw_version"]   = FW_VERSION_FULL;
+  dev["via_device"]   = device_uid;
+
+  char buf[700];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  if (n == 0) {
+    ESP_LOGW(TAG, "Cell entity discovery overflow for %s", uid_key);
     return;
   }
   publish_one(client, disc_topic, buf, (int)n);
@@ -309,6 +365,17 @@ void publish_all(esp_mqtt_client_handle_t client, const Config& cfg,
     for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
       for (size_t i = 0; i < N_PACK; ++i) {
         publish_pack_entity(client, p, PACK_ENTITIES[i], device_uid, effective_base);
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+    }
+  }
+
+  // Individual cell voltage sensors (plain-text retained topics): at PerCell level.
+  // Discovers all 15 slots per pack; HA shows unused slots as unavailable.
+  if (have_per_cell) {
+    for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
+      for (uint8_t ci = 0; ci < 15; ++ci) {
+        publish_cell_entity(client, p, ci, device_uid, effective_base);
         vTaskDelay(pdMS_TO_TICKS(10));
       }
     }
