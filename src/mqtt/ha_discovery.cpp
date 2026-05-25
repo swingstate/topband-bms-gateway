@@ -124,7 +124,7 @@ static void build_device_block(JsonDocument& doc, const char* device_uid) {
 
   dev["name"]         = dev_name;
   dev["manufacturer"] = "TopBand";
-  dev["model"]        = "ESP32-S3";
+  dev["model"]        = "BMS Gateway";
   dev["sw_version"]   = FW_VERSION_FULL;
 }
 
@@ -263,8 +263,8 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   dev["identifiers"].to<JsonArray>().add(pack_dev_id);
   dev["name"]         = pack_dev_name;
   dev["manufacturer"] = "TopBand";
-  dev["sw_version"]   = FW_VERSION_FULL;
-  // via_device links this sub-device to the main gateway device in HA
+  // sw_version omitted: gateway cannot read BMS firmware version over RS485;
+  // showing the gateway FW on the pack device would be misleading.
   dev["via_device"]   = device_uid;
 
   char buf[700];
@@ -319,7 +319,6 @@ static void publish_cell_entity(esp_mqtt_client_handle_t client,
   dev["identifiers"].to<JsonArray>().add(pack_dev_id);
   dev["name"]         = pack_dev_name;
   dev["manufacturer"] = "TopBand";
-  dev["sw_version"]   = FW_VERSION_FULL;
   dev["via_device"]   = device_uid;
 
   char buf[700];
