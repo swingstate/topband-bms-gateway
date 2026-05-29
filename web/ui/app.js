@@ -603,10 +603,11 @@ function updateEnergyRuntimeCards() {
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
 
 const SERIES_DEFS = {
-  power:   { label: 'Power',   color: '#76D2D9', dec: 0, unit: 'W' },
-  soc:     { label: 'SOC',     color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } },
-  voltage: { label: 'Voltage', color: '#E25548', dec: 1, unit: 'V' },
-  temp:    { label: 'Temp',    color: '#E89C5C', dec: 1, unit: '°C' },
+  power:   { label: 'Power',      color: '#76D2D9', dec: 0, unit: 'W' },
+  soc:     { label: 'SOC',        color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } },
+  voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V' },
+  temp:    { label: 'Temp',       color: '#E89C5C', dec: 1, unit: '°C' },
+  drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV' },
 };
 
 function getChartConfig() {
@@ -2368,7 +2369,7 @@ function renderDiagData(d) {
   const ene = d.energy || {};
   const his = d.history || {};
 
-  const tasks = (d.tasks || []).slice().sort((a, b) => (b.stack_hwm||0) - (a.stack_hwm||0));
+  const tasks = (d.tasks || []).slice().sort((a, b) => (a.stack_hwm||0) - (b.stack_hwm||0));
 
   root.innerHTML = `
     <div class="diag-section">

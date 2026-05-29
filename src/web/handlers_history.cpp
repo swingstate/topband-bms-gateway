@@ -88,8 +88,17 @@ static void hs_f2(HStream& s, float v) {
 
 static void hs_fine_series(HStream& s, const char* name, bool first) {
   size_t   count = storage::history_store::read_fine(s_fine_buf, HISTORY_FINE_CAPACITY);
-  uint32_t base  = storage::history_store::fine_epoch_base();
   uint32_t res   = HISTORY_FINE_RESOLUTION_S;
+
+  // Anchor t0_epoch to current NTP time rather than stored epoch_base.
+  // epoch_base can be permanently stuck at a wrong value if time() was off
+  // when the first sample was written. Deriving from now_unix_s() keeps the
+  // x-axis correct regardless of how epoch_base was set. Falls back to
+  // epoch_base only when NTP has not yet synced. See docs/diag-chart-tz-offset.md.
+  uint32_t now_s = net::ntp::now_unix_s();
+  uint32_t base  = (now_s != 0 && count > 0)
+                   ? now_s - (uint32_t)(count - 1) * res
+                   : storage::history_store::fine_epoch_base();
 
   if (!first) hs_str(s, ",");
   hs_str(s, "{\"name\":\""); hs_str(s, name); hs_str(s, "\"");
@@ -106,6 +115,7 @@ static void hs_fine_series(HStream& s, const char* name, bool first) {
     else if (!strcmp(name, "voltage")) hs_f2(s, (float)fp.voltage_x100 / 100.0f);
     else if (!strcmp(name, "soc"))     hs_f1(s, (float)fp.soc_x10 / 10.0f);
     else if (!strcmp(name, "temp"))    hs_f1(s, (float)fp.temp_x10 / 10.0f);
+    else if (!strcmp(name, "drift"))   hs_uint(s, storage::history_store::read_fine_drift_at(i));
     else                               hs_str(s, "null");
   }
   hs_str(s, "]}");
@@ -113,8 +123,13 @@ static void hs_fine_series(HStream& s, const char* name, bool first) {
 
 static void hs_coarse_series(HStream& s, const char* name, bool first) {
   size_t   count = storage::history_store::read_coarse(s_coarse_buf, HISTORY_COARSE_CAPACITY);
-  uint32_t base  = storage::history_store::coarse_epoch_base();
   uint32_t res   = HISTORY_COARSE_RESOLUTION_S;
+
+  // Same NTP-anchored t0_epoch fix as hs_fine_series. See docs/diag-chart-tz-offset.md.
+  uint32_t now_s = net::ntp::now_unix_s();
+  uint32_t base  = (now_s != 0 && count > 0)
+                   ? now_s - (uint32_t)(count - 1) * res
+                   : storage::history_store::coarse_epoch_base();
 
   if (!first) hs_str(s, ",");
   hs_str(s, "{\"name\":\""); hs_str(s, name); hs_str(s, "\"");
@@ -131,6 +146,7 @@ static void hs_coarse_series(HStream& s, const char* name, bool first) {
     else if (!strcmp(name, "voltage")) hs_f2(s, (float)cp.volt_avg / 100.0f);
     else if (!strcmp(name, "soc"))     hs_f1(s, (float)cp.soc_avg  / 10.0f);
     else if (!strcmp(name, "temp"))    hs_f1(s, (float)cp.temp_avg / 10.0f);
+    else if (!strcmp(name, "drift"))   hs_uint(s, storage::history_store::read_coarse_drift_at(i));
     else                               hs_str(s, "null");
   }
   hs_str(s, "]}");
@@ -146,7 +162,7 @@ esp_err_t handle_history(httpd_req_t* req) {
 
   bool want_fine   = (strcmp(tier_buf, "fine")   == 0 || strcmp(tier_buf, "both") == 0);
   bool want_coarse = (strcmp(tier_buf, "coarse") == 0 || strcmp(tier_buf, "both") == 0);
-  static const char* ALL_SERIES[] = { "power", "voltage", "soc", "temp" };
+  static const char* ALL_SERIES[] = { "power", "voltage", "soc", "temp", "drift" };
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -175,8 +191,16 @@ esp_err_t handle_history_export(httpd_req_t* req) {
   // Read both rings.
   size_t fine_n   = storage::history_store::read_fine(s_fine_buf, HISTORY_FINE_CAPACITY);
   size_t coarse_n = storage::history_store::read_coarse(s_coarse_buf, HISTORY_COARSE_CAPACITY);
-  uint32_t fine_base   = storage::history_store::fine_epoch_base();
-  uint32_t coarse_base = storage::history_store::coarse_epoch_base();
+
+  // Anchor bases to NTP time so the CSV is self-correcting. Same reasoning
+  // as hs_fine_series / hs_coarse_series. See docs/diag-chart-tz-offset.md.
+  uint32_t now_s = net::ntp::now_unix_s();
+  uint32_t fine_base = (now_s != 0 && fine_n > 0)
+                       ? now_s - (uint32_t)(fine_n - 1) * HISTORY_FINE_RESOLUTION_S
+                       : storage::history_store::fine_epoch_base();
+  uint32_t coarse_base = (now_s != 0 && coarse_n > 0)
+                         ? now_s - (uint32_t)(coarse_n - 1) * HISTORY_COARSE_RESOLUTION_S
+                         : storage::history_store::coarse_epoch_base();
 
   httpd_resp_set_type(req, "text/csv");
   httpd_resp_set_hdr(req, "Content-Disposition",
@@ -212,11 +236,11 @@ esp_err_t handle_history_export(httpd_req_t* req) {
   }
 
   // Fine rows (recent high-resolution data).
+  // Use index-based ts (fine_base + i * res) for consistency with the chart's t0_epoch logic.
   for (size_t i = 0; i < fine_n; i++) {
     const HistoryFinePoint& fp = s_fine_buf[i];
-    uint32_t ts = (fine_base != 0)
-                  ? fine_base + (uint32_t)fp.t_offset_s
-                  : 0;
+    if (fp.flags == 0) continue;
+    uint32_t ts = (fine_base != 0) ? fine_base + (uint32_t)i * HISTORY_FINE_RESOLUTION_S : 0;
     if (ts == 0) continue;
     time_t t = (time_t)ts;
     struct tm tm_local = {};
