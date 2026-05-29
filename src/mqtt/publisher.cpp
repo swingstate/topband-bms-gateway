@@ -44,6 +44,12 @@ static char s_device_uid[32] = {};
 // so the user can force a re-send from the UI without rebooting.
 static bool s_ha_discovery_done = false;
 
+// Cooperative-shutdown flag. Set by stop() so MqttTask exits its loop cleanly
+// before stop() acquires s_mux. Prevents the spinlock-orphan scenario where
+// vTaskDelete() during a portENTER_CRITICAL in publish_request() would leave
+// s_mux permanently locked. Per docs/diag-mqtt-crash-review.md Finding 7.
+static volatile bool s_stop_requested = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static void compute_mac_identifiers(const Config& cfg) {
@@ -175,24 +181,32 @@ static void mqtt_task_entry(void* /*arg*/) {
            s_effective_base, s_device_uid);
 
   for (;;) {
-    // Check connect event (set by event handler, consumed here)
+    // Check stop flag before any work this tick.
+    if (s_stop_requested) {
+      s_task_handle = nullptr;
+      vTaskDelete(nullptr);  // self-delete; never returns
+    }
+
+    // Check connect event (set by event handler, consumed here).
+    // Snapshot ha_en and ha_done under the same critical section as
+    // s_just_connected — ensures SMP memory-barrier consistency.
+    // Per docs/diag-mqtt-crash-review.md Finding 6.
     bool just_conn = false;
+    bool ha_en     = false;
+    bool ha_done   = false;
+    bool connected = false;
     portENTER_CRITICAL(&s_mux);
     just_conn = s_just_connected;
     s_just_connected = false;
-    bool connected = (s_state == mqtt::publisher::State::Connected);
+    connected = (s_state == mqtt::publisher::State::Connected);
+    ha_en     = s_cfg.ha_discovery_enabled;
+    ha_done   = s_ha_discovery_done;
     portEXIT_CRITICAL(&s_mux);
 
     if (just_conn) {
       publish_status_online();
 
-      // Read ha_discovery_enabled from the live config so that toggling it in
-      // the UI takes effect on the next connect without a full publisher restart.
-      // s_cfg.ha_discovery_enabled is only set at start() time and goes stale
-      // if the user enables discovery while MQTT is already connected.
-      bool ha_en = app::get_config().ha_discovery_enabled;
-
-      if (ha_en && !s_ha_discovery_done) {
+      if (ha_en && !ha_done) {
         // Snapshot s_cfg once under lock for the discovery calls.
         Config cfg_snap;
         portENTER_CRITICAL(&s_mux);
@@ -323,10 +337,20 @@ bool start(const Config& cfg) {
 }
 
 void stop() {
-  // Kill task first so it stops draining the queue
+  // Cooperative shutdown: set flag, wait for task to self-exit (max 200 ms).
+  // Avoids vTaskDelete-while-in-critical-section spinlock orphan (Finding 7).
   if (s_task_handle) {
-    vTaskDelete(s_task_handle);
-    s_task_handle = nullptr;
+    s_stop_requested = true;
+    for (int i = 0; i < 20 && s_task_handle != nullptr; ++i) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (s_task_handle != nullptr) {
+      // Timeout safeguard — task did not exit cleanly; force-delete as last resort.
+      ESP_LOGW("mqtt_pub", "stop(): task did not exit cooperatively, force-deleting");
+      vTaskDelete(s_task_handle);
+      s_task_handle = nullptr;
+    }
+    s_stop_requested = false;
   }
 
   // Drain remaining queue items (avoid stale data on next start)
