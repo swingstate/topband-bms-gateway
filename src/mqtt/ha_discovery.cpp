@@ -11,6 +11,12 @@
 
 static const char* TAG = "ha_disc";
 
+// Reusable JSON document for all publish_*_entity() helpers.
+// All callers run sequentially from publish_all() — no concurrent access.
+// Pool grows to peak entity size on first use then stays; no per-entity DRAM
+// alloc/free. Per docs/diag-mqtt-crash-review.md Finding 1.
+static JsonDocument s_disc_doc;
+
 // ── Entity table ──────────────────────────────────────────────────────────────
 
 struct EntityDef {
@@ -146,19 +152,19 @@ static void publish_system_entity(esp_mqtt_client_handle_t client,
   mqtt::topics::build(effective_base, mqtt::topics::STATUS,    avail_topic, sizeof(avail_topic));
   mqtt::topics::build(effective_base, ent.topic_suffix, state_topic, sizeof(state_topic));
 
-  JsonDocument doc;
-  doc["name"]               = ent.name;
-  doc["state_topic"]        = state_topic;
-  doc["unique_id"]          = uid_key;
-  doc["availability_topic"] = avail_topic;
-  if (ent.device_class) doc["device_class"]       = ent.device_class;
-  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
-  if (ent.state_class)  doc["state_class"]         = ent.state_class;
-  if (ent.icon)         doc["icon"]                = ent.icon;
-  build_device_block(doc, device_uid);
+  s_disc_doc.clear();
+  s_disc_doc["name"]               = ent.name;
+  s_disc_doc["state_topic"]        = state_topic;
+  s_disc_doc["unique_id"]          = uid_key;
+  s_disc_doc["availability_topic"] = avail_topic;
+  if (ent.device_class) s_disc_doc["device_class"]       = ent.device_class;
+  if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
+  if (ent.state_class)  s_disc_doc["state_class"]         = ent.state_class;
+  if (ent.icon)         s_disc_doc["icon"]                = ent.icon;
+  build_device_block(s_disc_doc, device_uid);
 
   char buf[640];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Discovery payload overflow for %s", ent.key);
     return;
@@ -197,18 +203,18 @@ static void publish_pack_entity(esp_mqtt_client_handle_t client,
   char vt[48];
   snprintf(vt, sizeof(vt), "{{ value_json.%s }}", ent.key);
 
-  JsonDocument doc;
-  doc["name"]               = name;
-  doc["state_topic"]        = state_topic;
-  doc["value_template"]     = vt;
-  doc["unique_id"]          = uid_key;
-  doc["availability_topic"] = avail_topic;
-  if (ent.device_class) doc["device_class"]       = ent.device_class;
-  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
-  build_device_block(doc, device_uid);
+  s_disc_doc.clear();
+  s_disc_doc["name"]               = name;
+  s_disc_doc["state_topic"]        = state_topic;
+  s_disc_doc["value_template"]     = vt;
+  s_disc_doc["unique_id"]          = uid_key;
+  s_disc_doc["availability_topic"] = avail_topic;
+  if (ent.device_class) s_disc_doc["device_class"]       = ent.device_class;
+  if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
+  build_device_block(s_disc_doc, device_uid);
 
   char buf[640];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) return;
   publish_one(client, disc_topic, buf, (int)n);
 }
@@ -252,21 +258,21 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Gateway %s Pack %u",
            tail, (unsigned)pack_n);
 
-  JsonDocument doc;
-  doc["name"]               = name;
-  doc["state_topic"]        = state_topic;
-  doc["unique_id"]          = uid_key;
-  doc["availability_topic"] = avail_topic;
-  if (ent.device_class) doc["device_class"]       = ent.device_class;
-  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
-  if (ent.state_class)  doc["state_class"]         = ent.state_class;
+  s_disc_doc.clear();
+  s_disc_doc["name"]               = name;
+  s_disc_doc["state_topic"]        = state_topic;
+  s_disc_doc["unique_id"]          = uid_key;
+  s_disc_doc["availability_topic"] = avail_topic;
+  if (ent.device_class) s_disc_doc["device_class"]       = ent.device_class;
+  if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
+  if (ent.state_class)  s_disc_doc["state_class"]         = ent.state_class;
   if (ent.is_binary) {
     // binary_sensor needs explicit payload mapping for "true"/"false" strings
-    doc["payload_on"]  = "true";
-    doc["payload_off"] = "false";
+    s_disc_doc["payload_on"]  = "true";
+    s_disc_doc["payload_off"] = "false";
   }
 
-  JsonObject dev = doc["device"].to<JsonObject>();
+  JsonObject dev = s_disc_doc["device"].to<JsonObject>();
   dev["identifiers"].to<JsonArray>().add(pack_dev_id);
   dev["name"]         = pack_dev_name;
   dev["manufacturer"] = "TopBand";
@@ -275,7 +281,7 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   dev["via_device"]   = device_uid;
 
   char buf[700];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Plain-pack discovery overflow for %s", uid_key);
     return;
@@ -317,23 +323,23 @@ static void publish_cell_entity(esp_mqtt_client_handle_t client,
   snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Gateway %s Pack %u",
            tail, (unsigned)pack_n);
 
-  JsonDocument doc;
-  doc["name"]                = name;
-  doc["state_topic"]         = state_topic;
-  doc["unique_id"]           = uid_key;
-  doc["availability_topic"]  = avail_topic;
-  doc["device_class"]        = "voltage";
-  doc["unit_of_measurement"] = "V";
-  doc["state_class"]         = "measurement";
+  s_disc_doc.clear();
+  s_disc_doc["name"]                = name;
+  s_disc_doc["state_topic"]         = state_topic;
+  s_disc_doc["unique_id"]           = uid_key;
+  s_disc_doc["availability_topic"]  = avail_topic;
+  s_disc_doc["device_class"]        = "voltage";
+  s_disc_doc["unit_of_measurement"] = "V";
+  s_disc_doc["state_class"]         = "measurement";
 
-  JsonObject dev = doc["device"].to<JsonObject>();
-  dev["identifiers"].to<JsonArray>().add(pack_dev_id);
-  dev["name"]         = pack_dev_name;
-  dev["manufacturer"] = "TopBand";
-  dev["via_device"]   = device_uid;
+  JsonObject dev2 = s_disc_doc["device"].to<JsonObject>();
+  dev2["identifiers"].to<JsonArray>().add(pack_dev_id);
+  dev2["name"]         = pack_dev_name;
+  dev2["manufacturer"] = "TopBand";
+  dev2["via_device"]   = device_uid;
 
   char buf[700];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Cell entity discovery overflow for %s", uid_key);
     return;
