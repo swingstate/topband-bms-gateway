@@ -24,11 +24,13 @@
 #include "app/history_task.h"
 #include "app/self_test.h"
 #include "mqtt/publisher.h"
+#include "mqtt/ha_discovery.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_core_dump.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -246,6 +248,13 @@ void run_boot() {
     }
   }
 
+  // ── Step 9.45: HA discovery NVS cleanup check ────────────────────────────
+  // Runs the NVS version gate and commits the new FW marker here at boot
+  // (one-time blocking NVS write off MQTT task). Sets internal s_cleanup_needed
+  // flag; publish_cleanup_if_needed() enqueues tombstones on next MQTT connect.
+  // Per docs/diag-mqtt-crash-review.md Finding 5.
+  mqtt::ha_discovery::check_at_boot();
+
   // ── Step 9.5: MQTT publisher (STA mode only, when enabled) ──────────────
   if (sta_connected && g_config.mqtt_enabled) {
     if (!mqtt::publisher::start(g_config)) {
@@ -281,6 +290,16 @@ void run_boot() {
     ESP_LOGI(TAG, "Smoke reader task created on Core 1");
   }
 #endif
+
+  // ── Step 11.5: Coredump presence check ───────────────────────────────────
+  // Emit a CRITICAL alert if the previous boot left a coredump in flash so
+  // the operator sees it on the diag page without manually polling the endpoint.
+  // Per docs/diag-mqtt-crash-review.md Finding 9.
+  if (esp_core_dump_image_check() == ESP_OK) {
+    diag::alerts::emit(diag::alerts::Severity::Critical, "boot",
+                       "coredump found from previous panic — retrieve via "
+                       "GET /api/diag/coredump.bin");
+  }
 
   // ── Step 12: Boot-complete alert ─────────────────────────────────────────
   diag::alerts::emit(diag::alerts::Severity::Info, "boot",

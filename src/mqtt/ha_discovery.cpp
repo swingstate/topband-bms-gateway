@@ -1,5 +1,6 @@
 #include "mqtt/ha_discovery.h"
 #include "mqtt/topics.h"
+#include "bus/queues.h"
 #include "app/version.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -10,6 +11,12 @@
 #include <cctype>
 
 static const char* TAG = "ha_disc";
+
+// Reusable JSON document for all publish_*_entity() helpers.
+// All callers run sequentially from publish_all() — no concurrent access.
+// Pool grows to peak entity size on first use then stays; no per-entity DRAM
+// alloc/free. Per docs/diag-mqtt-crash-review.md Finding 1.
+static JsonDocument s_disc_doc;
 
 // ── Entity table ──────────────────────────────────────────────────────────────
 
@@ -93,17 +100,38 @@ static const PlainPackEntityDef PLAIN_PACK_ENTITIES[] = {
 };
 static constexpr size_t N_PLAIN_PACK = sizeof(PLAIN_PACK_ENTITIES) / sizeof(PLAIN_PACK_ENTITIES[0]);
 
+// ── Internal state ────────────────────────────────────────────────────────────
+
+// Set by check_at_boot() when firmware version changed; cleared by
+// publish_cleanup_if_needed() after tombstones are enqueued.
+static bool s_cleanup_needed = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-static void publish_one(esp_mqtt_client_handle_t client,
-                         const char* disc_topic,
-                         const char* payload,          // nullptr → empty (cleanup)
-                         int payload_len) {
-  int msg_id = esp_mqtt_client_publish(client, disc_topic,
-                                        payload, payload_len,
-                                        0 /*qos*/, 1 /*retain*/);
-  if (msg_id < 0) {
-    ESP_LOGW(TAG, "Discovery publish failed: %s", disc_topic);
+// Enqueue one discovery message (full disc_topic path, retained).
+// payload == nullptr → empty retained payload (tombstone for stale entities).
+static void enqueue_disc(const char* disc_topic,
+                          const char* payload, size_t payload_len) {
+  if (!q_mqtt_publish) return;
+  MqttPublishRequest req = {};
+  req.topic    = MqttPublishRequest::Topic::Discovery;
+  req.pack_id  = 0xFF;
+  req.retained = true;
+  snprintf(req.topic_suffix, sizeof(req.topic_suffix), "%s", disc_topic);
+  if (payload && payload_len > 0) {
+    size_t copy = payload_len < sizeof(req.payload) - 1 ? payload_len : sizeof(req.payload) - 1;
+    memcpy(req.payload, payload, copy);
+    req.payload[copy] = '\0';
+    req.payload_len = (uint16_t)copy;
+  } else {
+    req.payload[0] = '\0';
+    req.payload_len = 0;
+  }
+  // Drop oldest on full queue — same policy as post_mqtt in housekeeping.
+  if (xQueueSend(q_mqtt_publish, &req, 0) != pdTRUE) {
+    static MqttPublishRequest s_dropped;
+    xQueueReceive(q_mqtt_publish, &s_dropped, 0);
+    xQueueSend(q_mqtt_publish, &req, 0);
   }
 }
 
@@ -128,8 +156,7 @@ static void build_device_block(JsonDocument& doc, const char* device_uid) {
   dev["sw_version"]   = FW_VERSION_FULL;
 }
 
-static void publish_system_entity(esp_mqtt_client_handle_t client,
-                                   const EntityDef& ent,
+static void publish_system_entity(const EntityDef& ent,
                                    const char* device_uid,
                                    const char* effective_base) {
   char disc_topic[160];
@@ -146,28 +173,27 @@ static void publish_system_entity(esp_mqtt_client_handle_t client,
   mqtt::topics::build(effective_base, mqtt::topics::STATUS,    avail_topic, sizeof(avail_topic));
   mqtt::topics::build(effective_base, ent.topic_suffix, state_topic, sizeof(state_topic));
 
-  JsonDocument doc;
-  doc["name"]               = ent.name;
-  doc["state_topic"]        = state_topic;
-  doc["unique_id"]          = uid_key;
-  doc["availability_topic"] = avail_topic;
-  if (ent.device_class) doc["device_class"]       = ent.device_class;
-  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
-  if (ent.state_class)  doc["state_class"]         = ent.state_class;
-  if (ent.icon)         doc["icon"]                = ent.icon;
-  build_device_block(doc, device_uid);
+  s_disc_doc.clear();
+  s_disc_doc["name"]               = ent.name;
+  s_disc_doc["state_topic"]        = state_topic;
+  s_disc_doc["unique_id"]          = uid_key;
+  s_disc_doc["availability_topic"] = avail_topic;
+  if (ent.device_class) s_disc_doc["device_class"]       = ent.device_class;
+  if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
+  if (ent.state_class)  s_disc_doc["state_class"]         = ent.state_class;
+  if (ent.icon)         s_disc_doc["icon"]                = ent.icon;
+  build_device_block(s_disc_doc, device_uid);
 
   char buf[640];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Discovery payload overflow for %s", ent.key);
     return;
   }
-  publish_one(client, disc_topic, buf, (int)n);
+  enqueue_disc(disc_topic, buf, n);
 }
 
-static void publish_pack_entity(esp_mqtt_client_handle_t client,
-                                 uint8_t pack_idx,           // 0-based
+static void publish_pack_entity(uint8_t pack_idx,           // 0-based
                                  const PackEntityDef& ent,
                                  const char* device_uid,
                                  const char* effective_base) {
@@ -197,24 +223,23 @@ static void publish_pack_entity(esp_mqtt_client_handle_t client,
   char vt[48];
   snprintf(vt, sizeof(vt), "{{ value_json.%s }}", ent.key);
 
-  JsonDocument doc;
-  doc["name"]               = name;
-  doc["state_topic"]        = state_topic;
-  doc["value_template"]     = vt;
-  doc["unique_id"]          = uid_key;
-  doc["availability_topic"] = avail_topic;
-  if (ent.device_class) doc["device_class"]       = ent.device_class;
-  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
-  build_device_block(doc, device_uid);
+  s_disc_doc.clear();
+  s_disc_doc["name"]               = name;
+  s_disc_doc["state_topic"]        = state_topic;
+  s_disc_doc["value_template"]     = vt;
+  s_disc_doc["unique_id"]          = uid_key;
+  s_disc_doc["availability_topic"] = avail_topic;
+  if (ent.device_class) s_disc_doc["device_class"]       = ent.device_class;
+  if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
+  build_device_block(s_disc_doc, device_uid);
 
   char buf[640];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) return;
-  publish_one(client, disc_topic, buf, (int)n);
+  enqueue_disc(disc_topic, buf, n);
 }
 
-static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
-                                       uint8_t pack_idx,
+static void publish_plain_pack_entity(uint8_t pack_idx,
                                        const PlainPackEntityDef& ent,
                                        const char* device_uid,
                                        const char* effective_base) {
@@ -252,21 +277,21 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Gateway %s Pack %u",
            tail, (unsigned)pack_n);
 
-  JsonDocument doc;
-  doc["name"]               = name;
-  doc["state_topic"]        = state_topic;
-  doc["unique_id"]          = uid_key;
-  doc["availability_topic"] = avail_topic;
-  if (ent.device_class) doc["device_class"]       = ent.device_class;
-  if (ent.unit)         doc["unit_of_measurement"] = ent.unit;
-  if (ent.state_class)  doc["state_class"]         = ent.state_class;
+  s_disc_doc.clear();
+  s_disc_doc["name"]               = name;
+  s_disc_doc["state_topic"]        = state_topic;
+  s_disc_doc["unique_id"]          = uid_key;
+  s_disc_doc["availability_topic"] = avail_topic;
+  if (ent.device_class) s_disc_doc["device_class"]       = ent.device_class;
+  if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
+  if (ent.state_class)  s_disc_doc["state_class"]         = ent.state_class;
   if (ent.is_binary) {
     // binary_sensor needs explicit payload mapping for "true"/"false" strings
-    doc["payload_on"]  = "true";
-    doc["payload_off"] = "false";
+    s_disc_doc["payload_on"]  = "true";
+    s_disc_doc["payload_off"] = "false";
   }
 
-  JsonObject dev = doc["device"].to<JsonObject>();
+  JsonObject dev = s_disc_doc["device"].to<JsonObject>();
   dev["identifiers"].to<JsonArray>().add(pack_dev_id);
   dev["name"]         = pack_dev_name;
   dev["manufacturer"] = "TopBand";
@@ -275,16 +300,15 @@ static void publish_plain_pack_entity(esp_mqtt_client_handle_t client,
   dev["via_device"]   = device_uid;
 
   char buf[700];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Plain-pack discovery overflow for %s", uid_key);
     return;
   }
-  publish_one(client, disc_topic, buf, (int)n);
+  enqueue_disc(disc_topic, buf, n);
 }
 
-static void publish_cell_entity(esp_mqtt_client_handle_t client,
-                                 uint8_t pack_idx,
+static void publish_cell_entity(uint8_t pack_idx,
                                  uint8_t cell_idx,       // 0-based
                                  const char* device_uid,
                                  const char* effective_base) {
@@ -317,113 +341,100 @@ static void publish_cell_entity(esp_mqtt_client_handle_t client,
   snprintf(pack_dev_name, sizeof(pack_dev_name), "TopBand BMS Gateway %s Pack %u",
            tail, (unsigned)pack_n);
 
-  JsonDocument doc;
-  doc["name"]                = name;
-  doc["state_topic"]         = state_topic;
-  doc["unique_id"]           = uid_key;
-  doc["availability_topic"]  = avail_topic;
-  doc["device_class"]        = "voltage";
-  doc["unit_of_measurement"] = "V";
-  doc["state_class"]         = "measurement";
+  s_disc_doc.clear();
+  s_disc_doc["name"]                = name;
+  s_disc_doc["state_topic"]         = state_topic;
+  s_disc_doc["unique_id"]           = uid_key;
+  s_disc_doc["availability_topic"]  = avail_topic;
+  s_disc_doc["device_class"]        = "voltage";
+  s_disc_doc["unit_of_measurement"] = "V";
+  s_disc_doc["state_class"]         = "measurement";
 
-  JsonObject dev = doc["device"].to<JsonObject>();
-  dev["identifiers"].to<JsonArray>().add(pack_dev_id);
-  dev["name"]         = pack_dev_name;
-  dev["manufacturer"] = "TopBand";
-  dev["via_device"]   = device_uid;
+  JsonObject dev2 = s_disc_doc["device"].to<JsonObject>();
+  dev2["identifiers"].to<JsonArray>().add(pack_dev_id);
+  dev2["name"]         = pack_dev_name;
+  dev2["manufacturer"] = "TopBand";
+  dev2["via_device"]   = device_uid;
 
   char buf[700];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
+  size_t n = serializeJson(s_disc_doc, buf, sizeof(buf));
   if (n == 0) {
     ESP_LOGW(TAG, "Cell entity discovery overflow for %s", uid_key);
     return;
   }
-  publish_one(client, disc_topic, buf, (int)n);
+  enqueue_disc(disc_topic, buf, n);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 namespace mqtt::ha_discovery {
 
-void publish_all(esp_mqtt_client_handle_t client, const Config& cfg,
+void publish_all(const Config& cfg,
                  const char* device_uid, const char* effective_base) {
   const bool have_per_pack = (cfg.mqtt_level >= Config::MqttLevel::PerPack);
   const bool have_per_cell = (cfg.mqtt_level >= Config::MqttLevel::PerCell);
 
-  ESP_LOGI(TAG, "Publishing HA discovery (%zu system, per_pack=%d, per_cell=%d)",
+  ESP_LOGI(TAG, "Queuing HA discovery (%zu system, per_pack=%d, per_cell=%d)",
            N_SYSTEM, (int)have_per_pack, (int)have_per_cell);
 
+  // Each entity is enqueued into q_mqtt_publish; MqttTask drains at 50 ms cadence.
+  // Total time ~4.65 s for 93 entities — fully non-blocking from callers perspective.
   for (size_t i = 0; i < N_SYSTEM; ++i) {
-    publish_system_entity(client, SYSTEM_ENTITIES[i], device_uid, effective_base);
-    // Brief yield between publishes to avoid overwhelming the MQTT stack
-    vTaskDelay(pdMS_TO_TICKS(20));
+    publish_system_entity(SYSTEM_ENTITIES[i], device_uid, effective_base);
   }
 
-  // Plain-text per-pack entities (retained individual topics): at PerPack level+
   if (have_per_pack) {
     for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
       for (size_t i = 0; i < N_PLAIN_PACK; ++i) {
-        publish_plain_pack_entity(client, p, PLAIN_PACK_ENTITIES[i],
-                                   device_uid, effective_base);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        publish_plain_pack_entity(p, PLAIN_PACK_ENTITIES[i], device_uid, effective_base);
       }
     }
   }
 
-  // JSON cells-based per-pack entities (need value_template): at PerCell level
   if (have_per_cell) {
     for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
       for (size_t i = 0; i < N_PACK; ++i) {
-        publish_pack_entity(client, p, PACK_ENTITIES[i], device_uid, effective_base);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        publish_pack_entity(p, PACK_ENTITIES[i], device_uid, effective_base);
       }
     }
-  }
-
-  // Individual cell voltage sensors (plain-text retained topics): at PerCell level.
-  // Discovers all 15 slots per pack; HA shows unused slots as unavailable.
-  if (have_per_cell) {
+    // Individual cell voltage sensors: all 15 slots per pack.
     for (uint8_t p = 0; p < cfg.bms_count && p < 16; ++p) {
       for (uint8_t ci = 0; ci < 15; ++ci) {
-        publish_cell_entity(client, p, ci, device_uid, effective_base);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        publish_cell_entity(p, ci, device_uid, effective_base);
       }
     }
   }
 
-  ESP_LOGI(TAG, "HA discovery complete");
+  ESP_LOGI(TAG, "HA discovery enqueued (%zu+ items)", N_SYSTEM);
 }
 
-void cleanup_stale(esp_mqtt_client_handle_t client, const Config& cfg,
-                   const char* device_uid, const char* effective_base) {
-  (void)cfg; (void)effective_base;
-
-  // Gate: only run once per firmware version build.
-  // NVS key "ha_disco_v" (≤15 chars) stores the last FW_VERSION we ran cleanup for.
+void check_at_boot() {
+  // Read NVS version marker. If firmware changed: write new marker (flash commit
+  // here at boot, not on MQTT connect) and arm s_cleanup_needed for the next
+  // connect. Per docs/diag-mqtt-crash-review.md Finding 5.
   nvs_handle_t nvs = 0;
-  esp_err_t err = nvs_open("gateway", NVS_READWRITE, &nvs);
-  if (err != ESP_OK) return;
+  if (nvs_open("gateway", NVS_READWRITE, &nvs) != ESP_OK) return;
 
   char stored[32] = {};
   size_t stored_len = sizeof(stored);
   nvs_get_str(nvs, "ha_disco_v", stored, &stored_len);  // ok to fail (key missing)
 
-  if (strcmp(stored, FW_VERSION) == 0) {
-    // Already ran for this version
-    nvs_close(nvs);
-    return;
+  if (strcmp(stored, FW_VERSION) != 0) {
+    s_cleanup_needed = true;
+    nvs_set_str(nvs, "ha_disco_v", FW_VERSION);
+    nvs_commit(nvs);  // blocking flash write runs once at boot, off MQTT task
+    ESP_LOGI(TAG, "HA cleanup armed: firmware '%s' -> '%s'", stored, FW_VERSION);
   }
+  nvs_close(nvs);
+}
 
-  ESP_LOGI(TAG, "HA discovery cleanup: firmware changed from '%s' to '%s'",
-           stored, FW_VERSION);
+void publish_cleanup_if_needed(const char* device_uid) {
+  if (!s_cleanup_needed) return;
+  s_cleanup_needed = false;
 
-  // Keys renamed or dropped between V2.67/V3.0-dev and this build.
-  // Publishing empty retained payload removes the stale entity from HA.
   static const char* STALE_KEYS[] = {
     "diag_loop_max_ms",
     "diag_handler_max_ms",
-    // Renamed in iter/ui-polish-mqtt: individual plain-text topics replaced
-    // the JSON-based system entity keys from earlier V3.0-dev builds.
     "soc_avg", "soh_avg", "pack_voltage_avg", "pack_current_total",
     "pack_power_w", "temp_avg", "temp_max", "cell_v_drift",
     "cvl_v", "ccl_a", "dcl_a", "bms_count_online",
@@ -431,16 +442,10 @@ void cleanup_stale(esp_mqtt_client_handle_t client, const Config& cfg,
   for (const char* key : STALE_KEYS) {
     char disc_topic[160];
     if (mqtt::topics::build_ha_discovery(device_uid, key, disc_topic, sizeof(disc_topic))) {
-      publish_one(client, disc_topic, nullptr, 0);
+      enqueue_disc(disc_topic, nullptr, 0);
     }
   }
-
-  // Write new version marker
-  nvs_set_str(nvs, "ha_disco_v", FW_VERSION);
-  nvs_commit(nvs);
-  nvs_close(nvs);
-
-  ESP_LOGI(TAG, "HA discovery cleanup done — marker written for %s", FW_VERSION);
+  ESP_LOGI(TAG, "HA cleanup tombstones enqueued for %s", FW_VERSION);
 }
 
 }  // namespace mqtt::ha_discovery

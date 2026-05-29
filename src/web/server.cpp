@@ -116,8 +116,9 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/history/export.csv", HTTP_GET, handle_history_export);
 
   // ── Diag and alerts endpoints (Phase H3a) ─────────────────────────────────
-  reg_auth(g_server, "/api/diag",    HTTP_GET,    handle_diag);
-  reg_auth(g_server, "/api/alerts",  HTTP_GET,    handle_alerts_get);
+  reg_auth(g_server, "/api/diag",              HTTP_GET, handle_diag);
+  reg_auth(g_server, "/api/diag/coredump.bin", HTTP_GET, handle_diag_coredump);
+  reg_auth(g_server, "/api/alerts",            HTTP_GET, handle_alerts_get);
   reg_auth(g_server, "/api/alerts",  HTTP_DELETE, handle_alerts_delete);
 
   // ── OTA endpoints (Phase I) ─────────────────────────────────────���─────────

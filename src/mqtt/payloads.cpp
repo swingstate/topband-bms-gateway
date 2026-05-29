@@ -1,6 +1,14 @@
 #include "mqtt/payloads.h"
 #include <ArduinoJson.h>
 
+// Module-level JsonDocument pools: reused across calls to eliminate per-call
+// DRAM alloc/free cycles. Pool grows to peak size on first use then stays.
+// HousekeepingTask is the sole caller of all three functions; no mutex needed.
+// Per docs/diag-mqtt-crash-review.md Finding 1.
+static JsonDocument s_doc_data;
+static JsonDocument s_doc_diag;
+static JsonDocument s_doc_cells;
+
 namespace mqtt::payloads {
 
 static const char* event_name(SafetyState::SafetyEvent type) {
@@ -29,23 +37,23 @@ static const char* event_name(SafetyState::SafetyEvent type) {
 size_t build_data(const BmsSystemSnapshot& snap, const SafetyState& safety,
                   uint64_t ts_ms, uint32_t uptime_s,
                   char* out, size_t out_size) {
-  JsonDocument doc;
+  s_doc_data.clear();
 
-  doc["ts_ms"]                = ts_ms;
-  doc["uptime_s"]             = uptime_s;
-  doc["bms_count_online"]     = safety.packs_online;
-  doc["bms_count_configured"] = safety.packs_configured;
-  doc["soc_avg"]              = safety.soc_avg;
-  doc["soh_avg"]              = safety.soh_avg;
-  doc["pack_voltage_avg"]     = safety.pack_voltage_avg;
-  doc["pack_current_total"]   = safety.pack_current_total;
-  doc["pack_power_w"]         = safety.pack_voltage_avg * safety.pack_current_total;
-  doc["temp_avg"]             = safety.temp_avg;
-  doc["cvl_v"]                = safety.cvl_volts;
-  doc["ccl_a"]                = safety.ccl_amps;
-  doc["dcl_a"]                = safety.dcl_amps;
-  doc["alarm_flags"]          = safety.alarm_flags;
-  doc["sys_message"]          = safety.sys_message;
+  s_doc_data["ts_ms"]                = ts_ms;
+  s_doc_data["uptime_s"]             = uptime_s;
+  s_doc_data["bms_count_online"]     = safety.packs_online;
+  s_doc_data["bms_count_configured"] = safety.packs_configured;
+  s_doc_data["soc_avg"]              = safety.soc_avg;
+  s_doc_data["soh_avg"]              = safety.soh_avg;
+  s_doc_data["pack_voltage_avg"]     = safety.pack_voltage_avg;
+  s_doc_data["pack_current_total"]   = safety.pack_current_total;
+  s_doc_data["pack_power_w"]         = safety.pack_voltage_avg * safety.pack_current_total;
+  s_doc_data["temp_avg"]             = safety.temp_avg;
+  s_doc_data["cvl_v"]                = safety.cvl_volts;
+  s_doc_data["ccl_a"]                = safety.ccl_amps;
+  s_doc_data["dcl_a"]                = safety.dcl_amps;
+  s_doc_data["alarm_flags"]          = safety.alarm_flags;
+  s_doc_data["sys_message"]          = safety.sys_message;
 
   // Aggregate cell min/max/drift and temp_max across all online packs.
   float cell_min = 0.0f, cell_max = 0.0f, cell_drift = 0.0f, temp_max = 0.0f;
@@ -68,18 +76,18 @@ size_t build_data(const BmsSystemSnapshot& snap, const SafetyState& safety,
   }
 
   if (have_cells) {
-    doc["cell_v_min"]   = cell_min;
-    doc["cell_v_max"]   = cell_max;
-    doc["cell_v_drift"] = cell_drift;
-    doc["temp_max"]     = temp_max;
+    s_doc_data["cell_v_min"]   = cell_min;
+    s_doc_data["cell_v_max"]   = cell_max;
+    s_doc_data["cell_v_drift"] = cell_drift;
+    s_doc_data["temp_max"]     = temp_max;
   } else {
-    doc["cell_v_min"]   = nullptr;
-    doc["cell_v_max"]   = nullptr;
-    doc["cell_v_drift"] = nullptr;
-    doc["temp_max"]     = nullptr;
+    s_doc_data["cell_v_min"]   = nullptr;
+    s_doc_data["cell_v_max"]   = nullptr;
+    s_doc_data["cell_v_drift"] = nullptr;
+    s_doc_data["temp_max"]     = nullptr;
   }
 
-  size_t n = serializeJson(doc, out, out_size);
+  size_t n = serializeJson(s_doc_data, out, out_size);
   return (n > 0 && n < out_size) ? n : 0;
 }
 
@@ -88,57 +96,57 @@ size_t build_diag(const BmsSystemSnapshot& snap, const SafetyState& safety,
                   uint64_t ts_ms, uint32_t uptime_s,
                   char* out, size_t out_size) {
   (void)snap;
-  JsonDocument doc;
+  s_doc_diag.clear();
 
-  doc["ts_ms"]         = ts_ms;
-  doc["uptime_s"]      = uptime_s;
-  doc["cycles"]        = ps.cycles_completed;
-  doc["analog_ok"]     = ps.analog_polls_ok;
-  doc["analog_timeout"]= ps.analog_polls_timeout;
-  doc["analog_err"]    = ps.analog_polls_parse_err;
-  doc["alarm_ok"]      = ps.alarm_polls_ok;
-  doc["alarm_err"]     = ps.alarm_polls_err;
-  doc["sysparam_ok"]   = ps.sysparam_polls_ok;
-  doc["sysparam_err"]  = ps.sysparam_polls_err;
-  doc["cycle_avg_ms"]  = ps.cycle_avg_ms;
-  doc["cycle_max_ms"]  = ps.cycle_max_ms;
-  doc["can_tx_ok"]     = cs.tx_ok;
-  doc["can_tx_fail"]   = cs.tx_fail;
-  doc["can_bus_off"]   = cs.bus_off_count;
-  doc["can_restarts"]  = cs.driver_restart_count;
-  doc["alarm_flags"]   = safety.alarm_flags;
-  doc["packs_online"]  = safety.packs_online;
+  s_doc_diag["ts_ms"]         = ts_ms;
+  s_doc_diag["uptime_s"]      = uptime_s;
+  s_doc_diag["cycles"]        = ps.cycles_completed;
+  s_doc_diag["analog_ok"]     = ps.analog_polls_ok;
+  s_doc_diag["analog_timeout"]= ps.analog_polls_timeout;
+  s_doc_diag["analog_err"]    = ps.analog_polls_parse_err;
+  s_doc_diag["alarm_ok"]      = ps.alarm_polls_ok;
+  s_doc_diag["alarm_err"]     = ps.alarm_polls_err;
+  s_doc_diag["sysparam_ok"]   = ps.sysparam_polls_ok;
+  s_doc_diag["sysparam_err"]  = ps.sysparam_polls_err;
+  s_doc_diag["cycle_avg_ms"]  = ps.cycle_avg_ms;
+  s_doc_diag["cycle_max_ms"]  = ps.cycle_max_ms;
+  s_doc_diag["can_tx_ok"]     = cs.tx_ok;
+  s_doc_diag["can_tx_fail"]   = cs.tx_fail;
+  s_doc_diag["can_bus_off"]   = cs.bus_off_count;
+  s_doc_diag["can_restarts"]  = cs.driver_restart_count;
+  s_doc_diag["alarm_flags"]   = safety.alarm_flags;
+  s_doc_diag["packs_online"]  = safety.packs_online;
 
-  size_t n = serializeJson(doc, out, out_size);
+  size_t n = serializeJson(s_doc_diag, out, out_size);
   return (n > 0 && n < out_size) ? n : 0;
 }
 
 size_t build_cells(const BmsPackSnapshot& pack, uint64_t ts_ms,
                    char* out, size_t out_size) {
-  JsonDocument doc;
+  s_doc_cells.clear();
 
-  doc["ts_ms"]      = ts_ms;
-  doc["bms_id"]     = pack.bms_id;
-  doc["online"]     = pack.online;
-  doc["cell_count"] = pack.cell_count;
+  s_doc_cells["ts_ms"]      = ts_ms;
+  s_doc_cells["bms_id"]     = pack.bms_id;
+  s_doc_cells["online"]     = pack.online;
+  s_doc_cells["cell_count"] = pack.cell_count;
 
-  JsonArray cells = doc["cells_v"].to<JsonArray>();
+  JsonArray cells = s_doc_cells["cells_v"].to<JsonArray>();
   for (uint8_t i = 0; i < pack.cell_count && i < 16; ++i) {
     cells.add(pack.cell_v[i]);
   }
 
-  doc["temp_count"] = pack.temp_count;
-  JsonArray temps = doc["temps_c"].to<JsonArray>();
+  s_doc_cells["temp_count"] = pack.temp_count;
+  JsonArray temps = s_doc_cells["temps_c"].to<JsonArray>();
   for (uint8_t i = 0; i < pack.temp_count && i < 8; ++i) {
     temps.add(pack.temp_c[i]);
   }
 
-  doc["cell_v_min"]   = pack.cell_min_v;
-  doc["cell_v_max"]   = pack.cell_max_v;
-  doc["cell_v_drift"] = pack.cell_drift_v;
-  doc["alarm_bits"]   = pack.alarm_bits;
+  s_doc_cells["cell_v_min"]   = pack.cell_min_v;
+  s_doc_cells["cell_v_max"]   = pack.cell_max_v;
+  s_doc_cells["cell_v_drift"] = pack.cell_drift_v;
+  s_doc_cells["alarm_bits"]   = pack.alarm_bits;
 
-  size_t n = serializeJson(doc, out, out_size);
+  size_t n = serializeJson(s_doc_cells, out, out_size);
   return (n > 0 && n < out_size) ? n : 0;
 }
 

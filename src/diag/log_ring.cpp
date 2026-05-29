@@ -34,9 +34,10 @@ static int (*s_orig_vprintf)(const char*, va_list) = nullptr;
 
 #ifndef NATIVE_BUILD
 static int log_hook(const char* fmt, va_list args) {
-  char line[256];
-  // Format for the ring — this copy is safe; we're not re-entering the ring
-  // writer because portENTER_CRITICAL disables interrupts on this core.
+  // MAX_LINE + 4: append() truncates at MAX_LINE-1 = 119 chars anyway.
+  // Original 256-byte buffer wasted 132 B on every calling task's stack.
+  // Per docs/diag-mqtt-crash-review.md Finding 8.
+  char line[MAX_LINE + 4];
   va_list args_copy;
   va_copy(args_copy, args);
   vsnprintf(line, sizeof(line), fmt, args_copy);

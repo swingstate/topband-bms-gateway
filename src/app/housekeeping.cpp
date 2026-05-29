@@ -22,9 +22,39 @@ static const char* TAG = "housekeep";
 // causes GCC (-Os) to reserve the full frame at function entry, overflowing
 // the 6144-byte stack even when the mqtt_enabled guard short-circuits the loop.
 // HousekeepingTask is single-instance so there is no aliasing risk.
-static BmsSystemSnapshot s_snap;
-static SafetyState       s_safety;
+static BmsSystemSnapshot  s_snap;
+static SafetyState        s_safety;
 static MqttPublishRequest s_req;
+
+// Individual system IndivTopic values — 20 × 72 bytes = 1440 bytes.
+// Previously a stack-local inside housekeeping_task_entry; with interrupt save
+// frames, nested call frames, and log_hook overhead that brought HousekeepingTask
+// within ~1400 bytes of its 4096-byte budget. Same BSS-promotion pattern as the
+// Phase H1 stack overflow fix (architecture §10 R9).
+// Per docs/diag-mqtt-crash-review.md Finding 3.
+struct IndivTopic { const char* suffix; char value[64]; };
+static IndivTopic s_iv_topics[20] = {
+  { "/soc",              {} },
+  { "/voltage",          {} },
+  { "/current",          {} },
+  { "/power",            {} },
+  { "/temperature",      {} },
+  { "/cell_v_min",       {} },
+  { "/cell_v_max",       {} },
+  { "/cell_drift",       {} },
+  { "/soh",              {} },
+  { "/cvl",              {} },
+  { "/ccl",              {} },
+  { "/dcl",              {} },
+  { "/alarm_flags",      {} },
+  { "/sys_message",      {} },
+  { "/bms_online",       {} },
+  { "/bms_configured",   {} },
+  { "/energy_today_in",  {} },
+  { "/energy_today_out", {} },
+  { "/runtime_est_min",  {} },
+  { "/runtime_est_state",{} },
+};
 
 // Helper: post a pre-built MqttPublishRequest to q_mqtt_publish.
 // Drops oldest on full queue (architecture §5.8).
@@ -41,24 +71,30 @@ static void post_mqtt(const MqttPublishRequest& req) {
   }
 }
 
+// ── Staggered-publish cursors ─────────────────────────────────────────────────
+// Each 1 Hz tick advances these, distributing up to ~10 publishes per tick
+// instead of 43-59 per 5-second DATA burst. Eliminates queue overflow and
+// reduces burst load on the MQTT internal task.
+// Per docs/diag-mqtt-crash-review.md Findings 2 and 4.
+static uint8_t  s_sys_cursor  = 0;   // 0..19  — rotates through 20 system topics
+static uint8_t  s_pack_cursor = 0;   // 0..9   — rotates through 10 per-pack value topics
+static uint8_t  s_cell_cursor = 0;   // 0..N*15-1 — rotates through individual cell_v topics
+static uint32_t s_tick        = 0;   // monotonic 1 Hz counter
+
 static void housekeeping_task_entry(void* /*arg*/) {
   ESP_LOGI(TAG, "HousekeepingTask started on Core 1");
 
-  uint32_t last_data_ms        = 0;
-  uint32_t last_diag_ms        = 0;
   uint32_t last_cells_ms[16]   = {};
   uint32_t last_alert_flush_ms = 0;
-  uint8_t  cells_rr            = 0;
 
-  static constexpr uint32_t DATA_PERIOD_MS         = 5000;
-  static constexpr uint32_t DIAG_PERIOD_MS         = 30000;
-  static constexpr uint32_t CELLS_PERIOD_MS        = 20000;
-  static constexpr uint32_t ALERT_FLUSH_PERIOD_MS  = 300000;  // 5 min
+  static constexpr uint32_t CELLS_JSON_PERIOD_MS   = 30000;  // Cells JSON blob per pack
+  static constexpr uint32_t ALERT_FLUSH_PERIOD_MS  = 300000; // 5 min
 
   for (;;) {
     uint32_t now_ms   = (uint32_t)(esp_timer_get_time() / 1000);
     uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
     uint64_t ts_ms    = (uint64_t)(esp_timer_get_time() / 1000);
+    s_tick++;
 
     const Config& cfg = app::get_config();
 
@@ -86,11 +122,12 @@ static void housekeeping_task_entry(void* /*arg*/) {
       continue;
     }
 
-    // ── Data topic every 5 s ──────────────────────────────────────────────────
-    if ((now_ms - last_data_ms) >= DATA_PERIOD_MS || last_data_ms == 0) {
-      bus::snapshot_bus::read(s_snap);
-      bms::poller::read_safety_state(s_safety);
+    // ── Read snapshot once per tick for all publish paths below ───────────────
+    bus::snapshot_bus::read(s_snap);
+    bms::poller::read_safety_state(s_safety);
 
+    // ── Data JSON every 5 ticks (5 s) ─────────────────────────────────────────
+    if (s_tick % 5 == 0) {
       s_req.topic    = MqttPublishRequest::Topic::Data;
       s_req.pack_id  = 0xFF;
       s_req.retained = false;
@@ -100,9 +137,12 @@ static void housekeeping_task_entry(void* /*arg*/) {
         s_req.payload_len = (uint16_t)n;
         post_mqtt(s_req);
       }
+    }
 
-      // ── Individual plain-text topics (retained, for HA Discovery) ─────────
-      // Aggregate cell_v_min/max/drift across online packs.
+    // ── System IndivTopics: refresh all values, post 4 per tick (rotation ~5 s)
+    // Fill all 20 values each tick (cheap snprintf); post only the 4 at cursor.
+    // Full rotation: 20 topics / 4 per tick = 5 ticks = 5 s per topic.
+    {
       float iv_cell_min = 0.0f, iv_cell_max = 0.0f, iv_cell_drift = 0.0f;
       bool  iv_have_cells = false;
       for (uint8_t i = 0; i < s_snap.pack_count_configured && i < 16; ++i) {
@@ -121,67 +161,45 @@ static void housekeeping_task_entry(void* /*arg*/) {
       }
 
       int32_t iv_power = (int32_t)(s_safety.pack_voltage_avg * s_safety.pack_current_total);
-
-      bms::runtime_estimator::RuntimeStateEst iv_rt_state = bms::runtime_estimator::RuntimeStateEst::Idle;
+      bms::runtime_estimator::RuntimeStateEst iv_rt_state =
+          bms::runtime_estimator::RuntimeStateEst::Idle;
       int32_t iv_rt_min = bms::runtime_estimator::estimate_min(s_safety, iv_rt_state);
-
       const char* iv_rt_state_str =
         (iv_rt_state == bms::runtime_estimator::RuntimeStateEst::UntilEmpty) ? "until_empty" :
         (iv_rt_state == bms::runtime_estimator::RuntimeStateEst::UntilFull)  ? "until_full"  : "idle";
 
-      // value[64]: most values are short numbers; sys_message can be up to 47 chars.
-      struct IndivTopic { const char* suffix; char value[64]; };
-      IndivTopic iv_topics[] = {
-        { "/soc",              {} },
-        { "/voltage",          {} },
-        { "/current",          {} },
-        { "/power",            {} },
-        { "/temperature",      {} },
-        { "/cell_v_min",       {} },
-        { "/cell_v_max",       {} },
-        { "/cell_drift",       {} },
-        { "/soh",              {} },
-        { "/cvl",              {} },
-        { "/ccl",              {} },
-        { "/dcl",              {} },
-        { "/alarm_flags",      {} },
-        { "/sys_message",      {} },
-        { "/bms_online",       {} },
-        { "/bms_configured",   {} },
-        { "/energy_today_in",  {} },
-        { "/energy_today_out", {} },
-        { "/runtime_est_min",  {} },
-        { "/runtime_est_state",{} },
-      };
-      // Fill value strings (indices match the array order above).
-      snprintf(iv_topics[0].value,  sizeof(iv_topics[0].value),  "%u",    (unsigned)s_safety.soc_avg);
-      snprintf(iv_topics[1].value,  sizeof(iv_topics[1].value),  "%.2f",  s_safety.pack_voltage_avg);
-      snprintf(iv_topics[2].value,  sizeof(iv_topics[2].value),  "%.1f",  s_safety.pack_current_total);
-      snprintf(iv_topics[3].value,  sizeof(iv_topics[3].value),  "%d",    (int)iv_power);
-      snprintf(iv_topics[4].value,  sizeof(iv_topics[4].value),  "%.1f",  s_safety.temp_avg);
+      // Fill value strings into s_iv_topics[] (indices match module-level array).
+      snprintf(s_iv_topics[0].value,  sizeof(s_iv_topics[0].value),  "%u",    (unsigned)s_safety.soc_avg);
+      snprintf(s_iv_topics[1].value,  sizeof(s_iv_topics[1].value),  "%.2f",  s_safety.pack_voltage_avg);
+      snprintf(s_iv_topics[2].value,  sizeof(s_iv_topics[2].value),  "%.1f",  s_safety.pack_current_total);
+      snprintf(s_iv_topics[3].value,  sizeof(s_iv_topics[3].value),  "%d",    (int)iv_power);
+      snprintf(s_iv_topics[4].value,  sizeof(s_iv_topics[4].value),  "%.1f",  s_safety.temp_avg);
       if (iv_have_cells) {
-        snprintf(iv_topics[5].value, sizeof(iv_topics[5].value), "%.3f", iv_cell_min);
-        snprintf(iv_topics[6].value, sizeof(iv_topics[6].value), "%.3f", iv_cell_max);
-        snprintf(iv_topics[7].value, sizeof(iv_topics[7].value), "%.3f", iv_cell_drift);
+        snprintf(s_iv_topics[5].value, sizeof(s_iv_topics[5].value), "%.3f", iv_cell_min);
+        snprintf(s_iv_topics[6].value, sizeof(s_iv_topics[6].value), "%.3f", iv_cell_max);
+        snprintf(s_iv_topics[7].value, sizeof(s_iv_topics[7].value), "%.3f", iv_cell_drift);
       } else {
-        snprintf(iv_topics[5].value, sizeof(iv_topics[5].value), "0.000");
-        snprintf(iv_topics[6].value, sizeof(iv_topics[6].value), "0.000");
-        snprintf(iv_topics[7].value, sizeof(iv_topics[7].value), "0.000");
+        snprintf(s_iv_topics[5].value, sizeof(s_iv_topics[5].value), "0.000");
+        snprintf(s_iv_topics[6].value, sizeof(s_iv_topics[6].value), "0.000");
+        snprintf(s_iv_topics[7].value, sizeof(s_iv_topics[7].value), "0.000");
       }
-      snprintf(iv_topics[8].value,  sizeof(iv_topics[8].value),  "%u",    (unsigned)s_safety.soh_avg);
-      snprintf(iv_topics[9].value,  sizeof(iv_topics[9].value),  "%.1f",  s_safety.cvl_volts);
-      snprintf(iv_topics[10].value, sizeof(iv_topics[10].value), "%u",    (unsigned)s_safety.ccl_amps);
-      snprintf(iv_topics[11].value, sizeof(iv_topics[11].value), "%u",    (unsigned)s_safety.dcl_amps);
-      snprintf(iv_topics[12].value, sizeof(iv_topics[12].value), "%u",    (unsigned)s_safety.alarm_flags);
-      snprintf(iv_topics[13].value, sizeof(iv_topics[13].value), "%s",    s_safety.sys_message);
-      snprintf(iv_topics[14].value, sizeof(iv_topics[14].value), "%u",    (unsigned)s_safety.packs_online);
-      snprintf(iv_topics[15].value, sizeof(iv_topics[15].value), "%u",    (unsigned)s_safety.packs_configured);
-      snprintf(iv_topics[16].value, sizeof(iv_topics[16].value), "%.2f",  storage::energy_store::today_in_kwh());
-      snprintf(iv_topics[17].value, sizeof(iv_topics[17].value), "%.2f",  storage::energy_store::today_out_kwh());
-      snprintf(iv_topics[18].value, sizeof(iv_topics[18].value), "%d",    (int)iv_rt_min);
-      snprintf(iv_topics[19].value, sizeof(iv_topics[19].value), "%s",    iv_rt_state_str);
+      snprintf(s_iv_topics[8].value,  sizeof(s_iv_topics[8].value),  "%u",    (unsigned)s_safety.soh_avg);
+      snprintf(s_iv_topics[9].value,  sizeof(s_iv_topics[9].value),  "%.1f",  s_safety.cvl_volts);
+      snprintf(s_iv_topics[10].value, sizeof(s_iv_topics[10].value), "%u",    (unsigned)s_safety.ccl_amps);
+      snprintf(s_iv_topics[11].value, sizeof(s_iv_topics[11].value), "%u",    (unsigned)s_safety.dcl_amps);
+      snprintf(s_iv_topics[12].value, sizeof(s_iv_topics[12].value), "%u",    (unsigned)s_safety.alarm_flags);
+      snprintf(s_iv_topics[13].value, sizeof(s_iv_topics[13].value), "%s",    s_safety.sys_message);
+      snprintf(s_iv_topics[14].value, sizeof(s_iv_topics[14].value), "%u",    (unsigned)s_safety.packs_online);
+      snprintf(s_iv_topics[15].value, sizeof(s_iv_topics[15].value), "%u",    (unsigned)s_safety.packs_configured);
+      snprintf(s_iv_topics[16].value, sizeof(s_iv_topics[16].value), "%.2f",  storage::energy_store::today_in_kwh());
+      snprintf(s_iv_topics[17].value, sizeof(s_iv_topics[17].value), "%.2f",  storage::energy_store::today_out_kwh());
+      snprintf(s_iv_topics[18].value, sizeof(s_iv_topics[18].value), "%d",    (int)iv_rt_min);
+      snprintf(s_iv_topics[19].value, sizeof(s_iv_topics[19].value), "%s",    iv_rt_state_str);
 
-      for (auto& t : iv_topics) {
+      // Post 4 topics at s_sys_cursor, wrapping around 20-element ring.
+      for (uint8_t i = 0; i < 4; ++i) {
+        uint8_t idx = (s_sys_cursor + i) % 20;
+        const IndivTopic& t = s_iv_topics[idx];
         s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
         s_req.pack_id  = 0xFF;
         s_req.retained = true;
@@ -191,16 +209,11 @@ static void housekeeping_task_entry(void* /*arg*/) {
         s_req.payload_len = (uint16_t)vlen;
         post_mqtt(s_req);
       }
-
-      last_data_ms = now_ms;
+      s_sys_cursor = (s_sys_cursor + 4) % 20;
     }
 
-    // ── Diag topic every 30 s (when enabled) ─────────────────────────────────
-    if (cfg.mqtt_diag_enabled &&
-        ((now_ms - last_diag_ms) >= DIAG_PERIOD_MS || last_diag_ms == 0)) {
-      bus::snapshot_bus::read(s_snap);
-      bms::poller::read_safety_state(s_safety);
-
+    // ── Diag JSON every 30 ticks (30 s) ──────────────────────────────────────
+    if (cfg.mqtt_diag_enabled && (s_tick % 30 == 0)) {
       bms::poller::PollerStats ps{};
       bms::poller::get_stats(ps);
       can::tx::CanStats cs{};
@@ -215,21 +228,16 @@ static void housekeeping_task_entry(void* /*arg*/) {
         s_req.payload_len = (uint16_t)n;
         post_mqtt(s_req);
       }
-      last_diag_ms = now_ms;
     }
 
-    // ── Per-pack plain-text retained topics every 5 s at PerPack level ─────────
-    // Published together with the system data block above.
-    // When a pack is offline only "online=false" is published; retained values
-    // from the last online period remain available to subscribers.
+    // ── Per-pack IndivTopics: "online" always + 1 value topic rotating per tick
+    // Cadence: online = every tick (1 s), value topics ~11 s each (10 topics / 1 per tick).
     if (cfg.mqtt_level >= Config::MqttLevel::PerPack) {
       uint8_t n_packs = s_snap.pack_count_configured;
       for (uint8_t pi = 0; pi < n_packs && pi < 16; ++pi) {
         const BmsPackSnapshot& pp = s_snap.pack[pi];
-        const uint8_t  pack_n = pi + 1;     // 1-indexed label
+        const uint8_t pack_n = pi + 1;
 
-        // Helper: build and post a single retained IndividualValue publish.
-        // Reuses the module-level s_req to keep the per-pack loop off the stack.
         auto post_pack = [&](const char* suffix, const char* value) {
           s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
           s_req.pack_id  = pi;
@@ -242,50 +250,64 @@ static void housekeeping_task_entry(void* /*arg*/) {
           post_mqtt(s_req);
         };
 
-        // "online" is always published (tells subscribers whether pack is active).
+        // "online" on every tick so subscribers see state changes promptly.
         post_pack("online", pp.online ? "true" : "false");
-
         if (!pp.online) continue;
 
-        // Remaining values only when online; char val[32] keeps stack minimal.
+        // Rotate through 10 value topics; char val[32] keeps stack minimal.
         char val[32];
-        snprintf(val, sizeof(val), "%u",   (unsigned)pp.soc);
-        post_pack("soc", val);
-        snprintf(val, sizeof(val), "%.2f", pp.pack_voltage);
-        post_pack("voltage", val);
-        snprintf(val, sizeof(val), "%.1f", pp.pack_current);
-        post_pack("current", val);
-        snprintf(val, sizeof(val), "%d",
-                 (int)(pp.pack_voltage * pp.pack_current));
-        post_pack("power", val);
-        // Use temp_avg_c (computed by fill_from_analog) as representative temp.
-        snprintf(val, sizeof(val), "%.1f", pp.temp_avg_c);
-        post_pack("temperature", val);
-        snprintf(val, sizeof(val), "%.3f", pp.cell_min_v);
-        post_pack("cell_v_min", val);
-        snprintf(val, sizeof(val), "%.3f", pp.cell_max_v);
-        post_pack("cell_v_max", val);
-        snprintf(val, sizeof(val), "%.3f", pp.cell_drift_v);
-        post_pack("cell_drift", val);
-        snprintf(val, sizeof(val), "%u",   (unsigned)pp.soh);
-        post_pack("soh", val);
-        snprintf(val, sizeof(val), "%u",   (unsigned)pp.cycles);
-        post_pack("cycles", val);
+        switch (s_pack_cursor) {
+          case 0: snprintf(val, sizeof(val), "%u",   (unsigned)pp.soc);                        post_pack("soc",         val); break;
+          case 1: snprintf(val, sizeof(val), "%.2f", pp.pack_voltage);                         post_pack("voltage",     val); break;
+          case 2: snprintf(val, sizeof(val), "%.1f", pp.pack_current);                         post_pack("current",     val); break;
+          case 3: snprintf(val, sizeof(val), "%d",   (int)(pp.pack_voltage*pp.pack_current));  post_pack("power",       val); break;
+          case 4: snprintf(val, sizeof(val), "%.1f", pp.temp_avg_c);                           post_pack("temperature", val); break;
+          case 5: snprintf(val, sizeof(val), "%.3f", pp.cell_min_v);                           post_pack("cell_v_min",  val); break;
+          case 6: snprintf(val, sizeof(val), "%.3f", pp.cell_max_v);                           post_pack("cell_v_max",  val); break;
+          case 7: snprintf(val, sizeof(val), "%.3f", pp.cell_drift_v);                         post_pack("cell_drift",  val); break;
+          case 8: snprintf(val, sizeof(val), "%u",   (unsigned)pp.soh);                        post_pack("soh",         val); break;
+          case 9: snprintf(val, sizeof(val), "%u",   (unsigned)pp.cycles);                     post_pack("cycles",      val); break;
+        }
       }
+      s_pack_cursor = (s_pack_cursor + 1) % 10;
     }
 
-    // ── Per-cell JSON publishing every 20 s at PerCell level ────────────────────
+    // ── Per-cell: 2 individual cell_v topics per tick + Cells JSON 30 s/pack ──
+    // Individual cadence: (n_packs×15 cells / 2 per tick) ticks per full rotation.
+    // Cells JSON blob still published every 30 s per pack (feeds value_template).
     if (cfg.mqtt_level >= Config::MqttLevel::PerCell) {
-      bus::snapshot_bus::read(s_snap);
       uint8_t n_packs = s_snap.pack_count_configured;
-
       if (n_packs > 0) {
-        for (uint8_t tries = 0; tries < n_packs; ++tries) {
-          uint8_t pi = cells_rr % n_packs;
-          cells_rr = (cells_rr + 1) % n_packs;
-
+        // 2 individual cell_v topics this tick via cursor.
+        uint8_t total_slots = n_packs * 15;
+        for (uint8_t i = 0; i < 2; ++i) {
+          uint8_t slot = (s_cell_cursor + i) % total_slots;
+          uint8_t pi   = slot / 15;
+          uint8_t ci   = slot % 15;
           if (!s_snap.pack[pi].online) continue;
-          if ((now_ms - last_cells_ms[pi]) < CELLS_PERIOD_MS && last_cells_ms[pi] != 0) continue;
+          if (ci >= s_snap.pack[pi].cell_count) continue;
+          const uint8_t pack_n = pi + 1;
+          char cval[12];
+          snprintf(cval, sizeof(cval), "%.3f", s_snap.pack[pi].cell_v[ci]);
+          s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
+          s_req.pack_id  = pi;
+          s_req.retained = true;
+          snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix),
+                   "/pack%u/cell_v_%02u", (unsigned)pack_n, (unsigned)(ci + 1));
+          size_t vlen = strlen(cval);
+          memcpy(s_req.payload, cval, vlen + 1);
+          s_req.payload_len = (uint16_t)vlen;
+          post_mqtt(s_req);
+        }
+        s_cell_cursor = (s_cell_cursor + 2) % total_slots;
+
+        // Cells JSON blob: round-robin one pack per tick when due (30 s each).
+        // Feeds value_template entities in HA that reference cells_v array.
+        for (uint8_t tries = 0; tries < n_packs; ++tries) {
+          uint8_t pi = (s_cell_cursor / 2) % n_packs;  // reuse cursor as pack selector
+          if (!s_snap.pack[pi].online) { break; }
+          if ((now_ms - last_cells_ms[pi]) < CELLS_JSON_PERIOD_MS &&
+              last_cells_ms[pi] != 0) { break; }
 
           s_req.topic    = MqttPublishRequest::Topic::Cells;
           s_req.pack_id  = pi;
@@ -296,27 +318,6 @@ static void housekeeping_task_entry(void* /*arg*/) {
             s_req.payload_len = (uint16_t)nb;
             post_mqtt(s_req);
           }
-
-          // Individual per-cell retained plain-text topics: {base}/pack{N}/cell_v_{NN}
-          {
-            const BmsPackSnapshot& pcell = s_snap.pack[pi];
-            const uint8_t pack_n  = pi + 1;
-            const uint8_t cell_lim = (pcell.cell_count < 16) ? pcell.cell_count : 16;
-            for (uint8_t ci = 0; ci < cell_lim; ++ci) {
-              char cval[12];
-              snprintf(cval, sizeof(cval), "%.3f", pcell.cell_v[ci]);
-              s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
-              s_req.pack_id  = pi;
-              s_req.retained = true;
-              snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix),
-                       "/pack%u/cell_v_%02u", (unsigned)pack_n, (unsigned)(ci + 1));
-              size_t vlen = strlen(cval);
-              memcpy(s_req.payload, cval, vlen + 1);
-              s_req.payload_len = (uint16_t)vlen;
-              post_mqtt(s_req);
-            }
-          }
-
           last_cells_ms[pi] = now_ms;
           break;
         }

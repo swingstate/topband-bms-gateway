@@ -29,12 +29,14 @@ static uint8_t* alloc_queue_storage(size_t bytes) {
 namespace bus {
 
 bool createQueues() {
-  // q_mqtt_publish: 32 × ~1032 bytes = ~33 KB — PSRAM to protect internal heap
-  // from exhaustion when HA discovery floods 24 entity payloads on connect.
-  uint8_t* mqtt_stor = alloc_queue_storage(32u * sizeof(MqttPublishRequest));
+  // q_mqtt_publish: 64 × ~1160 bytes = ~74 KB — PSRAM to protect internal heap.
+  // Depth 64 is defense-in-depth: the staggered scheduler limits burst to ≤10
+  // per tick so overflow is eliminated under normal operation, but 64 gives
+  // margin during reconnect events. Per Finding 4 / Finding 2 mitigations.
+  uint8_t* mqtt_stor = alloc_queue_storage(64u * sizeof(MqttPublishRequest));
   q_mqtt_publish = mqtt_stor
-      ? xQueueCreateStatic(32, sizeof(MqttPublishRequest), mqtt_stor, &s_mqtt_pub_sq)
-      : xQueueCreate(32, sizeof(MqttPublishRequest));
+      ? xQueueCreateStatic(64, sizeof(MqttPublishRequest), mqtt_stor, &s_mqtt_pub_sq)
+      : xQueueCreate(64, sizeof(MqttPublishRequest));
 
   // q_log: 32 × 112 bytes = ~3.5 KB — PSRAM.
   uint8_t* log_stor = alloc_queue_storage(32u * sizeof(LogLine));

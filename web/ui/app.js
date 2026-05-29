@@ -2377,9 +2377,12 @@ function renderDiagData(d) {
         ${kvRow('Firmware', sys.fw || '—')}
         ${kvRow('Uptime', formatUptime(sys.uptime_s))}
         ${kvRow('Reset reason', sys.reset_reason || '—')}
-        ${kvRow('Free heap', (sys.free_heap||0).toLocaleString() + ' B')}
-        ${kvRow('Min heap', (sys.min_heap||0).toLocaleString() + ' B')}
-        ${kvRow('Free PSRAM', (sys.free_psram||0).toLocaleString() + ' B')}
+        ${kvRow('Free heap (all)', (sys.free_heap||0).toLocaleString() + ' B')}
+        ${kvRow('DRAM free', (sys.dram_free||0).toLocaleString() + ' B')}
+        ${kvRow('DRAM min ever', (sys.dram_min||0).toLocaleString() + ' B')}
+        ${kvRow('DRAM largest block', (sys.dram_largest_block||0).toLocaleString() + ' B')}
+        ${kvRow('PSRAM free', (sys.psram_free||0).toLocaleString() + ' B')}
+        ${kvRow('PSRAM largest block', (sys.psram_largest_block||0).toLocaleString() + ' B')}
         ${kvRow('Build', sys.build || '—')}
       </div>
     </div>
