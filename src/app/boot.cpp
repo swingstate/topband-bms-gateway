@@ -30,6 +30,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_core_dump.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -289,6 +290,16 @@ void run_boot() {
     ESP_LOGI(TAG, "Smoke reader task created on Core 1");
   }
 #endif
+
+  // ── Step 11.5: Coredump presence check ───────────────────────────────────
+  // Emit a CRITICAL alert if the previous boot left a coredump in flash so
+  // the operator sees it on the diag page without manually polling the endpoint.
+  // Per docs/diag-mqtt-crash-review.md Finding 9.
+  if (esp_core_dump_image_check() == ESP_OK) {
+    diag::alerts::emit(diag::alerts::Severity::Critical, "boot",
+                       "coredump found from previous panic — retrieve via "
+                       "GET /api/diag/coredump.bin");
+  }
 
   // ── Step 12: Boot-complete alert ─────────────────────────────────────────
   diag::alerts::emit(diag::alerts::Severity::Info, "boot",

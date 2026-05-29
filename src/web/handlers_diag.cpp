@@ -16,6 +16,8 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_core_dump.h"
+#include "esp_partition.h"
 #include <cstring>
 #include <cstdio>
 
@@ -121,10 +123,13 @@ esp_err_t handle_diag(httpd_req_t* req) {
 
   HStream s = { req, {}, 0, ESP_OK };
 
-  uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
-  uint32_t heap_free = esp_get_free_heap_size();
-  uint32_t heap_min  = esp_get_minimum_free_heap_size();
-  uint32_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  uint32_t uptime_s         = (uint32_t)(esp_timer_get_time() / 1000000LL);
+  uint32_t heap_free        = esp_get_free_heap_size();
+  uint32_t dram_free        = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  uint32_t dram_min         = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+  uint32_t dram_largest     = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 
   hs_str(s, "{");
 
@@ -133,8 +138,14 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, "\"fw\":"); hs_json_str(s, FW_VERSION_FULL);
   hs_str(s, ",\"uptime_s\":"); hs_uint(s, uptime_s);
   hs_str(s, ",\"free_heap\":"); hs_uint(s, heap_free);
-  hs_str(s, ",\"min_heap\":"); hs_uint(s, heap_min);
-  hs_str(s, ",\"free_psram\":"); hs_uint(s, psram_free);
+  // DRAM (internal SRAM) — primary fragmentation victim. Separate from PSRAM
+  // so a large free PSRAM no longer hides DRAM exhaustion.
+  // Per docs/diag-mqtt-crash-review.md Finding 10.
+  hs_str(s, ",\"dram_free\":"); hs_uint(s, dram_free);
+  hs_str(s, ",\"dram_min\":"); hs_uint(s, dram_min);
+  hs_str(s, ",\"dram_largest_block\":"); hs_uint(s, dram_largest);
+  hs_str(s, ",\"psram_free\":"); hs_uint(s, psram_free);
+  hs_str(s, ",\"psram_largest_block\":"); hs_uint(s, psram_largest);
 
   const char* reset_reason = "UNKNOWN";
   switch (esp_reset_reason()) {
@@ -242,6 +253,53 @@ esp_err_t handle_diag(httpd_req_t* req) {
   if (s.err == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);
   else ESP_LOGD(TAG, "client disconnected during /api/diag");
   return s.err;
+}
+
+esp_err_t handle_diag_coredump(httpd_req_t* req) {
+  // Verify coredump CRC before serving — returns ESP_OK only if a valid dump
+  // exists in the dedicated flash partition.
+  // Per docs/diag-mqtt-crash-review.md Finding 9.
+  if (esp_core_dump_image_check() != ESP_OK) {
+    httpd_resp_set_status(req, "404 Not Found");
+    httpd_resp_set_type(req, "text/plain");
+    const char* msg =
+        "No valid coredump in flash (device has not panicked since boot, "
+        "or the previous dump was cleared).";
+    return httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
+  }
+
+  const esp_partition_t* part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
+  if (!part) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "Coredump partition not found in partition table");
+  }
+
+  httpd_resp_set_type(req, "application/octet-stream");
+  httpd_resp_set_hdr(req, "Content-Disposition",
+                     "attachment; filename=\"coredump.bin\"");
+
+  // Stream in 512-byte chunks; static buffer avoids stack pressure.
+  static uint8_t s_chunk[512];
+  size_t offset = 0;
+  while (offset < part->size) {
+    size_t to_read = sizeof(s_chunk);
+    if (offset + to_read > part->size) to_read = part->size - offset;
+    esp_err_t err = esp_partition_read(part, offset, s_chunk, to_read);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "Partition read error at offset %zu: %s",
+               offset, esp_err_to_name(err));
+      break;
+    }
+    if (httpd_resp_send_chunk(req, (const char*)s_chunk, (ssize_t)to_read) != ESP_OK) {
+      ESP_LOGD(TAG, "client disconnected during coredump stream");
+      return ESP_OK;
+    }
+    offset += to_read;
+  }
+  httpd_resp_send_chunk(req, nullptr, 0);
+  return ESP_OK;
 }
 
 }  // namespace web
