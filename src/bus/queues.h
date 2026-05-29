@@ -32,16 +32,18 @@ struct AlertEntry {
 };
 static_assert(sizeof(AlertEntry) == 132, "AlertEntry size must be 132 bytes (on-disk format)");
 
-// Pre-serialized MQTT publish request (q_mqtt_publish, depth 32).
+// Pre-serialized MQTT publish request (q_mqtt_publish, depth 64).
 // Payload is JSON or plain-text, serialized at the producer. See architecture §5.8.
 struct MqttPublishRequest {
   enum class Topic : uint8_t { Data, Status, Alarm, Diag, Cells, Discovery, IndividualValue };
   Topic    topic;
-  uint8_t  pack_id;            // 0xFF = non-Cells / non-individual topics
+  uint8_t  pack_id;             // 0xFF = non-Cells / non-individual topics
   bool     retained;
   uint16_t payload_len;
-  char     topic_suffix[64];   // topic suffix when topic == IndividualValue (e.g. "/soc")
-  char     payload[1024];      // pre-serialized JSON or plain-text value
+  // For IndividualValue: MQTT topic suffix relative to effective_base (e.g. "/soc").
+  // For Discovery: full homeassistant/... topic path (up to 128 chars including null).
+  char     topic_suffix[128];
+  char     payload[1024];       // pre-serialized JSON or plain-text value
 };
 
 // History accumulator sample (q_history_sample, depth 8).

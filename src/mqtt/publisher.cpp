@@ -98,6 +98,10 @@ static void publish_request(const MqttPublishRequest& req) {
     case MqttPublishRequest::Topic::IndividualValue:
       tlen = mqtt::topics::build(s_effective_base, req.topic_suffix, topic, sizeof(topic));
       break;
+    case MqttPublishRequest::Topic::Discovery:
+      // topic_suffix holds the full homeassistant/... path built by ha_discovery.
+      tlen = strlcpy(topic, req.topic_suffix, sizeof(topic));
+      break;
     default:
       return;
   }
@@ -194,8 +198,10 @@ static void mqtt_task_entry(void* /*arg*/) {
         portENTER_CRITICAL(&s_mux);
         cfg_snap = s_cfg;
         portEXIT_CRITICAL(&s_mux);
-        mqtt::ha_discovery::cleanup_stale(s_client, cfg_snap, s_device_uid, s_effective_base);
-        mqtt::ha_discovery::publish_all(s_client, cfg_snap, s_device_uid, s_effective_base);
+        // Enqueue stale-topic tombstones first (NVS check done at boot).
+        mqtt::ha_discovery::publish_cleanup_if_needed(s_device_uid);
+        // Enqueue all discovery payloads — MqttTask drains at 50 ms cadence.
+        mqtt::ha_discovery::publish_all(cfg_snap, s_device_uid, s_effective_base);
         s_ha_discovery_done = true;
       }
     }
