@@ -51,4 +51,16 @@ uint32_t coarse_epoch_base();
 uint32_t fine_count();
 uint32_t coarse_count();
 
+// ── Cell-drift companion rings (PSRAM-backed, zero DRAM BSS cost) ─────────────
+// Drift is stored in separate PSRAM-heap arrays parallel to the main rings.
+// Not persisted to LittleFS — lost on reboot (acceptable for a monitoring chart).
+// Call record_*_drift_mv() immediately after the corresponding append_*() call.
+void     record_fine_drift_mv(uint16_t mv);
+void     record_coarse_drift_mv(uint16_t mv);
+// Returns the drift value (in mV) for the sample at read-order index `idx`
+// (0 = oldest in the window, same ordering as read_fine/read_coarse output).
+// Returns 0 if drift data is unavailable or the index is out of range.
+uint16_t read_fine_drift_at(size_t idx);
+uint16_t read_coarse_drift_at(size_t idx);
+
 }  // namespace storage::history_store
