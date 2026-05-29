@@ -24,6 +24,7 @@
 #include "app/history_task.h"
 #include "app/self_test.h"
 #include "mqtt/publisher.h"
+#include "mqtt/ha_discovery.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -245,6 +246,13 @@ void run_boot() {
       ESP_LOGW(TAG, "NTP start failed");
     }
   }
+
+  // ── Step 9.45: HA discovery NVS cleanup check ────────────────────────────
+  // Runs the NVS version gate and commits the new FW marker here at boot
+  // (one-time blocking NVS write off MQTT task). Sets internal s_cleanup_needed
+  // flag; publish_cleanup_if_needed() enqueues tombstones on next MQTT connect.
+  // Per docs/diag-mqtt-crash-review.md Finding 5.
+  mqtt::ha_discovery::check_at_boot();
 
   // ── Step 9.5: MQTT publisher (STA mode only, when enabled) ──────────────
   if (sta_connected && g_config.mqtt_enabled) {
