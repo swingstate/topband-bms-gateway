@@ -18,6 +18,8 @@
 #include "esp_timer.h"
 #include "esp_core_dump.h"
 #include "esp_partition.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cstring>
 #include <cstdio>
 
@@ -243,6 +245,41 @@ esp_err_t handle_diag(httpd_req_t* req) {
 
   // ── alerts summary ────────────────────────────────────────────────────────
   hs_str(s, ",\"alerts_count\":"); hs_uint(s, storage::alerts_store::stored_count());
+
+  // ── tasks (FreeRTOS stack HWM) ────────────────────────────────────────────
+  // Requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y and
+  // CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y (sdkconfig.esp32s3).
+  // Stack HWM in bytes (usStackHighWaterMark is in words; ×sizeof(StackType_t)=4).
+  {
+    static constexpr UBaseType_t MAX_TASKS = 24;
+    TaskStatus_t task_buf[MAX_TASKS];
+    UBaseType_t n = uxTaskGetSystemState(task_buf, MAX_TASKS, nullptr);
+    hs_str(s, ",\"tasks\":[");
+    for (UBaseType_t i = 0; i < n; i++) {
+      if (i > 0) hs_str(s, ",");
+      hs_str(s, "{\"name\":");
+      hs_json_str(s, task_buf[i].pcTaskName);
+      hs_str(s, ",\"stack_hwm\":");
+      hs_uint(s, (uint32_t)task_buf[i].usStackHighWaterMark * sizeof(StackType_t));
+      // xCoreID requires configTASKLIST_INCLUDE_COREID=1 (FREERTOS_VTASKLIST_INCLUDE_COREID).
+      // Guard so the handler compiles even if that option is off; UI shows "any" for -1.
+      hs_str(s, ",\"core\":");
+      {
+        char cbuf[12];
+#if configTASKLIST_INCLUDE_COREID
+        int c = (task_buf[i].xCoreID == tskNO_AFFINITY) ? -1 : (int)task_buf[i].xCoreID;
+#else
+        int c = -1;
+#endif
+        snprintf(cbuf, sizeof(cbuf), "%d", c);
+        hs_str(s, cbuf);
+      }
+      hs_str(s, ",\"prio\":");
+      hs_uint(s, (uint32_t)task_buf[i].uxCurrentPriority);
+      hs_str(s, "}");
+    }
+    hs_str(s, "]");
+  }
 
   // ── log_ring ──────────────────────────────────────────────────────────────
   hs_str(s, ",");

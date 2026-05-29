@@ -29,6 +29,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # ── FreeRTOS ──────────────────────────────────────────────────────────────────
 # 1000 Hz tick so vTaskDelay(pdMS_TO_TICKS(1)) gives 1 ms resolution.
 CONFIG_FREERTOS_HZ=1000
+# Trace facility: enables uxTaskGetSystemState() used by the /api/diag tasks[]
+# table. TCB overhead: ~8 B per task. Stats-formatting + core-ID expose xCoreID
+# in TaskStatus_t so the table shows per-task core affinity.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 
 # ── Task watchdog ─────────────────────────────────────────────────────────────
 # 60 s timeout. A WDT trip means a task is blocked — that is a bug, not a
