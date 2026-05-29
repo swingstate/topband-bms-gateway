@@ -83,3 +83,14 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 # ── Logging ───────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ── lwIP TCP buffers (conservative reduction, iter/ram-optimization) ──────────
+# Default: 5760 B each. Workload: one MQTT connection (plaintext 1883) +
+# local web UI (history JSON up to ~40 KB, OTA upload up to 1 MB).
+# Moderate reduction to 4096 B (one step down from 5760, not minimum 2920).
+# ~3.3 KB saved per active connection × 2-3 connections ≈ 7-10 KB DRAM.
+# 4096 B is adequate for MQTT publishes and chunked HTTP responses; OTA
+# throughput will decrease slightly but correctness is unaffected.
+# If WiFi/HTTP/OTA misbehave after flash, revert this commit only.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=4096
+CONFIG_LWIP_TCP_WND_DEFAULT=4096
