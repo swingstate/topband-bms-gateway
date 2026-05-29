@@ -3,6 +3,7 @@
 #include "net/ntp.h"
 #include "bus/types.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -42,9 +43,11 @@ static bool series_requested(const char* list, const char* target) {
   return false;
 }
 
-// ── Read buffers (BSS — no heap) ─────────────────────────────────────────────
-static HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY]   = {};
-static HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY] = {};
+// ── Read buffers (PSRAM BSS — no heap, no DRAM cost) ─────────────────────────
+// EXT_RAM_BSS_ATTR: ~57 KB moved from DRAM BSS to PSRAM. CPU-only access from
+// HttpTask; never DMA. Requires CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y.
+static EXT_RAM_BSS_ATTR HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY];
+static EXT_RAM_BSS_ATTR HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY];
 
 // ── Zero-heap streaming JSON writer ──────────────────────────────────────────
 // Writes JSON directly to the HTTP chunked response using a 2 KB stack buffer.

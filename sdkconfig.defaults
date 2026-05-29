@@ -20,6 +20,10 @@ CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# EXT_RAM_BSS_ATTR: enables the .ext_ram.bss linker section so variables
+# decorated with EXT_RAM_BSS_ATTR are placed in PSRAM instead of DRAM BSS.
+# Required for the ~114 KB history ring buffers moved in iter/ram-optimization.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # ── Main task stack ───────────────────────────────────────────────────────────
 # Default 3584 B is too small when esp-littlefs rename-over-existing triggers
