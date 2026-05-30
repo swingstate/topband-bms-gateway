@@ -13,6 +13,7 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   pins["can_tx"]    = c.pins.can_tx;
   pins["can_rx"]    = c.pins.can_rx;
   pins["led"]       = c.pins.led;
+  doc["rs485_enabled"] = c.rs485_enabled;
 
   doc["bms_count"]             = c.bms_count;
   doc["force_cell_count"]      = c.force_cell_count;
@@ -77,8 +78,15 @@ static void copy_str(const JsonVariantConst& v, char (&dst)[N]) {
 
 bool json_to_config(const JsonDocument& doc, Config& c) {
   // board / pins
-  if (doc["board_preset"].is<uint8_t>())
-    c.board_preset = (Config::BoardPreset)doc["board_preset"].as<uint8_t>();
+  if (doc["board_preset"].is<uint8_t>()) {
+    uint8_t raw = doc["board_preset"].as<uint8_t>();
+    // Guard: only accept known enum values (Waveshare=0, Manual=1).
+    // Values 2+ (old "Custom") are silently mapped to Manual.
+    c.board_preset = (raw == 0) ? Config::BoardPreset::Waveshare
+                                : Config::BoardPreset::Manual;
+  }
+  if (doc["rs485_enabled"].is<bool>())
+    c.rs485_enabled = doc["rs485_enabled"];
   if (doc["pins"].is<JsonObjectConst>()) {
     JsonObjectConst p = doc["pins"].as<JsonObjectConst>();
     if (p["rs485_tx"].is<int8_t>())  c.pins.rs485_tx  = p["rs485_tx"];

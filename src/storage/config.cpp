@@ -38,6 +38,7 @@ static Config make_default() {
   c.pins.can_tx    = 15;
   c.pins.can_rx    = 16;
   c.pins.led       = 38;
+  c.rs485_enabled  = true;
 
   c.bms_count         = 2;
   c.force_cell_count  = 0;         // auto-detect
@@ -186,23 +187,56 @@ ValidationError validate(const Config& cfg, char* field_out, size_t field_buf) {
     }
   }
 
-  // Pin uniqueness: all active pins (rs485_tx, rs485_rx, can_tx, can_rx, led,
-  // and rs485_dir if >= 0) must be distinct. GPIO 0-48 on ESP32-S3.
-  const int8_t named_pins[] = {
-    cfg.pins.rs485_tx, cfg.pins.rs485_rx,
-    cfg.pins.can_tx,   cfg.pins.can_rx,
-    cfg.pins.led,
+  // ESP32-S3 reserved GPIO blocklist (conservative).
+  // 26-32: SPI0/1 flash pins (unavailable, internal).
+  // 33-37: Octal PSRAM pins on 8MB PSRAM modules (unavailable, internal).
+  // 19-20: USB D+/D- (reserved for USB stack; avoid even when CDC unused).
+  // 43-44: UART0 TX/RX (debug serial by default; avoid repurposing).
+  // 45-46: Strapping pins (boot mode); safe as GPIO post-boot but excluded
+  //        to prevent accidental boot-mode interference on next reset.
+  static const int8_t RESERVED_GPIOS[] = {
+    19, 20,
+    26, 27, 28, 29, 30, 31, 32,
+    33, 34, 35, 36, 37,
+    43, 44, 45, 46,
   };
-  // Include rs485_dir if it's not the "auto" sentinel (-1)
-  const bool dir_active = (cfg.pins.rs485_dir >= 0);
-  const size_t n_base = sizeof(named_pins) / sizeof(named_pins[0]);
-  const size_t n_total = dir_active ? n_base + 1 : n_base;
+  static constexpr int8_t GPIO_MAX = 48;
 
-  // Build a small flat array for uniqueness check
+  // Collect all active pins (those that are not the auto/disabled sentinel -1).
+  // RS485 pins are active only when rs485_enabled; CAN pins when can_enabled.
+  const bool rs485_active = cfg.rs485_enabled;
+  const bool dir_active   = rs485_active && (cfg.pins.rs485_dir >= 0);
+  const bool can_active   = cfg.can_enabled;
+
   int8_t all_pins[6];
-  for (size_t i = 0; i < n_base; ++i) all_pins[i] = named_pins[i];
-  if (dir_active) all_pins[n_base] = cfg.pins.rs485_dir;
+  size_t n_total = 0;
+  if (rs485_active) {
+    all_pins[n_total++] = cfg.pins.rs485_tx;
+    all_pins[n_total++] = cfg.pins.rs485_rx;
+    if (dir_active) all_pins[n_total++] = cfg.pins.rs485_dir;
+  }
+  if (can_active) {
+    all_pins[n_total++] = cfg.pins.can_tx;
+    all_pins[n_total++] = cfg.pins.can_rx;
+  }
+  // LED pin always validated if >= 0 (firmware supports LED even in partial configs).
+  if (cfg.pins.led >= 0) all_pins[n_total++] = cfg.pins.led;
 
+  // Range and reserved-pin check.
+  for (size_t i = 0; i < n_total; ++i) {
+    if (all_pins[i] < 0 || all_pins[i] > GPIO_MAX) {
+      set_field(field_out, field_buf, "pins");
+      return ValidationError::PinOutOfRange;
+    }
+    for (int8_t rg : RESERVED_GPIOS) {
+      if (all_pins[i] == rg) {
+        set_field(field_out, field_buf, "pins");
+        return ValidationError::PinReserved;
+      }
+    }
+  }
+
+  // Duplicate check.
   for (size_t i = 0; i < n_total; ++i) {
     for (size_t j = i + 1; j < n_total; ++j) {
       if (all_pins[i] == all_pins[j]) {

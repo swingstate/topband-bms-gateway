@@ -1020,8 +1020,10 @@ function pwField(id, label, autocomplete, placeholder) {
 
 /* ── Settings sub-nav definition ────────────────────────────────────────────── */
 const SETTINGS_SECTIONS = [
-  { id: 'battery', label: 'Battery',
+  { id: 'battery',  label: 'Battery',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M20 11h2v2h-2"/></svg>' },
+  { id: 'hardware', label: 'Hardware',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16M15 4v16M4 9h16M4 15h16"/></svg>' },
   { id: 'charts',  label: 'Charts',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' },
   { id: 'time',    label: 'Time',
@@ -1083,18 +1085,229 @@ function renderSettingsSection(id) {
   const content = document.getElementById('settings-content');
   if (!content || !g_config) return;
   switch (id) {
-    case 'battery': content.innerHTML = renderSettingsBattery(); break;
-    case 'charts':  content.innerHTML = renderSettingsCharts();  break;
-    case 'time':    content.innerHTML = renderSettingsTime();    break;
-    case 'mqtt':    content.innerHTML = renderSettingsMqtt();    break;
-    case 'account': content.innerHTML = renderSettingsAccount(); break;
-    case 'system':  content.innerHTML = renderSettingsSystem();  break;
-    case 'reset':   content.innerHTML = renderSettingsReset();   break;
-    default:        content.innerHTML = renderSettingsBattery(); break;
+    case 'battery':  content.innerHTML = renderSettingsBattery();  break;
+    case 'hardware': content.innerHTML = renderSettingsHardware(); break;
+    case 'charts':   content.innerHTML = renderSettingsCharts();   break;
+    case 'time':     content.innerHTML = renderSettingsTime();     break;
+    case 'mqtt':     content.innerHTML = renderSettingsMqtt();     break;
+    case 'account':  content.innerHTML = renderSettingsAccount();  break;
+    case 'system':   content.innerHTML = renderSettingsSystem();   break;
+    case 'reset':    content.innerHTML = renderSettingsReset();    break;
+    default:         content.innerHTML = renderSettingsBattery();  break;
   }
 }
 
 /* ── Settings section renderers ─────────────────────────────────────────────── */
+
+/* ── Hardware / Board section ───────────────────────────────────────────────── */
+const WAVESHARE_PINS = { rs485_tx: 17, rs485_rx: 18, rs485_dir: 21, can_tx: 15, can_rx: 16, led: 38 };
+// ESP32-S3 reserved GPIO blocklist (conservative — same list as firmware validate()).
+// 26-32: SPI0/1 flash; 33-37: Octal PSRAM; 19-20: USB D+/D-; 43-44: UART0; 45-46: strapping.
+const S3_RESERVED_GPIOS = new Set([19, 20, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 43, 44, 45, 46]);
+const S3_GPIO_MAX = 48;
+
+function renderSettingsHardware() {
+  const c = g_config;
+  const isManual = (c.board_preset === 1);
+  const pins = c.pins || WAVESHARE_PINS;
+  const rs485On = (c.rs485_enabled !== false);
+
+  const pinField = (label, id, val, helpText) => `
+    <div class="form-group">
+      <label>${label}</label>
+      <input type="number" id="${id}" value="${val}" min="-1" max="${S3_GPIO_MAX}"
+             ${isManual ? '' : 'readonly'}>
+      ${helpText ? `<div class="help">${helpText}</div>` : ''}
+    </div>`;
+
+  return `
+    <div class="settings-page">
+      <div class="settings-section" style="border-left:3px solid #f59e0b;background:rgba(245,158,11,.08);padding:12px 16px;border-radius:4px;margin-bottom:16px">
+        <strong>ESP32-S3 only.</strong> This firmware requires an ESP32-S3 MCU with
+        16 MB flash and 8 MB PSRAM. Classic ESP32 (LX6), ESP32-C3, and boards without
+        PSRAM are not supported — they lack the memory capacity required by this firmware.
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Board Type</div>
+        <div class="proto-options">
+          <label class="proto-option">
+            <input type="radio" name="hw_board_radio" value="0"
+                   ${!isManual ? 'checked' : ''}
+                   onchange="hwBoardTypeChanged(0)">
+            <span class="proto-name">Waveshare ESP32-S3-RS485-CAN</span>
+            <span class="proto-desc">— Known-good preset (TX=17 RX=18 DIR=21, CAN TX=15 RX=16)</span>
+          </label>
+          <label class="proto-option">
+            <input type="radio" name="hw_board_radio" value="1"
+                   ${isManual ? 'checked' : ''}
+                   onchange="hwBoardTypeChanged(1)">
+            <span class="proto-name">Manual</span>
+            <span class="proto-desc">— Set pins yourself (for HATs or boards with external transceiver ICs)</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">RS485 Interface</div>
+        ${isManual ? `
+          <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+            <input type="checkbox" id="hw-rs485_enabled" ${rs485On ? 'checked' : ''} style="width:auto">
+            <label for="hw-rs485_enabled" style="margin:0">RS485 hardware present on this board</label>
+          </div>
+        ` : ''}
+        <div class="form-row">
+          ${pinField('TX GPIO', 'hw-rs485_tx', pins.rs485_tx)}
+          ${pinField('RX GPIO', 'hw-rs485_rx', pins.rs485_rx)}
+          ${pinField('DIR GPIO', 'hw-rs485_dir', pins.rs485_dir, '-1 = hardware auto-direction')}
+        </div>
+        ${!isManual ? '<div class="help" style="margin-top:4px">Waveshare preset — read-only.</div>' : ''}
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">CAN Interface</div>
+        <div class="help" style="margin-bottom:8px">
+          Enable/disable CAN output via the Inverter Protocol selector in the Battery section.
+        </div>
+        <div class="form-row">
+          ${pinField('TX GPIO', 'hw-can_tx', pins.can_tx)}
+          ${pinField('RX GPIO', 'hw-can_rx', pins.can_rx)}
+        </div>
+        ${!isManual ? '<div class="help" style="margin-top:4px">Waveshare preset — read-only.</div>' : ''}
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">LED</div>
+        <div class="help" style="margin-bottom:8px">
+          NeoPixel GPIO (GPIO 38 on Waveshare). LED driver not yet active in this firmware version
+          — pin is reserved and validated to avoid conflicts.
+        </div>
+        <div class="form-row">
+          ${pinField('LED GPIO', 'hw-led', pins.led)}
+        </div>
+        ${!isManual ? '<div class="help" style="margin-top:4px">Waveshare preset — read-only.</div>' : ''}
+      </div>
+
+      <div id="hw-feedback" class="feedback-msg"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveHardwareSection()">Save &amp; Reboot</button>
+      </div>
+      <div class="help" style="margin-top:8px">
+        Hardware pin changes require a reboot to take effect. The device will restart
+        automatically and reconnect to WiFi.
+      </div>
+    </div>
+  `;
+}
+
+function hwBoardTypeChanged(preset) {
+  // Re-render so readonly/editable state and checkbox visibility update.
+  g_config.board_preset = preset;
+  if (preset === 0) {
+    // Switching back to Waveshare: restore known-good pins.
+    g_config.pins = Object.assign({}, g_config.pins, WAVESHARE_PINS);
+    g_config.rs485_enabled = true;
+  }
+  const content = document.getElementById('settings-content');
+  if (content) content.innerHTML = renderSettingsHardware();
+}
+
+function validateHwPins(pins, rs485Enabled, fb) {
+  const toCheck = [];
+  if (rs485Enabled) {
+    toCheck.push(['RS485 TX',  pins.rs485_tx]);
+    toCheck.push(['RS485 RX',  pins.rs485_rx]);
+    if (pins.rs485_dir >= 0) toCheck.push(['RS485 DIR', pins.rs485_dir]);
+  }
+  toCheck.push(['CAN TX', pins.can_tx]);
+  toCheck.push(['CAN RX', pins.can_rx]);
+  if (pins.led >= 0) toCheck.push(['LED', pins.led]);
+
+  const errors = [];
+  const seen = new Map();
+  for (const [name, gpio] of toCheck) {
+    if (!Number.isInteger(gpio) || gpio < 0 || gpio > S3_GPIO_MAX) {
+      errors.push(`${name}: GPIO ${gpio} out of range (0-${S3_GPIO_MAX})`);
+      continue;
+    }
+    if (S3_RESERVED_GPIOS.has(gpio)) {
+      errors.push(`${name}: GPIO ${gpio} is reserved on ESP32-S3 (flash/PSRAM/USB — pick another GPIO)`);
+      continue;
+    }
+    if (seen.has(gpio)) {
+      errors.push(`${name} and ${seen.get(gpio)} share the same GPIO ${gpio}`);
+    } else {
+      seen.set(gpio, name);
+    }
+  }
+
+  if (errors.length > 0) {
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = errors.join(' | '); }
+    return false;
+  }
+  return true;
+}
+
+async function saveHardwareSection() {
+  const fb = document.getElementById('hw-feedback');
+  if (fb) { fb.className = 'feedback-msg'; fb.textContent = ''; }
+
+  const presetEl = document.querySelector('input[name="hw_board_radio"]:checked');
+  const boardPreset = presetEl ? Number(presetEl.value) : (g_config.board_preset || 0);
+  const isManual = (boardPreset === 1);
+
+  const getPin = id => {
+    const el = document.getElementById(id);
+    return el ? parseInt(el.value, 10) : null;
+  };
+
+  const rs485EnabledEl = document.getElementById('hw-rs485_enabled');
+  const rs485Enabled = isManual ? (rs485EnabledEl ? rs485EnabledEl.checked : true) : true;
+
+  const pins = {
+    rs485_tx:  isManual ? getPin('hw-rs485_tx')  : WAVESHARE_PINS.rs485_tx,
+    rs485_rx:  isManual ? getPin('hw-rs485_rx')  : WAVESHARE_PINS.rs485_rx,
+    rs485_dir: isManual ? getPin('hw-rs485_dir') : WAVESHARE_PINS.rs485_dir,
+    can_tx:    isManual ? getPin('hw-can_tx')    : WAVESHARE_PINS.can_tx,
+    can_rx:    isManual ? getPin('hw-can_rx')    : WAVESHARE_PINS.can_rx,
+    led:       isManual ? getPin('hw-led')        : WAVESHARE_PINS.led,
+  };
+
+  if (isManual && !validateHwPins(pins, rs485Enabled, fb)) return;
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash     = '';
+  cfg.mqtt_pass_obf = '';
+  cfg.board_preset  = boardPreset;
+  cfg.rs485_enabled = rs485Enabled;
+  cfg.pins          = pins;
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = Object.assign(g_config, { board_preset: boardPreset, rs485_enabled: rs485Enabled, pins });
+      if (data.restart_required) {
+        if (fb) {
+          fb.className = 'feedback-msg ok';
+          fb.textContent = 'Saved. Device is rebooting — page will reload shortly.';
+        }
+        setTimeout(() => location.reload(), 6000);
+      } else {
+        if (fb) { fb.className = 'feedback-msg ok'; fb.textContent = 'Saved.'; }
+      }
+    } else {
+      if (fb) { fb.className = 'feedback-msg err'; fb.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = 'Network error: ' + e.message; }
+  }
+}
 
 function renderSettingsBattery() {
   const c = g_config;

@@ -109,8 +109,20 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     return send_json_error(req, 400, "Cannot enable auth without password");
   }
 
-  // Snapshot current MQTT settings for change detection before overwriting.
+  // Snapshot current settings for change detection before overwriting.
   const Config& old_cfg = app::get_config();
+
+  // Hardware changes (board preset, pins, rs485_enabled) cannot be applied live —
+  // UART/TWAI drivers bind pins at init. Reboot required.
+  bool hw_changed = (old_cfg.board_preset    != new_cfg.board_preset    ||
+                     old_cfg.rs485_enabled   != new_cfg.rs485_enabled   ||
+                     old_cfg.pins.rs485_tx   != new_cfg.pins.rs485_tx   ||
+                     old_cfg.pins.rs485_rx   != new_cfg.pins.rs485_rx   ||
+                     old_cfg.pins.rs485_dir  != new_cfg.pins.rs485_dir  ||
+                     old_cfg.pins.can_tx     != new_cfg.pins.can_tx     ||
+                     old_cfg.pins.can_rx     != new_cfg.pins.can_rx     ||
+                     old_cfg.pins.led        != new_cfg.pins.led);
+
   bool mqtt_changed = (old_cfg.mqtt_enabled    != new_cfg.mqtt_enabled   ||
                        old_cfg.mqtt_port        != new_cfg.mqtt_port       ||
                        strcmp(old_cfg.mqtt_host,       new_cfg.mqtt_host)       != 0 ||
@@ -124,6 +136,18 @@ esp_err_t handle_config_post(httpd_req_t* req) {
   }
 
   ESP_LOGI(TAG, "Config saved via HTTP POST /api/config");
+
+  // Hardware settings changed: reboot so UART/TWAI drivers reinitialize on the
+  // new pins. Reboot takes priority over MQTT-changed reboot (same mechanism).
+  if (hw_changed) {
+    ESP_LOGI(TAG, "Hardware settings changed — rebooting in 2 s");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req,
+        "{\"ok\":true,\"restart_required\":true,\"rebooting_in_s\":2,"
+        "\"reason\":\"hardware_pins_changed\"}");
+    xTaskCreate(deferred_restart, "hw_restart", 2048, nullptr, 1, nullptr);
+    return ESP_OK;
+  }
 
   // MQTT settings changed: restart instead of calling reconfigure() inline.
   // esp_mqtt_client_destroy() blocks the httpd worker task with portMAX_DELAY

@@ -190,16 +190,24 @@ static void control_task_entry(void* param) {
 
   s_safety_prev = safety::make_default_prev();
 
-  if (!rs485_init(cfg)) {
-    ESP_LOGE(TAG, "RS485 init failed — ControlTask aborting");
-    vTaskDelete(nullptr);
-    return;
+  if (cfg.rs485_enabled) {
+    if (!rs485_init(cfg)) {
+      ESP_LOGE(TAG, "RS485 init failed — ControlTask aborting");
+      vTaskDelete(nullptr);
+      return;
+    }
+  } else {
+    ESP_LOGI(TAG, "RS485 disabled by config — BMS polling skipped");
   }
 
   // ── CAN TX driver init (Phase E) ─────────────────────────────────────────
-  if (!can::tx::init(cfg)) {
-    ESP_LOGW(TAG, "CAN TX init failed — CAN frames will not be sent");
-    // Non-fatal: RS485 BMS polling continues; inverter will timeout gracefully.
+  if (cfg.can_enabled) {
+    if (!can::tx::init(cfg)) {
+      ESP_LOGW(TAG, "CAN TX init failed — CAN frames will not be sent");
+      // Non-fatal: RS485 BMS polling continues; inverter will timeout gracefully.
+    }
+  } else {
+    ESP_LOGI(TAG, "CAN disabled by config — TWAI driver not started");
   }
 
   // ── Initial snapshot: all packs offline ──────────────────────────────────
@@ -249,13 +257,15 @@ static void control_task_entry(void* param) {
       BmsSystemSnapshot* sys = bus::snapshot_bus::begin_publish();
       sys->cycle_id           = cycle_id;
       sys->produced_ms        = now_ms;
-      sys->pack_count_configured = cfg.bms_count;
+      // When RS485 is disabled there are no packs to poll; treat as 0 online.
+      const uint8_t effective_bms_count = cfg.rs485_enabled ? cfg.bms_count : 0;
+      sys->pack_count_configured = effective_bms_count;
       // Init all packs to offline; fill_from_analog will set online=true.
-      for (uint8_t i = 0; i < cfg.bms_count; ++i) {
+      for (uint8_t i = 0; i < effective_bms_count; ++i) {
         bms::init_pack_snapshot_offline(sys->pack[i], i);
       }
 
-      for (uint8_t i = 0; i < cfg.bms_count; ++i) {
+      for (uint8_t i = 0; i < effective_bms_count; ++i) {
         local_stats.analog_polls_attempted++;
         local_stats.pack[i].polls++;
 
@@ -303,8 +313,8 @@ static void control_task_entry(void* param) {
       }
 
       // ── Phase B: round-robin alarm or sysparam for one pack ───────────
-      if (cfg.bms_count > 0) {
-        uint8_t rr = rr_pack % cfg.bms_count;
+      if (effective_bms_count > 0) {
+        uint8_t rr = rr_pack % effective_bms_count;
         if (rr_alarm) {
           // Alarm poll (0x44)
           if (rs485_send_request(cfg.pins.rs485_dir, rr, bms::protocol::TB_CID2_ALARM_INFO)) {
@@ -347,14 +357,14 @@ static void control_task_entry(void* param) {
         }
         // Advance round-robin state
         if (!rr_alarm) {
-          rr_pack = static_cast<uint8_t>((rr_pack + 1) % cfg.bms_count);
+          rr_pack = static_cast<uint8_t>((rr_pack + 1) % effective_bms_count);
         }
         rr_alarm = !rr_alarm;
       }
 
       // ── Decay offline / update aggregates ────────────────────────────
       now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-      for (uint8_t i = 0; i < cfg.bms_count; ++i) {
+      for (uint8_t i = 0; i < effective_bms_count; ++i) {
         bool was = s_pack_was_online[i];
         if (bms::decay_online_status(sys->pack[i], now_ms, bms::poller::OFFLINE_THRESHOLD_MS)) {
           ESP_LOGW(TAG, "pack[%u] went offline", i);
