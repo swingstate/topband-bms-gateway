@@ -1,17 +1,21 @@
 #pragma once
 #include <cstdint>
 
-// Boot-reasons NVS ring — 5x rapid power-cycle reset detection.
-// Architecture §1.7 D3.4: "5x power cycle within 20 seconds" resets auth + WiFi.
+// Boot-reasons NVS ring — 5x rapid SW-reset detection for factory-reset gesture.
 //
-// Implementation: NTP is not running at boot, so there is no wall clock.
-// Instead, each boot records its uptime-at-record (ms from esp_timer_get_time()).
-// After a hard power-on the device has been running only a few hundred ms before
-// this code executes. Storing the last 5 uptimes and checking that ALL are below
-// RAPID_THRESHOLD_MS (5 000 ms) is a reliable proxy for "user yanked power 5
-// times before the device fully started". Only ESP_RST_POWERON and
-// ESP_RST_BROWNOUT causes are counted; software reboots (esp_restart) are
-// excluded to avoid false triggers on OTA or settings saves.
+// Design intent: a deliberate 5x quick-reset gesture (e.g. 5 rapid button presses
+// that trigger esp_restart or 5 quick UI restart actions) clears auth + WiFi,
+// providing a no-screen recovery path.
+//
+// IMPORTANT — POWERON/BROWNOUT are explicitly excluded:
+//   On ESP32-S3, both a genuine power outage and pressing the hardware RESET/EN
+//   pin produce ESP_RST_POWERON — they are indistinguishable. A mains-powered BMS
+//   gateway must survive repeated power outages without losing credentials. Only
+//   ESP_RST_SW (software restart) counts toward the tally.
+//
+// Normal-operation restarts (OTA apply, settings save) are excluded by the
+// NORMAL_BOOT_MS threshold: a SW restart that follows a long-running boot clears
+// the ring rather than accumulating it.
 
 namespace storage::boot_reasons {
 
