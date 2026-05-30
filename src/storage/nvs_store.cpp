@@ -72,11 +72,27 @@ bool loadConfig(Config& out) {
     return false;
   }
 
-  // Deserialize (checks schema_version)
+  // Peek at schema version before deserialization so we can detect migration.
+  uint16_t schema_in_blob = 0;
+  if (len >= 2) memcpy(&schema_in_blob, buf, sizeof(schema_in_blob));
+
+  // Deserialize (handles v1→v2 migration inside; unknown versions return false).
   if (!storage::deserialize(buf, len, out)) {
-    ESP_LOGE(TAG, "Deserialize failed (schema version mismatch?) — using defaults");
+    ESP_LOGE(TAG, "Deserialize failed (unknown schema v%u?) — using defaults",
+             (unsigned)schema_in_blob);
     out = DEFAULT_CONFIG;
     return false;
+  }
+
+  // If a schema migration ran, persist the upgraded blob immediately so
+  // subsequent boots load v2 directly without re-running the migration path.
+  if (schema_in_blob != CURRENT_SCHEMA_VERSION) {
+    ESP_LOGI(TAG, "Config migrated v%u → v%u — persisting to NVS",
+             (unsigned)schema_in_blob, (unsigned)CURRENT_SCHEMA_VERSION);
+    if (!saveConfig(out)) {
+      // Non-fatal: the device will re-migrate on the next boot (safe and correct).
+      ESP_LOGW(TAG, "Migration persist failed — will re-migrate on next boot");
+    }
   }
 
   // Per-pack level insertion migration: old PerCell was value 3, now value 4.

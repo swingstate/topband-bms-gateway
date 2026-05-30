@@ -11,8 +11,12 @@ static const char* TAG = "boot_reasons";
 static constexpr const char* NVS_NS   = "boot_rsns";
 static constexpr const char* KEY_RING = "ring";
 static constexpr size_t      RING_SIZE = 5;
-// Uptime threshold: if all 5 slots are below this, user rapid-power-cycled.
-static constexpr uint32_t RAPID_THRESHOLD_MS = 5000;
+// Uptime threshold: a SW reset is "quick" (deliberate rapid-press) only when
+// the device hadn't been running long enough to be in normal operation.
+static constexpr uint32_t RAPID_THRESHOLD_MS  = 5000;
+// A SW reset that follows a long-running boot is a normal operation restart
+// (OTA apply, settings save). Clear the ring rather than accumulate.
+static constexpr uint32_t NORMAL_BOOT_MS = 30000;
 
 // In-RAM copy of the NVS ring. 0 = empty (never written).
 static uint32_t g_ring[RING_SIZE] = {};
@@ -45,17 +49,34 @@ namespace storage::boot_reasons {
 
 void record_this_boot() {
   esp_reset_reason_t reason = esp_reset_reason();
-  if (reason != ESP_RST_POWERON && reason != ESP_RST_BROWNOUT) {
-    // Software restart (OTA, esp_restart(), etc.) — don't count for 5x detection.
-    ESP_LOGD(TAG, "record_this_boot: reset_reason=%d (SW restart) — skipped", (int)reason);
+
+  // Power-on and brownout resets must NEVER count toward the rapid-reset tally.
+  // On ESP32-S3, both a genuine power outage and a hardware RESET/EN-pin press
+  // produce ESP_RST_POWERON — they are indistinguishable. A mains-powered BMS
+  // gateway must survive repeated power outages without losing credentials.
+  if (reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT) {
+    ESP_LOGD(TAG, "record_this_boot: reset_reason=%d (POWERON/BROWNOUT) — excluded from rapid-reset tally",
+             (int)reason);
     return;
   }
 
   uint32_t uptime_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-  ESP_LOGI(TAG, "record_this_boot: uptime=%u ms (POWERON/BROWNOUT)", (unsigned)uptime_ms);
 
+  // A SW reset (OTA apply, settings save, esp_restart()) that follows a long
+  // running boot is a normal operation restart. Clear the ring so these routine
+  // restarts never accumulate toward the factory-reset threshold.
+  if (uptime_ms >= NORMAL_BOOT_MS) {
+    load_ring();
+    memset(g_ring, 0, sizeof(g_ring));
+    g_loaded = true;
+    save_ring();
+    ESP_LOGD(TAG, "record_this_boot: SW restart after %u ms (normal) — ring cleared", (unsigned)uptime_ms);
+    return;
+  }
+
+  // Quick SW reset (uptime < 30 s): counts toward deliberate rapid-reset gesture.
+  ESP_LOGI(TAG, "record_this_boot: uptime=%u ms (SW reset, quick — counting)", (unsigned)uptime_ms);
   load_ring();
-  // Shift ring left (oldest at [0] drops off) and insert new value at end.
   memmove(g_ring, g_ring + 1, sizeof(uint32_t) * (RING_SIZE - 1));
   g_ring[RING_SIZE - 1] = uptime_ms;
   save_ring();

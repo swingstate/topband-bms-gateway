@@ -5,7 +5,9 @@
 // ── Schema version ────────────────────────────────────────────────────────────
 // Increment when the Config layout changes. The migration runner (Phase J)
 // uses this to upgrade older blobs stored in NVS.
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 1;
+// v1 → v2: added rs485_enabled; renamed BoardPreset (LilyGo→Manual, dropped Custom).
+//           v1 blobs fail deserialization → device loads DEFAULT_CONFIG (Waveshare).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 2;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -14,16 +16,23 @@ struct Config {
   uint16_t schema_version;          // must be first — migration runner reads at offset 0
 
   // ── Hardware (board + pin map) ──────────────────────────────────────────────
-  enum class BoardPreset : uint8_t { Waveshare = 0, LilyGo = 1, Custom = 2 };
+  // Only ESP32-S3 boards with 16 MB flash and 8 MB PSRAM are supported.
+  // Waveshare = known-good preset with fixed pin assignments.
+  // Manual    = user-configurable pins for HAT/transceiver-IC boards.
+  enum class BoardPreset : uint8_t { Waveshare = 0, Manual = 1 };
   BoardPreset board_preset;
   struct PinMap {
     int8_t rs485_tx;
     int8_t rs485_rx;
-    int8_t rs485_dir;    // -1 = hardware auto-direction (LilyGo)
+    int8_t rs485_dir;    // -1 = hardware auto-direction
     int8_t can_tx;
     int8_t can_rx;
     int8_t led;
   } pins;
+  // RS485 interface present. When false, no RS485 driver is started and
+  // bms_count is treated as 0 (CAN-only configuration).
+  // can_enabled (below) serves the same role for CAN.
+  bool rs485_enabled;
 
   // ── Battery topology ────────────────────────────────────────────────────────
   uint8_t bms_count;              // 1..16
@@ -142,6 +151,8 @@ enum class ValidationError : uint8_t {
   PackVoltageOutOfRange,
   TemperatureOutOfRange,
   PinConflict,
+  PinReserved,          // GPIO is reserved for flash/PSRAM/USB on ESP32-S3
+  PinOutOfRange,        // GPIO number outside 0-48
   StringNotTerminated,
 };
 
