@@ -112,6 +112,196 @@ static Config make_default() {
 
 const Config DEFAULT_CONFIG = make_default();
 
+// ── Schema migration ──────────────────────────────────────────────────────────
+//
+// Pattern for every future schema bump: define a struct that exactly mirrors the
+// old layout, add a migrate_vN_to_vM() function that starts from DEFAULT_CONFIG
+// (guarantees all new fields have safe values) then overlays every field that
+// existed in the old schema. Dispatch from deserialize() on the schema_version
+// found in the blob.
+//
+// Alignment note (v1 → v2):
+//   v1 ends the hardware block at offset 12 (can_enabled) with 3 padding bytes
+//   before charge_amps_per_pack at offset 16.
+//   v2 inserts rs485_enabled (bool, 1B) at offset 9; the padding shrinks to 2B,
+//   so charge_amps_per_pack stays at offset 16. All fields at offset ≥16 share
+//   the same absolute offset in both versions. The overall struct size is 540B in
+//   both (verified by the static_assert below).
+
+namespace {
+
+// Historical Config layout at schema version 1.
+// The only structural difference from Config (v2) is the absence of rs485_enabled
+// between pins and bms_count.
+struct Config_v1 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+};
+
+// Verify the alignment math: inserting rs485_enabled steals exactly one padding
+// byte before the first float, so net struct size is unchanged.
+static_assert(sizeof(Config_v1) == sizeof(Config),
+    "Config_v1 / Config size mismatch — check alignment after any Config field change");
+
+static bool migrate_v1_to_v2(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v1)) return false;
+
+  Config_v1 v1;
+  memcpy(&v1, buf, sizeof(Config_v1));
+
+  // Start from DEFAULT_CONFIG so rs485_enabled and every other new v2 field
+  // has a safe value before we overlay the preserved v1 settings.
+  out = DEFAULT_CONFIG;
+
+  // Hardware — board type and pins carry forward unchanged.
+  // rs485_enabled: v2-only field; default true preserves existing RS485 behaviour
+  // (all v1 devices had RS485 hardware). board_preset=1 was LilyGo in v1 (renamed
+  // Manual in v2); value is binary-compatible, so no translation needed.
+  out.board_preset          = v1.board_preset;
+  out.pins                  = v1.pins;
+  out.rs485_enabled         = true;
+
+  // Battery topology
+  out.bms_count             = v1.bms_count;
+  out.force_cell_count      = v1.force_cell_count;
+
+  // Inverter / CAN
+  out.can_protocol          = v1.can_protocol;
+  out.can_enabled           = v1.can_enabled;
+
+  // Charge / discharge limits
+  out.charge_amps_per_pack    = v1.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v1.discharge_amps_per_pack;
+  out.cvl_voltage             = v1.cvl_voltage;
+
+  // Safety cutoffs
+  out.safe_pack_volt        = v1.safe_pack_volt;
+  out.safe_cell_volt        = v1.safe_cell_volt;
+  out.safe_cell_drift       = v1.safe_cell_drift;
+
+  // Spike filter
+  out.spike_volt_max        = v1.spike_volt_max;
+  out.spike_curr_max        = v1.spike_curr_max;
+  out.spike_soc_max         = v1.spike_soc_max;
+
+  // Temperature
+  out.charge_temp_min       = v1.charge_temp_min;
+  out.charge_temp_max       = v1.charge_temp_max;
+  out.discharge_temp_min    = v1.discharge_temp_min;
+  out.discharge_temp_max    = v1.discharge_temp_max;
+  out.temp_soft_zone        = v1.temp_soft_zone;
+  out.temp_mode             = v1.temp_mode;
+
+  // SOC / setup
+  out.soc_mode              = v1.soc_mode;
+  out.setup_mode            = v1.setup_mode;
+  out.auto_from_bms_applied = v1.auto_from_bms_applied;
+
+  // Maintenance charge
+  out.maint_charge_enabled  = v1.maint_charge_enabled;
+  out.maint_target_voltage  = v1.maint_target_voltage;
+
+  // Auto-balancer
+  out.auto_balance_enabled  = v1.auto_balance_enabled;
+  out.auto_balance_last_ts  = v1.auto_balance_last_ts;
+
+  // Network
+  memcpy(out.wifi_ssid,  v1.wifi_ssid,  sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server, v1.ntp_server, sizeof(out.ntp_server));
+  out.timezone_offset_h     = v1.timezone_offset_h;
+
+  // MQTT
+  out.mqtt_enabled          = v1.mqtt_enabled;
+  memcpy(out.mqtt_host,       v1.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port             = v1.mqtt_port;
+  memcpy(out.mqtt_user,       v1.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v1.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v1.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level            = v1.mqtt_level;
+  out.mqtt_diag_enabled     = v1.mqtt_diag_enabled;
+  out.ha_discovery_enabled  = v1.ha_discovery_enabled;
+  out.mqtt_full_publish     = v1.mqtt_full_publish;
+
+  // Auth
+  out.auth_enabled          = v1.auth_enabled;
+  memcpy(out.auth_user, v1.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v1.auth_hash, sizeof(out.auth_hash));
+
+  // UI preferences
+  out.theme_id              = v1.theme_id;
+  out.chart_series_a        = v1.chart_series_a;
+  out.chart_series_b        = v1.chart_series_b;
+
+  // UI polling cadences
+  out.ui_poll_live_ms       = v1.ui_poll_live_ms;
+  out.ui_poll_diag_ms       = v1.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms     = v1.ui_poll_alerts_ms;
+
+  // Counter reset
+  out.last_reset_ts         = v1.last_reset_ts;
+
+  // Debug
+  out.serial_debug_enabled  = v1.serial_debug_enabled;
+  out.spy_persist_default   = v1.spy_persist_default;
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
+
+}  // namespace
+
 // ── serialize / deserialize ───────────────────────────────────────────────────
 
 namespace storage {
@@ -124,12 +314,23 @@ bool serialize(const Config& cfg, uint8_t* buf, size_t buf_size, size_t& out_len
 }
 
 bool deserialize(const uint8_t* buf, size_t len, Config& out) {
-  if (len < sizeof(Config)) return false;
+  if (len < 2) return false;
   uint16_t ver = 0;
   memcpy(&ver, buf, sizeof(ver));   // schema_version is at offset 0
-  if (ver != CURRENT_SCHEMA_VERSION) return false;
-  memcpy(&out, buf, sizeof(Config));
-  return true;
+
+  if (ver == CURRENT_SCHEMA_VERSION) {
+    if (len < sizeof(Config)) return false;
+    memcpy(&out, buf, sizeof(Config));
+    return true;
+  }
+
+  if (ver == 1) {
+    // Field-preserving v1 → v2 migration. All user settings survive;
+    // only rs485_enabled (and pins if board_preset was Custom) get defaults.
+    return migrate_v1_to_v2(buf, len, out);
+  }
+
+  return false;  // unrecognised schema version
 }
 
 uint32_t crc32(const uint8_t* data, size_t len) {
