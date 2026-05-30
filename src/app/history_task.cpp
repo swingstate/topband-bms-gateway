@@ -5,6 +5,7 @@
 #include "bus/types.h"
 #include "net/ntp.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <climits>
@@ -22,9 +23,10 @@ static constexpr uint32_t FINE_INTERVAL_MS  = HISTORY_FINE_RESOLUTION_S * 1000u;
 static constexpr uint32_t FINE_PER_COARSE   =
     HISTORY_COARSE_RESOLUTION_S / HISTORY_FINE_RESOLUTION_S; // 30
 
-// ── Module-level statics (BSS) — avoids large stack frames (H1 lesson) ────────
-// Snapshot read buffer: ~8 KB. Must NOT be declared as a task local.
-static BmsSystemSnapshot s_snap = {};
+// ── Module-level statics (PSRAM BSS) — avoids large stack frames (H1 lesson) ──
+// EXT_RAM_BSS_ATTR: ~8 KB moved from DRAM BSS to PSRAM. CPU-only read from
+// snapshot_bus::read(); never DMA. Must NOT be a task local (H1 lesson).
+static EXT_RAM_BSS_ATTR BmsSystemSnapshot s_snap;
 
 // Fine-sample accumulator for downsampling to coarse.
 // Holds the last FINE_PER_COARSE fine points.

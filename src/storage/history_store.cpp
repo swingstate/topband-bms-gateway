@@ -3,6 +3,7 @@
 #include "bus/types.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -16,8 +17,10 @@ static const char* TAG = "hist_store";
 static HistoryRingHeader s_fine_hdr   = {};
 static HistoryRingHeader s_coarse_hdr = {};
 
-static HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY]   = {};
-static HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY] = {};
+// EXT_RAM_BSS_ATTR: ~57 KB moved from DRAM BSS to PSRAM BSS. CPU-only access
+// (fread/memcpy), never DMA. CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y required.
+static EXT_RAM_BSS_ATTR HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY];
+static EXT_RAM_BSS_ATTR HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY];
 
 // ── Cell-drift companion rings ────────────────────────────────────────────────
 // PSRAM-heap-allocated in init() to keep steady-state DRAM neutral.

@@ -493,7 +493,7 @@ bool start(const Config& cfg) {
   BaseType_t r = xTaskCreatePinnedToCore(
       control_task_entry,
       "ctrl",
-      /*stack_depth*/ 12288,
+      /*stack_depth*/ 7168,
       &cfg_copy,
       /*priority*/ 5,
       &handle,
