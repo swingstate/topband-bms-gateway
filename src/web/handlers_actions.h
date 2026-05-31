@@ -25,6 +25,18 @@ esp_err_t handle_ha_discovery_send(httpd_req_t* req);
 // cleanup_stale() re-runs on next connect. Also triggers full discovery if connected.
 esp_err_t handle_ha_discovery_clear(httpd_req_t* req);
 
+// POST /api/restore — body: {"backup":{...},"include_hardware":bool}
+// Validates backup JSON, merges onto current config per chosen scope, saves, reboots.
+esp_err_t handle_restore(httpd_req_t* req);
+
+// POST /api/mqtt/test — body: {"host","port","user","pass","base_topic"}
+// Starts a throwaway MQTT client against the unsaved form values (does NOT
+// touch the live MQTT connection). Returns immediately; poll GET for result.
+esp_err_t handle_mqtt_test_post(httpd_req_t* req);
+
+// GET /api/mqtt/test — returns {"status":"idle|running|ok|failed","stage":"...","message":"..."}.
+esp_err_t handle_mqtt_test_get(httpd_req_t* req);
+
 // GET /api/wifi/status — returns ssid, rssi, ip, gw, netmask, dns, hostname, connected_for_s.
 esp_err_t handle_wifi_status_get(httpd_req_t* req);
 

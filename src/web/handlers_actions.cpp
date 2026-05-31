@@ -15,13 +15,43 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_heap_caps.h"
+#include "mqtt_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <ArduinoJson.h>
 #include <ctime>
 #include <cstdio>
+#include <cstring>
 
 static const char* TAG = "web_act";
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+static size_t read_body_act(httpd_req_t* req, char* buf, size_t max_len) {
+  size_t remaining = req->content_len;
+  size_t total = 0;
+  if (remaining == 0 || remaining > max_len) return 0;
+  while (remaining > 0) {
+    int n = httpd_req_recv(req, buf + total, remaining);
+    if (n <= 0) return total;
+    total     += (size_t)n;
+    remaining -= (size_t)n;
+  }
+  buf[total] = '\0';
+  return total;
+}
+
+static esp_err_t send_err_act(httpd_req_t* req, int code, const char* msg) {
+  char body[256];
+  snprintf(body, sizeof(body), "{\"error\":\"%s\"}", msg);
+  httpd_resp_set_type(req, "application/json");
+  if (code == 400)      httpd_resp_set_status(req, "400 Bad Request");
+  else if (code == 409) httpd_resp_set_status(req, "409 Conflict");
+  else if (code == 422) httpd_resp_set_status(req, "422 Unprocessable Entity");
+  else                  httpd_resp_set_status(req, "500 Internal Server Error");
+  return httpd_resp_sendstr(req, body);
+}
 
 static const char* mqtt_state_str(mqtt::publisher::State s) {
   switch (s) {
@@ -312,6 +342,325 @@ esp_err_t handle_wifi_configure_post(httpd_req_t* req) {
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req,
       "{\"ok\":true,\"status\":\"connecting\"}");
+}
+
+// ── POST /api/restore ─────────────────────────────────────────────────────────
+// Body: {"backup": {...full backup JSON...}, "include_hardware": bool}
+// Validates the backup, merges onto current config per scope, saves, reboots.
+// Max body 8 KB (backup ~4 KB + envelope).
+static constexpr size_t RESTORE_BODY_MAX = 8192;
+
+esp_err_t handle_restore(httpd_req_t* req) {
+  char* body = (char*)malloc(RESTORE_BODY_MAX + 1);
+  if (!body) return send_err_act(req, 500, "OOM");
+
+  size_t n = read_body_act(req, body, RESTORE_BODY_MAX);
+  if (n == 0) {
+    free(body);
+    return send_err_act(req, 400, "Empty or oversized body");
+  }
+
+  JsonDocument req_doc;
+  DeserializationError derr = deserializeJson(req_doc, body, n);
+  free(body);
+  if (derr) return send_err_act(req, 400, "Invalid JSON — malformed backup file");
+
+  bool include_hardware = req_doc["include_hardware"] | false;
+
+  // The backup object must be present.
+  JsonVariantConst backup_v = req_doc["backup"];
+  if (!backup_v.is<JsonObjectConst>())
+    return send_err_act(req, 400, "Missing 'backup' field");
+  JsonObjectConst backup = backup_v.as<JsonObjectConst>();
+
+  // Validate envelope.
+  const char* fmt = backup["_format"] | "";
+  if (strcmp(fmt, "topband-bms-config") != 0)
+    return send_err_act(req, 400, "Not a TopBand BMS config backup (_format mismatch)");
+
+  JsonVariantConst cfg_v = backup["config"];
+  if (!cfg_v.is<JsonObjectConst>())
+    return send_err_act(req, 400, "Backup has no 'config' section");
+  JsonObjectConst cfg_obj = cfg_v.as<JsonObjectConst>();
+
+  // Schema-version compatibility check.
+  int backup_schema = cfg_obj["schema_version"] | -1;
+  if (backup_schema < 0)
+    return send_err_act(req, 400, "Backup missing schema_version");
+  if (backup_schema > (int)CURRENT_SCHEMA_VERSION) {
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+      "Backup schema v%d is newer than this firmware (v%d) — update device firmware first",
+      backup_schema, (int)CURRENT_SCHEMA_VERSION);
+    return send_err_act(req, 400, msg);
+  }
+
+  // Defaults-then-overlay: start from current live config, overlay backup fields.
+  // Fields missing from an older backup stay at their current (valid default) values.
+  Config new_cfg = app::get_config();
+
+  // Copy backup config into a JsonDocument so json_to_config can accept it.
+  JsonDocument cfg_doc;
+  for (auto kv : cfg_obj) cfg_doc[kv.key()] = kv.value();
+
+  json_to_config(cfg_doc, new_cfg);
+
+  // Scope filter: if settings-only, restore hardware fields from the live config.
+  if (!include_hardware) {
+    const Config& live = app::get_config();
+    new_cfg.board_preset  = live.board_preset;
+    new_cfg.pins          = live.pins;
+    new_cfg.rs485_enabled = live.rs485_enabled;
+  }
+
+  // Passwords are never in backups — force-clear regardless of what the backup says.
+  new_cfg.mqtt_pass_obf[0] = '\0';
+  new_cfg.auth_hash[0]     = '\0';
+
+  // Full value-range validation (same path as /api/config POST).
+  char field_err[64] = {};
+  ValidationError verr = storage::validate(new_cfg, field_err, sizeof(field_err));
+  if (verr != ValidationError::None) {
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Validation failed: %s", field_err);
+    return send_err_act(req, 422, msg);
+  }
+
+  if (!app::update_and_save_config(new_cfg)) {
+    return send_err_act(req, 500, "NVS save failed");
+  }
+
+  ESP_LOGI(TAG, "Config restored via /api/restore (include_hardware=%d, schema=%d)",
+           (int)include_hardware, backup_schema);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req,
+    "{\"ok\":true,\"message\":\"Import successful — rebooting to apply\",\"reboot_in_s\":3}");
+
+  xTaskCreate([](void*) {
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    esp_restart();
+  }, "restore_rst", 2048, nullptr, 1, nullptr);
+
+  return ESP_OK;
+}
+
+// ── MQTT connection test ──────────────────────────────────────────────────────
+// Runs a throwaway esp_mqtt client against the unsaved form values.
+// The live publisher is never touched.
+
+enum class MqttTestStatus : uint8_t { Idle, Running, Ok, Failed };
+
+struct MqttTestResult {
+  MqttTestStatus status = MqttTestStatus::Idle;
+  char stage[16]   = {};    // "tcp", "auth", "publish", "done"
+  char message[128] = {};
+};
+
+static portMUX_TYPE s_test_mux     = portMUX_INITIALIZER_UNLOCKED;
+static MqttTestResult s_test_result = {};
+
+struct MqttTestCtx {
+  char host[64];
+  uint16_t port;
+  char user[32];
+  char pass[64];
+  char base_topic[64];
+  SemaphoreHandle_t done_sem;
+  volatile bool connected = false;
+  char err_stage[16]  = {};
+  char err_msg[80]    = {};
+};
+
+static void set_test_result(MqttTestStatus st, const char* stage, const char* msg) {
+  portENTER_CRITICAL(&s_test_mux);
+  s_test_result.status = st;
+  snprintf(s_test_result.stage,   sizeof(s_test_result.stage),   "%s", stage);
+  snprintf(s_test_result.message, sizeof(s_test_result.message), "%s", msg);
+  portEXIT_CRITICAL(&s_test_mux);
+}
+
+static void mqtt_test_event_cb(void* handler_args, esp_event_base_t /*base*/,
+                               int32_t event_id, void* event_data) {
+  MqttTestCtx* ctx = static_cast<MqttTestCtx*>(handler_args);
+  auto* ev = static_cast<esp_mqtt_event_handle_t>(event_data);
+
+  switch (static_cast<esp_mqtt_event_id_t>(event_id)) {
+    case MQTT_EVENT_CONNECTED:
+      ctx->connected = true;
+      xSemaphoreGive(ctx->done_sem);
+      break;
+
+    case MQTT_EVENT_ERROR: {
+      ctx->connected = false;
+      if (ev->error_handle &&
+          ev->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+        snprintf(ctx->err_stage, sizeof(ctx->err_stage), "auth");
+        snprintf(ctx->err_msg,   sizeof(ctx->err_msg),
+                 "Authentication failed — check user/password (broker returned code %d)",
+                 (int)ev->error_handle->connect_return_code);
+      } else {
+        snprintf(ctx->err_stage, sizeof(ctx->err_stage), "tcp");
+        snprintf(ctx->err_msg,   sizeof(ctx->err_msg),
+                 "TCP connect failed — host/port unreachable");
+      }
+      xSemaphoreGive(ctx->done_sem);
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+static void mqtt_test_task(void* arg) {
+  MqttTestCtx* ctx = static_cast<MqttTestCtx*>(arg);
+
+  esp_mqtt_client_config_t mcfg = {};
+  mcfg.broker.address.hostname   = ctx->host;
+  mcfg.broker.address.port       = ctx->port;
+  mcfg.broker.address.transport  = MQTT_TRANSPORT_OVER_TCP;
+  mcfg.credentials.client_id     = "topband_conntest";
+  mcfg.credentials.username      = ctx->user[0] ? ctx->user : nullptr;
+  mcfg.credentials.authentication.password = ctx->pass[0] ? ctx->pass : nullptr;
+  mcfg.network.timeout_ms        = 5000;
+  mcfg.network.reconnect_timeout_ms = 10000;  // irrelevant — we stop before retry
+  mcfg.session.keepalive          = 5;
+
+  esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mcfg);
+  if (!client) {
+    set_test_result(MqttTestStatus::Failed, "tcp", "Failed to create test MQTT client");
+    vSemaphoreDelete(ctx->done_sem);
+    free(ctx);
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  esp_mqtt_client_register_event(client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID),
+                                  mqtt_test_event_cb, ctx);
+  esp_mqtt_client_start(client);
+
+  // Wait up to 7 s for TCP connect + MQTT handshake (5 s network timeout + headroom).
+  bool got = (xSemaphoreTake(ctx->done_sem, pdMS_TO_TICKS(7000)) == pdTRUE);
+
+  if (!got) {
+    set_test_result(MqttTestStatus::Failed, "tcp",
+                    "Timeout — broker did not respond within 7 s (check host/port)");
+  } else if (!ctx->connected) {
+    set_test_result(MqttTestStatus::Failed, ctx->err_stage, ctx->err_msg);
+  } else {
+    // TCP + auth succeeded; publish a test message (QoS 0, non-retained).
+    char test_topic[128];
+    snprintf(test_topic, sizeof(test_topic), "%s/_conntest", ctx->base_topic);
+    int mid = esp_mqtt_client_publish(client, test_topic, "conntest", 8, 0, 0);
+    if (mid >= 0) {
+      set_test_result(MqttTestStatus::Ok, "done",
+                      "Connection OK — broker reachable, authenticated, test message published");
+    } else {
+      set_test_result(MqttTestStatus::Failed, "publish",
+                      "Connected and authenticated but publish failed");
+    }
+  }
+
+  esp_mqtt_client_stop(client);
+  esp_mqtt_client_destroy(client);
+  vSemaphoreDelete(ctx->done_sem);
+  free(ctx);
+  vTaskDelete(nullptr);
+}
+
+// POST /api/mqtt/test — kick off a throwaway connection test against the body values.
+// Returns 200 immediately; client polls GET /api/mqtt/test for the result.
+esp_err_t handle_mqtt_test_post(httpd_req_t* req) {
+  // Reject if a test is already in flight.
+  portENTER_CRITICAL(&s_test_mux);
+  bool busy = (s_test_result.status == MqttTestStatus::Running);
+  portEXIT_CRITICAL(&s_test_mux);
+  if (busy) return send_err_act(req, 409, "Test already running");
+
+  char body[512] = {};
+  size_t n = read_body_act(req, body, sizeof(body) - 1);
+  if (n == 0) return send_err_act(req, 400, "Empty body");
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body, n) != DeserializationError::Ok)
+    return send_err_act(req, 400, "JSON parse error");
+
+  auto* ctx = static_cast<MqttTestCtx*>(malloc(sizeof(MqttTestCtx)));
+  if (!ctx) return send_err_act(req, 500, "OOM");
+  memset(ctx, 0, sizeof(MqttTestCtx));
+
+  snprintf(ctx->host,       sizeof(ctx->host),       "%s", (const char*)(doc["host"]       | ""));
+  ctx->port = (uint16_t)(doc["port"] | 1883);
+  snprintf(ctx->user,       sizeof(ctx->user),       "%s", (const char*)(doc["user"]       | ""));
+  snprintf(ctx->base_topic, sizeof(ctx->base_topic), "%s", (const char*)(doc["base_topic"] | "topband-bms"));
+
+  // Password: blank in the form = reuse saved credential.
+  const char* form_pass = doc["pass"] | "";
+  if (form_pass[0] != '\0') {
+    snprintf(ctx->pass, sizeof(ctx->pass), "%s", form_pass);
+  } else {
+    snprintf(ctx->pass, sizeof(ctx->pass), "%s", app::get_config().mqtt_pass_obf);
+  }
+
+  if (ctx->host[0] == '\0') {
+    free(ctx);
+    return send_err_act(req, 400, "host required");
+  }
+
+  ctx->done_sem = xSemaphoreCreateBinary();
+  if (!ctx->done_sem) {
+    free(ctx);
+    return send_err_act(req, 500, "semaphore alloc failed");
+  }
+
+  // Mark running before the task starts to prevent a race on the status read.
+  set_test_result(MqttTestStatus::Running, "tcp", "Connecting…");
+
+  BaseType_t ok = xTaskCreate(mqtt_test_task, "mqtt_test", 6144, ctx, 2, nullptr);
+  if (ok != pdPASS) {
+    set_test_result(MqttTestStatus::Idle, "", "");
+    vSemaphoreDelete(ctx->done_sem);
+    free(ctx);
+    return send_err_act(req, 500, "Task create failed");
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"ok\":true,\"status\":\"running\"}");
+}
+
+// GET /api/mqtt/test — return current test result.
+esp_err_t handle_mqtt_test_get(httpd_req_t* req) {
+  portENTER_CRITICAL(&s_test_mux);
+  MqttTestResult snap = s_test_result;
+  portEXIT_CRITICAL(&s_test_mux);
+
+  const char* st_str = "idle";
+  switch (snap.status) {
+    case MqttTestStatus::Running: st_str = "running"; break;
+    case MqttTestStatus::Ok:      st_str = "ok";      break;
+    case MqttTestStatus::Failed:  st_str = "failed";  break;
+    default: break;
+  }
+
+  char body[256];
+  // Escape message for JSON (replace " with \")
+  char safe_msg[128];
+  size_t si = 0;
+  for (size_t i = 0; snap.message[i] && si < sizeof(safe_msg) - 2; i++) {
+    if (snap.message[i] == '"' || snap.message[i] == '\\')
+      safe_msg[si++] = '\\';
+    safe_msg[si++] = snap.message[i];
+  }
+  safe_msg[si] = '\0';
+
+  snprintf(body, sizeof(body),
+           "{\"status\":\"%s\",\"stage\":\"%s\",\"message\":\"%s\"}",
+           st_str, snap.stage, safe_msg);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  return httpd_resp_sendstr(req, body);
 }
 
 }  // namespace web
