@@ -46,13 +46,13 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[24];
+static AuthCtx g_auth_ctx[28];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
                      const char* uri, httpd_method_t method,
                      esp_err_t (*handler)(httpd_req_t*)) {
-  if (g_auth_ctx_count >= 24) {
+  if (g_auth_ctx_count >= 28) {
     ESP_LOGE(TAG, "reg_auth: out of context slots");
     return;
   }
@@ -124,6 +124,11 @@ bool start_httpd(const Config& /*cfg*/) {
   // ── OTA endpoints (Phase I) ─────────────────────────────────────���─────────
   reg_auth(g_server, "/api/ota/upload", HTTP_POST, web::handlers_ota::handler_ota_upload);
   reg_auth(g_server, "/api/ota/status", HTTP_GET,  web::handlers_ota::handler_ota_status);
+
+  // ── Config import / MQTT test (iter/config-io-mqtt-test) ──────────────────
+  reg_auth(g_server, "/api/restore",   HTTP_POST, handle_restore);
+  reg_auth(g_server, "/api/mqtt/test", HTTP_POST, handle_mqtt_test_post);
+  reg_auth(g_server, "/api/mqtt/test", HTTP_GET,  handle_mqtt_test_get);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

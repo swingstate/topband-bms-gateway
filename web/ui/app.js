@@ -1605,8 +1605,10 @@ function renderSettingsMqtt() {
         <div id="mqtt-feedback" class="feedback-msg"></div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="saveMqttSection()">Save</button>
+          <button class="btn btn-secondary" onclick="testMqttConnection()">Test connection</button>
           <button class="btn btn-secondary" onclick="sendHaDiscovery()">Re-send HA Discovery</button>
         </div>
+        <div id="mqtt-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
       </div>
     </div>
   `;
@@ -1622,13 +1624,13 @@ function renderSettingsAccount() {
           ${c.auth_enabled
             ? `<div style="display:flex;align-items:center;gap:12px">
                  <span class="charging-pill pill-charging">Enabled</span>
-                 <button class="btn btn-secondary" style="font-size:12px;padding:4px 12px"
+                 <button class="btn btn-secondary"
                          onclick="confirmDisableAuth()">Disable</button>
                </div>`
             : (c.auth_hash
               ? `<div style="display:flex;align-items:center;gap:12px">
                    <span class="charging-pill pill-discharging">Disabled</span>
-                   <button class="btn btn-primary" style="font-size:12px;padding:4px 12px"
+                   <button class="btn btn-primary"
                            onclick="enableAuth()">Enable</button>
                  </div>`
               : `<div style="display:flex;align-items:center;gap:12px">
@@ -1729,6 +1731,23 @@ function renderSettingsSystem() {
         <div class="btn-row">
           <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
           <button class="btn btn-secondary" onclick="confirmRestart()">Restart Gateway</button>
+        </div>
+        <div style="margin-top:20px">
+          <div class="settings-section-title" style="font-size:13px;margin-bottom:8px">Import Backup</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            Restore settings from a previously downloaded backup file.
+            Passwords (MQTT, authentication) are NOT included in backups and must be re-entered after import.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="file" id="restore-file-input" accept=".json" style="display:none" onchange="restoreFileChanged(event)">
+            <button class="btn btn-secondary" onclick="document.getElementById('restore-file-input').click()">Choose backup file</button>
+            <span id="restore-file-info" style="font-size:12px;color:var(--text-muted)">No file selected</span>
+          </div>
+          <div id="restore-metadata"></div>
+          <div class="btn-row" style="margin-top:10px">
+            <button id="restore-import-btn" class="btn btn-secondary" disabled onclick="startRestore()">Import backup</button>
+          </div>
+          <div id="restore-status" class="feedback-msg" style="margin-top:8px"></div>
         </div>
       </div>
     </div>
@@ -2538,7 +2557,7 @@ async function renderAlerts() {
           ).join('')}
         </div>
         <span id="alerts-count" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
-        <button class="btn btn-danger" style="font-size:12px;padding:4px 12px" onclick="clearAllAlerts()">Clear all</button>
+        <button class="btn btn-danger" onclick="clearAllAlerts()">Clear all</button>
       </div>
       <div id="alerts-list" style="border:1px solid var(--border-subtle);border-radius:var(--radius)">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
@@ -2862,21 +2881,272 @@ async function setAuthEnabled(enabled) {
   }
 }
 
+/* ── Config import (restore) ─────────────────────────────────────────────────── */
+
+let g_restore_backup = null;  // parsed backup JSON object
+
+function restoreFileChanged(event) {
+  const file = event.target.files && event.target.files[0];
+  const infoEl   = document.getElementById('restore-file-info');
+  const importBtn = document.getElementById('restore-import-btn');
+  const metaEl   = document.getElementById('restore-metadata');
+  const statusEl = document.getElementById('restore-status');
+  g_restore_backup = null;
+  if (importBtn) importBtn.disabled = true;
+  if (metaEl)   metaEl.innerHTML = '';
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = ''; }
+  if (!file) { if (infoEl) infoEl.textContent = 'No file selected'; return; }
+  if (infoEl) infoEl.textContent = file.name;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    let parsed;
+    try {
+      parsed = JSON.parse(e.target.result);
+    } catch (_) {
+      if (metaEl) metaEl.innerHTML =
+        '<p style="color:var(--color-alarm);font-size:13px;margin-top:8px">Invalid JSON — not a valid backup file.</p>';
+      return;
+    }
+    renderRestoreMetadata(parsed);
+  };
+  reader.readAsText(file);
+}
+
+function renderRestoreMetadata(parsed) {
+  const metaEl    = document.getElementById('restore-metadata');
+  const importBtn = document.getElementById('restore-import-btn');
+  if (!metaEl) return;
+
+  const formatOk   = (parsed._format === 'topband-bms-config');
+  const metaExported = parsed._exported || null;
+  const metaSchema   = (parsed.config && parsed.config.schema_version !== undefined)
+                       ? parsed.config.schema_version : null;
+  const metaFirmware = parsed._firmware || null;
+  const metaDevice   = parsed._device   || null;
+
+  const currentSchema = g_config ? g_config.schema_version : null;
+
+  let schemaOk = true, schemaNote = '';
+  if (!formatOk) {
+    schemaOk = false; schemaNote = 'N/A';
+  } else if (metaSchema === null) {
+    schemaOk = false; schemaNote = 'Missing schema_version field';
+  } else if (currentSchema !== null && metaSchema > currentSchema) {
+    schemaOk = false;
+    schemaNote = 'v' + metaSchema + ' is newer than firmware (v' + currentSchema + ') — update firmware first';
+  } else if (currentSchema !== null && metaSchema < currentSchema) {
+    schemaOk = true;
+    schemaNote = 'v' + metaSchema + ' — will migrate to v' + currentSchema;
+  } else {
+    schemaOk = true;
+    schemaNote = 'v' + (metaSchema !== null ? metaSchema : '?') + ' — compatible';
+  }
+
+  const allOk = formatOk && schemaOk;
+  g_restore_backup = allOk ? parsed : null;
+  if (importBtn) importBtn.disabled = !allOk;
+
+  function checkRow(label, ok, note) {
+    const c = ok ? 'var(--color-success)' : 'var(--color-alarm)';
+    return '<div style="display:flex;gap:8px;padding:3px 0;font-size:12px;border-bottom:1px solid var(--border-subtle)">' +
+      '<span style="color:' + c + ';font-weight:700;min-width:14px">' + (ok ? 'OK' : 'FAIL') + '</span>' +
+      '<span style="color:var(--text-muted);min-width:130px">' + escHtml(label) + '</span>' +
+      '<span style="color:var(--text-primary);flex:1">' + escHtml(note) + '</span>' +
+      '</div>';
+  }
+
+  metaEl.innerHTML =
+    '<div style="border:1px solid var(--border-subtle);border-radius:6px;padding:10px 12px;margin-top:8px">' +
+      '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:6px">Backup Details</div>' +
+      '<div class="diag-kv-grid" style="margin-bottom:10px">' +
+        kvRow('Exported',      metaExported              || 'unknown') +
+        kvRow('Schema',        metaSchema !== null ? 'v' + metaSchema : 'unknown') +
+        kvRow('Firmware',      metaFirmware              || 'unknown') +
+        kvRow('Source device', metaDevice                || 'unknown') +
+      '</div>' +
+      '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:4px">Validation</div>' +
+      checkRow('Format',         formatOk, formatOk ? 'topband-bms-config' : 'Not a TopBand BMS backup — wrong _format') +
+      checkRow('Schema compat',  schemaOk, schemaNote) +
+      checkRow('Value ranges',   allOk,    allOk ? 'Will be checked on import' : 'N/A') +
+      '<div style="margin-top:8px;font-size:12px;font-weight:600;color:' +
+        (allOk ? 'var(--color-success)' : 'var(--color-alarm)') + '">' +
+        (allOk ? 'File looks valid — click "Import backup" to continue.' : 'Import blocked — see failures above.') +
+      '</div>' +
+    '</div>';
+}
+
+function startRestore() {
+  if (!g_restore_backup) return;
+  const overlay = document.getElementById('modal-overlay');
+  const confirmBtn = document.getElementById('modal-confirm');
+  const schema   = (g_restore_backup.config && g_restore_backup.config.schema_version !== undefined)
+                   ? g_restore_backup.config.schema_version : '?';
+  const exported = g_restore_backup._exported || 'unknown date';
+  const device   = g_restore_backup._device   || 'unknown';
+
+  document.getElementById('modal-title').textContent = 'Import Backup';
+  document.getElementById('modal-body').innerHTML = `
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+      Exported: <strong>${escHtml(exported)}</strong>
+      &nbsp;|&nbsp; Schema: v${escHtml(String(schema))}
+      &nbsp;|&nbsp; From device: ${escHtml(device)}
+    </p>
+    <p style="font-size:13px;font-weight:600;margin-bottom:6px">Import scope:</p>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;cursor:pointer">
+      <input type="radio" name="restore_scope" value="settings" checked style="margin-top:2px;width:auto">
+      <span><strong>Settings only</strong> (recommended)<br>
+        <span style="font-size:12px;color:var(--text-muted)">Imports all settings except hardware configuration (board preset, pin assignments, RS485). Safe to use when moving settings to a different device.</span>
+      </span>
+    </label>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;cursor:pointer">
+      <input type="radio" name="restore_scope" value="hardware" style="margin-top:2px;width:auto">
+      <span><strong>Settings + Hardware</strong><br>
+        <span style="font-size:12px;color:var(--text-muted)">Also imports board preset and pin assignments. Only enable this if the target device uses the same board and wiring as the backup source. On different hardware this can disable RS485/CAN.</span>
+      </span>
+    </label>
+    <div style="background:color-mix(in srgb,var(--color-warning,#E8A44A) 12%,transparent);border:1px solid color-mix(in srgb,var(--color-warning,#E8A44A) 40%,transparent);border-radius:6px;padding:8px 10px;font-size:12px">
+      Passwords (MQTT, authentication) are NOT included in backups. You will need to re-enter them after the device reboots.
+    </div>
+  `;
+  confirmBtn.textContent = 'Import & Reboot';
+  confirmBtn.style.display = '';
+  overlay.style.display = 'flex';
+
+  confirmBtn.onclick = () => {
+    overlay.style.display = 'none';
+    const scopeEl = document.querySelector('input[name="restore_scope"]:checked');
+    const includeHardware = scopeEl && scopeEl.value === 'hardware';
+    doRestore(includeHardware);
+  };
+}
+
+async function doRestore(includeHardware) {
+  const statusEl = document.getElementById('restore-status');
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = 'Importing…'; }
+
+  try {
+    const r = await apiFetch('/api/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backup: g_restore_backup, include_hardware: includeHardware }),
+    });
+    if (!r) return;
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showPageOverlay('Import successful — rebooting…',
+        'The gateway is applying imported settings. After it restarts, re-enter any passwords (MQTT, authentication) that were not included in the backup.');
+      setTimeout(pollUntilOnline, 4000);
+    } else {
+      if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = data.error || 'Import failed.'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── MQTT connection test ─────────────────────────────────────────────────────── */
+
+let g_mqtt_test_poll = null;
+
+async function testMqttConnection() {
+  const resultEl = document.getElementById('mqtt-test-result');
+  if (!resultEl) return;
+
+  // Stop any running poll.
+  if (g_mqtt_test_poll) { clearInterval(g_mqtt_test_poll); g_mqtt_test_poll = null; }
+
+  // Read current form values (unsaved).
+  const host      = (document.getElementById('cfg-mqtt_host')       || {}).value || '';
+  const port      = Number((document.getElementById('cfg-mqtt_port') || {}).value || 1883);
+  const user      = (document.getElementById('cfg-mqtt_user')        || {}).value || '';
+  const passEl    = document.getElementById('cfg-mqtt_pass');
+  const pass      = passEl ? passEl.value : '';
+  const baseTopic = (document.getElementById('cfg-mqtt_base_topic')  || {}).value || 'topband-bms';
+
+  if (!host) {
+    resultEl.style.display = 'block';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.textContent = 'Enter a broker host first.';
+    return;
+  }
+
+  resultEl.style.display = 'block';
+  resultEl.style.borderColor = 'var(--border)';
+  resultEl.style.color = 'var(--text-muted)';
+  resultEl.innerHTML = '<span class="spinner"></span> Testing connection…' +
+    (pass === '' ? ' <em style="font-size:11px">(using saved password)</em>' : '');
+
+  try {
+    const r = await apiFetch('/api/mqtt/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host, port, user, pass, base_topic: baseTopic }),
+    });
+    if (!r) return;
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      resultEl.style.color = 'var(--color-alarm)';
+      resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = d.error || 'Failed to start test.';
+      return;
+    }
+  } catch (e) {
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.textContent = 'Network error: ' + e.message;
+    return;
+  }
+
+  // Poll until done (max ~12 s at 1 s intervals).
+  let polls = 0;
+  g_mqtt_test_poll = setInterval(async function() {
+    polls++;
+    if (polls > 12) {
+      clearInterval(g_mqtt_test_poll); g_mqtt_test_poll = null;
+      resultEl.style.color = 'var(--color-alarm)'; resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = 'Test timed out — no result after 12 s.';
+      return;
+    }
+    try {
+      const r2 = await apiFetch('/api/mqtt/test');
+      if (!r2) return;
+      const d = await r2.json();
+      if (d.status === 'running') return;  // still in progress
+      clearInterval(g_mqtt_test_poll); g_mqtt_test_poll = null;
+      if (d.status === 'ok') {
+        resultEl.style.color = 'var(--color-success)';
+        resultEl.style.borderColor = 'var(--color-success)';
+        resultEl.textContent = d.message || 'Connection OK';
+      } else {
+        resultEl.style.color = 'var(--color-alarm)';
+        resultEl.style.borderColor = 'var(--color-alarm)';
+        const stageLabel = { tcp: 'TCP connect', auth: 'Authentication', publish: 'Publish' };
+        const prefix = stageLabel[d.stage] ? stageLabel[d.stage] + ' failed — ' : '';
+        resultEl.textContent = prefix + (d.message || 'Test failed');
+      }
+    } catch (e) { /* ignore transient poll errors */ }
+  }, 1000);
+}
+
 /* ── HA Discovery ───────────────────────────────────────────────────────────── */
 async function sendHaDiscovery() {
-  const msg = document.getElementById('feedback-msg');
-  if (msg) { msg.className = 'feedback-msg'; msg.textContent = 'Sending HA discovery…'; }
+  const msg = document.getElementById('mqtt-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
   try {
     const r = await apiFetch('/api/svc/ha/discovery/send', { method: 'POST' });
     if (!r) return;
     if (r.ok) {
-      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'HA discovery sent.'; }
+      showToast('HA discovery sent');
     } else {
       const data = await r.json().catch(() => ({}));
-      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Failed to send HA discovery.'; }
+      const errText = data.error || 'Failed to send HA discovery';
+      showToast(errText, 'warn');
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = errText; }
     }
   } catch (e) {
-    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+    showToast('Network error: ' + e.message, 'warn');
   }
 }
 
