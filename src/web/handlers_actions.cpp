@@ -128,20 +128,30 @@ esp_err_t handle_restart(httpd_req_t* req) {
 esp_err_t handle_backup(httpd_req_t* req) {
   const Config& cfg = app::get_config();
 
-  // ISO-8601 timestamp for the metadata wrapper. Use epoch 0 if time not set.
+  // ISO-8601 timestamp and YYYYMMDD date tag for the filename.
   time_t now = time(nullptr);
-  char ts_buf[32] = "1970-01-01T00:00:00Z";
+  char ts_buf[32]   = "1970-01-01T00:00:00Z";
+  char date_str[10] = "19700101";
   if (now > 1000000) {
     struct tm tm_info = {};
     gmtime_r(&now, &tm_info);
-    strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_info);
+    strftime(ts_buf,   sizeof(ts_buf),   "%Y-%m-%dT%H:%M:%SZ", &tm_info);
+    strftime(date_str, sizeof(date_str), "%Y%m%d",              &tm_info);
   }
+
+  // MAC-4 tag: last 2 bytes of STA MAC, upper-case hex (matches runtime identity).
+  uint8_t mac[6] = {};
+  esp_wifi_get_mac(WIFI_IF_STA, mac);
+  char mac4[8];
+  snprintf(mac4, sizeof(mac4), "%02X%02X", mac[4], mac[5]);
 
   // Build the wrapped backup document.
   JsonDocument doc;
   doc["_format"]   = "topband-bms-config";
   doc["_version"]  = "v3.0";
   doc["_exported"] = ts_buf;
+  doc["_firmware"] = FW_VERSION_FULL;
+  doc["_device"]   = mac4;
 
   JsonObject cfg_obj = doc["config"].to<JsonObject>();
   JsonDocument cfg_doc;
@@ -159,9 +169,12 @@ esp_err_t handle_backup(httpd_req_t* req) {
   }
   size_t n = serializeJsonPretty(doc, buf, est);
 
+  char disp_hdr[96];
+  snprintf(disp_hdr, sizeof(disp_hdr),
+           "attachment; filename=\"topband-config-%s-%s.json\"",
+           mac4, date_str);
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Content-Disposition",
-                     "attachment; filename=\"topband-config.json\"");
+  httpd_resp_set_hdr(req, "Content-Disposition", disp_hdr);
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
   esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)n);
