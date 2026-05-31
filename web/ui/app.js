@@ -1605,8 +1605,10 @@ function renderSettingsMqtt() {
         <div id="mqtt-feedback" class="feedback-msg"></div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="saveMqttSection()">Save</button>
+          <button class="btn btn-secondary" onclick="testMqttConnection()">Test connection</button>
           <button class="btn btn-secondary" onclick="sendHaDiscovery()">Re-send HA Discovery</button>
         </div>
+        <div id="mqtt-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
       </div>
     </div>
   `;
@@ -1622,13 +1624,13 @@ function renderSettingsAccount() {
           ${c.auth_enabled
             ? `<div style="display:flex;align-items:center;gap:12px">
                  <span class="charging-pill pill-charging">Enabled</span>
-                 <button class="btn btn-secondary" style="font-size:12px;padding:4px 12px"
+                 <button class="btn btn-secondary btn-sm"
                          onclick="confirmDisableAuth()">Disable</button>
                </div>`
             : (c.auth_hash
               ? `<div style="display:flex;align-items:center;gap:12px">
                    <span class="charging-pill pill-discharging">Disabled</span>
-                   <button class="btn btn-primary" style="font-size:12px;padding:4px 12px"
+                   <button class="btn btn-primary btn-sm"
                            onclick="enableAuth()">Enable</button>
                  </div>`
               : `<div style="display:flex;align-items:center;gap:12px">
@@ -1729,6 +1731,22 @@ function renderSettingsSystem() {
         <div class="btn-row">
           <button class="btn btn-secondary" onclick="downloadBackup()">Download Backup</button>
           <button class="btn btn-secondary" onclick="confirmRestart()">Restart Gateway</button>
+        </div>
+        <div style="margin-top:20px">
+          <div class="settings-section-title" style="font-size:13px;margin-bottom:8px">Import Backup</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            Restore settings from a previously downloaded backup file.
+            Passwords (MQTT, authentication) are NOT included in backups and must be re-entered after import.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="file" id="restore-file-input" accept=".json" style="display:none" onchange="restoreFileChanged(event)">
+            <button class="btn btn-secondary" onclick="document.getElementById('restore-file-input').click()">Choose backup file</button>
+            <span id="restore-file-info" style="font-size:12px;color:var(--text-muted)">No file selected</span>
+          </div>
+          <div class="btn-row" style="margin-top:10px">
+            <button id="restore-import-btn" class="btn btn-secondary" disabled onclick="startRestore()">Import backup</button>
+          </div>
+          <div id="restore-status" class="feedback-msg" style="margin-top:8px"></div>
         </div>
       </div>
     </div>
@@ -2538,7 +2556,7 @@ async function renderAlerts() {
           ).join('')}
         </div>
         <span id="alerts-count" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
-        <button class="btn btn-danger" style="font-size:12px;padding:4px 12px" onclick="clearAllAlerts()">Clear all</button>
+        <button class="btn btn-danger btn-sm" onclick="clearAllAlerts()">Clear all</button>
       </div>
       <div id="alerts-list" style="border:1px solid var(--border-subtle);border-radius:var(--radius)">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
@@ -2862,21 +2880,206 @@ async function setAuthEnabled(enabled) {
   }
 }
 
+/* ── Config import (restore) ─────────────────────────────────────────────────── */
+
+let g_restore_backup = null;  // parsed backup JSON object
+
+function restoreFileChanged(event) {
+  const file = event.target.files && event.target.files[0];
+  const infoEl = document.getElementById('restore-file-info');
+  const importBtn = document.getElementById('restore-import-btn');
+  const statusEl = document.getElementById('restore-status');
+  g_restore_backup = null;
+  if (importBtn) importBtn.disabled = true;
+  if (!file) { if (infoEl) infoEl.textContent = 'No file selected'; return; }
+  if (infoEl) infoEl.textContent = file.name;
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = ''; }
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (parsed._format !== 'topband-bms-config') {
+        if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Not a TopBand BMS config backup file.'; }
+        return;
+      }
+      g_restore_backup = parsed;
+      if (importBtn) importBtn.disabled = false;
+      if (statusEl) { statusEl.className = 'feedback-msg ok'; statusEl.textContent = 'Backup file looks valid. Click "Import backup" to continue.'; }
+    } catch (err) {
+      if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Invalid JSON — not a valid backup file.'; }
+    }
+  };
+  reader.readAsText(file);
+}
+
+function startRestore() {
+  if (!g_restore_backup) return;
+  const overlay = document.getElementById('modal-overlay');
+  const confirmBtn = document.getElementById('modal-confirm');
+  const schema = (g_restore_backup.config && g_restore_backup.config.schema_version) || '?';
+  const exported = g_restore_backup._exported || 'unknown date';
+
+  document.getElementById('modal-title').textContent = 'Import Backup';
+  document.getElementById('modal-body').innerHTML = `
+    <p style="font-size:13px;margin-bottom:10px">
+      Backup exported: <strong>${escHtml(exported)}</strong> &nbsp; Schema: v${escHtml(String(schema))}
+    </p>
+    <p style="font-size:13px;font-weight:600;margin-bottom:6px">Import scope:</p>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;cursor:pointer">
+      <input type="radio" name="restore_scope" value="settings" checked style="margin-top:2px;width:auto">
+      <span><strong>Settings only</strong> (recommended)<br>
+        <span style="font-size:12px;color:var(--text-muted)">Imports all settings except hardware configuration (board preset, pin assignments, RS485). Safe to use when moving settings to a different device.</span>
+      </span>
+    </label>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;cursor:pointer">
+      <input type="radio" name="restore_scope" value="hardware" style="margin-top:2px;width:auto">
+      <span><strong>Settings + Hardware</strong><br>
+        <span style="font-size:12px;color:var(--text-muted)">Also imports board preset and pin assignments. Only enable this if the target device uses the same board and wiring as the backup source. On different hardware this can disable RS485/CAN.</span>
+      </span>
+    </label>
+    <div style="background:color-mix(in srgb,var(--color-warning,#E8A44A) 12%,transparent);border:1px solid color-mix(in srgb,var(--color-warning,#E8A44A) 40%,transparent);border-radius:6px;padding:8px 10px;font-size:12px">
+      Passwords (MQTT, authentication) are NOT included in backups. You will need to re-enter them after the device reboots.
+    </div>
+  `;
+  confirmBtn.textContent = 'Import & Reboot';
+  confirmBtn.style.display = '';
+  overlay.style.display = 'flex';
+
+  confirmBtn.onclick = () => {
+    overlay.style.display = 'none';
+    const scopeEl = document.querySelector('input[name="restore_scope"]:checked');
+    const includeHardware = scopeEl && scopeEl.value === 'hardware';
+    doRestore(includeHardware);
+  };
+}
+
+async function doRestore(includeHardware) {
+  const statusEl = document.getElementById('restore-status');
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = 'Importing…'; }
+
+  try {
+    const r = await apiFetch('/api/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backup: g_restore_backup, include_hardware: includeHardware }),
+    });
+    if (!r) return;
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showPageOverlay('Import successful — rebooting…',
+        'The gateway is applying imported settings. After it restarts, re-enter any passwords (MQTT, authentication) that were not included in the backup.');
+      setTimeout(pollUntilOnline, 4000);
+    } else {
+      if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = data.error || 'Import failed.'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── MQTT connection test ─────────────────────────────────────────────────────── */
+
+let g_mqtt_test_poll = null;
+
+async function testMqttConnection() {
+  const resultEl = document.getElementById('mqtt-test-result');
+  if (!resultEl) return;
+
+  // Stop any running poll.
+  if (g_mqtt_test_poll) { clearInterval(g_mqtt_test_poll); g_mqtt_test_poll = null; }
+
+  // Read current form values (unsaved).
+  const host      = (document.getElementById('cfg-mqtt_host')       || {}).value || '';
+  const port      = Number((document.getElementById('cfg-mqtt_port') || {}).value || 1883);
+  const user      = (document.getElementById('cfg-mqtt_user')        || {}).value || '';
+  const passEl    = document.getElementById('cfg-mqtt_pass');
+  const pass      = passEl ? passEl.value : '';
+  const baseTopic = (document.getElementById('cfg-mqtt_base_topic')  || {}).value || 'topband-bms';
+
+  if (!host) {
+    resultEl.style.display = 'block';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.textContent = 'Enter a broker host first.';
+    return;
+  }
+
+  resultEl.style.display = 'block';
+  resultEl.style.borderColor = 'var(--border)';
+  resultEl.style.color = 'var(--text-muted)';
+  resultEl.innerHTML = '<span class="spinner"></span> Testing connection…' +
+    (pass === '' ? ' <em style="font-size:11px">(using saved password)</em>' : '');
+
+  try {
+    const r = await apiFetch('/api/mqtt/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host, port, user, pass, base_topic: baseTopic }),
+    });
+    if (!r) return;
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      resultEl.style.color = 'var(--color-alarm)';
+      resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = d.error || 'Failed to start test.';
+      return;
+    }
+  } catch (e) {
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.textContent = 'Network error: ' + e.message;
+    return;
+  }
+
+  // Poll until done (max ~12 s at 1 s intervals).
+  let polls = 0;
+  g_mqtt_test_poll = setInterval(async function() {
+    polls++;
+    if (polls > 12) {
+      clearInterval(g_mqtt_test_poll); g_mqtt_test_poll = null;
+      resultEl.style.color = 'var(--color-alarm)'; resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = 'Test timed out — no result after 12 s.';
+      return;
+    }
+    try {
+      const r2 = await apiFetch('/api/mqtt/test');
+      if (!r2) return;
+      const d = await r2.json();
+      if (d.status === 'running') return;  // still in progress
+      clearInterval(g_mqtt_test_poll); g_mqtt_test_poll = null;
+      if (d.status === 'ok') {
+        resultEl.style.color = 'var(--color-success)';
+        resultEl.style.borderColor = 'var(--color-success)';
+        resultEl.textContent = d.message || 'Connection OK';
+      } else {
+        resultEl.style.color = 'var(--color-alarm)';
+        resultEl.style.borderColor = 'var(--color-alarm)';
+        const stageLabel = { tcp: 'TCP connect', auth: 'Authentication', publish: 'Publish' };
+        const prefix = stageLabel[d.stage] ? stageLabel[d.stage] + ' failed — ' : '';
+        resultEl.textContent = prefix + (d.message || 'Test failed');
+      }
+    } catch (e) { /* ignore transient poll errors */ }
+  }, 1000);
+}
+
 /* ── HA Discovery ───────────────────────────────────────────────────────────── */
 async function sendHaDiscovery() {
-  const msg = document.getElementById('feedback-msg');
-  if (msg) { msg.className = 'feedback-msg'; msg.textContent = 'Sending HA discovery…'; }
+  const msg = document.getElementById('mqtt-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
   try {
     const r = await apiFetch('/api/svc/ha/discovery/send', { method: 'POST' });
     if (!r) return;
     if (r.ok) {
-      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'HA discovery sent.'; }
+      showToast('HA discovery sent');
     } else {
       const data = await r.json().catch(() => ({}));
-      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Failed to send HA discovery.'; }
+      const errText = data.error || 'Failed to send HA discovery';
+      showToast(errText, 'warn');
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = errText; }
     }
   } catch (e) {
-    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+    showToast('Network error: ' + e.message, 'warn');
   }
 }
 
