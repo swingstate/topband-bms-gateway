@@ -566,14 +566,17 @@ a { text-decoration: none; color: inherit; }
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 8px 18px;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 600;
+  min-width: 200px;
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s, opacity 0.15s;
+  white-space: nowrap;
 }
 .btn-primary   { background: var(--color-success); color: #fff; }
 .btn-primary:hover { opacity: 0.85; }
@@ -581,8 +584,6 @@ a { text-decoration: none; color: inherit; }
 .btn-secondary:hover { background: var(--bg-card-hover); }
 .btn-danger    { background: var(--color-alarm); color: #fff; }
 .btn-danger:hover { opacity: 0.85; }
-/* Compact variant for inline/contextual buttons (e.g. auth toggle, clear-all). */
-.btn-sm { padding: 4px 12px; font-size: 12px; }
 
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
 
@@ -673,6 +674,7 @@ a { text-decoration: none; color: inherit; }
   line-height: 1.6;
 }
 .modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-footer .btn { flex: 1; min-width: 0; }
 
 /* ── Full-page overlay (restart / factory reset) ───────────────────────────── */
 .full-overlay {

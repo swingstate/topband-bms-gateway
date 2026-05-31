@@ -1624,13 +1624,13 @@ function renderSettingsAccount() {
           ${c.auth_enabled
             ? `<div style="display:flex;align-items:center;gap:12px">
                  <span class="charging-pill pill-charging">Enabled</span>
-                 <button class="btn btn-secondary btn-sm"
+                 <button class="btn btn-secondary"
                          onclick="confirmDisableAuth()">Disable</button>
                </div>`
             : (c.auth_hash
               ? `<div style="display:flex;align-items:center;gap:12px">
                    <span class="charging-pill pill-discharging">Disabled</span>
-                   <button class="btn btn-primary btn-sm"
+                   <button class="btn btn-primary"
                            onclick="enableAuth()">Enable</button>
                  </div>`
               : `<div style="display:flex;align-items:center;gap:12px">
@@ -2556,7 +2556,7 @@ async function renderAlerts() {
           ).join('')}
         </div>
         <span id="alerts-count" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
-        <button class="btn btn-danger btn-sm" onclick="clearAllAlerts()">Clear all</button>
+        <button class="btn btn-danger" onclick="clearAllAlerts()">Clear all</button>
       </div>
       <div id="alerts-list" style="border:1px solid var(--border-subtle);border-radius:var(--radius)">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
