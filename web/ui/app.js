@@ -1743,6 +1743,7 @@ function renderSettingsSystem() {
             <button class="btn btn-secondary" onclick="document.getElementById('restore-file-input').click()">Choose backup file</button>
             <span id="restore-file-info" style="font-size:12px;color:var(--text-muted)">No file selected</span>
           </div>
+          <div id="restore-metadata"></div>
           <div class="btn-row" style="margin-top:10px">
             <button id="restore-import-btn" class="btn btn-secondary" disabled onclick="startRestore()">Import backup</button>
           </div>
@@ -2886,44 +2887,110 @@ let g_restore_backup = null;  // parsed backup JSON object
 
 function restoreFileChanged(event) {
   const file = event.target.files && event.target.files[0];
-  const infoEl = document.getElementById('restore-file-info');
+  const infoEl   = document.getElementById('restore-file-info');
   const importBtn = document.getElementById('restore-import-btn');
+  const metaEl   = document.getElementById('restore-metadata');
   const statusEl = document.getElementById('restore-status');
   g_restore_backup = null;
   if (importBtn) importBtn.disabled = true;
+  if (metaEl)   metaEl.innerHTML = '';
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = ''; }
   if (!file) { if (infoEl) infoEl.textContent = 'No file selected'; return; }
   if (infoEl) infoEl.textContent = file.name;
-  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = ''; }
 
   const reader = new FileReader();
   reader.onload = function(e) {
+    let parsed;
     try {
-      const parsed = JSON.parse(e.target.result);
-      if (parsed._format !== 'topband-bms-config') {
-        if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Not a TopBand BMS config backup file.'; }
-        return;
-      }
-      g_restore_backup = parsed;
-      if (importBtn) importBtn.disabled = false;
-      if (statusEl) { statusEl.className = 'feedback-msg ok'; statusEl.textContent = 'Backup file looks valid. Click "Import backup" to continue.'; }
-    } catch (err) {
-      if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Invalid JSON — not a valid backup file.'; }
+      parsed = JSON.parse(e.target.result);
+    } catch (_) {
+      if (metaEl) metaEl.innerHTML =
+        '<p style="color:var(--color-alarm);font-size:13px;margin-top:8px">Invalid JSON — not a valid backup file.</p>';
+      return;
     }
+    renderRestoreMetadata(parsed);
   };
   reader.readAsText(file);
+}
+
+function renderRestoreMetadata(parsed) {
+  const metaEl    = document.getElementById('restore-metadata');
+  const importBtn = document.getElementById('restore-import-btn');
+  if (!metaEl) return;
+
+  const formatOk   = (parsed._format === 'topband-bms-config');
+  const metaExported = parsed._exported || null;
+  const metaSchema   = (parsed.config && parsed.config.schema_version !== undefined)
+                       ? parsed.config.schema_version : null;
+  const metaFirmware = parsed._firmware || null;
+  const metaDevice   = parsed._device   || null;
+
+  const currentSchema = g_config ? g_config.schema_version : null;
+
+  let schemaOk = true, schemaNote = '';
+  if (!formatOk) {
+    schemaOk = false; schemaNote = 'N/A';
+  } else if (metaSchema === null) {
+    schemaOk = false; schemaNote = 'Missing schema_version field';
+  } else if (currentSchema !== null && metaSchema > currentSchema) {
+    schemaOk = false;
+    schemaNote = 'v' + metaSchema + ' is newer than firmware (v' + currentSchema + ') — update firmware first';
+  } else if (currentSchema !== null && metaSchema < currentSchema) {
+    schemaOk = true;
+    schemaNote = 'v' + metaSchema + ' — will migrate to v' + currentSchema;
+  } else {
+    schemaOk = true;
+    schemaNote = 'v' + (metaSchema !== null ? metaSchema : '?') + ' — compatible';
+  }
+
+  const allOk = formatOk && schemaOk;
+  g_restore_backup = allOk ? parsed : null;
+  if (importBtn) importBtn.disabled = !allOk;
+
+  function checkRow(label, ok, note) {
+    const c = ok ? 'var(--color-success)' : 'var(--color-alarm)';
+    return '<div style="display:flex;gap:8px;padding:3px 0;font-size:12px;border-bottom:1px solid var(--border-subtle)">' +
+      '<span style="color:' + c + ';font-weight:700;min-width:14px">' + (ok ? 'OK' : 'FAIL') + '</span>' +
+      '<span style="color:var(--text-muted);min-width:130px">' + escHtml(label) + '</span>' +
+      '<span style="color:var(--text-primary);flex:1">' + escHtml(note) + '</span>' +
+      '</div>';
+  }
+
+  metaEl.innerHTML =
+    '<div style="border:1px solid var(--border-subtle);border-radius:6px;padding:10px 12px;margin-top:8px">' +
+      '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:6px">Backup Details</div>' +
+      '<div class="diag-kv-grid" style="margin-bottom:10px">' +
+        kvRow('Exported',      metaExported              || 'unknown') +
+        kvRow('Schema',        metaSchema !== null ? 'v' + metaSchema : 'unknown') +
+        kvRow('Firmware',      metaFirmware              || 'unknown') +
+        kvRow('Source device', metaDevice                || 'unknown') +
+      '</div>' +
+      '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:4px">Validation</div>' +
+      checkRow('Format',         formatOk, formatOk ? 'topband-bms-config' : 'Not a TopBand BMS backup — wrong _format') +
+      checkRow('Schema compat',  schemaOk, schemaNote) +
+      checkRow('Value ranges',   allOk,    allOk ? 'Will be checked on import' : 'N/A') +
+      '<div style="margin-top:8px;font-size:12px;font-weight:600;color:' +
+        (allOk ? 'var(--color-success)' : 'var(--color-alarm)') + '">' +
+        (allOk ? 'File looks valid — click "Import backup" to continue.' : 'Import blocked — see failures above.') +
+      '</div>' +
+    '</div>';
 }
 
 function startRestore() {
   if (!g_restore_backup) return;
   const overlay = document.getElementById('modal-overlay');
   const confirmBtn = document.getElementById('modal-confirm');
-  const schema = (g_restore_backup.config && g_restore_backup.config.schema_version) || '?';
+  const schema   = (g_restore_backup.config && g_restore_backup.config.schema_version !== undefined)
+                   ? g_restore_backup.config.schema_version : '?';
   const exported = g_restore_backup._exported || 'unknown date';
+  const device   = g_restore_backup._device   || 'unknown';
 
   document.getElementById('modal-title').textContent = 'Import Backup';
   document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;margin-bottom:10px">
-      Backup exported: <strong>${escHtml(exported)}</strong> &nbsp; Schema: v${escHtml(String(schema))}
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+      Exported: <strong>${escHtml(exported)}</strong>
+      &nbsp;|&nbsp; Schema: v${escHtml(String(schema))}
+      &nbsp;|&nbsp; From device: ${escHtml(device)}
     </p>
     <p style="font-size:13px;font-weight:600;margin-bottom:6px">Import scope:</p>
     <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;cursor:pointer">
