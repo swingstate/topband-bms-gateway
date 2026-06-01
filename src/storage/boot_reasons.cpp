@@ -50,49 +50,48 @@ namespace storage::boot_reasons {
 void record_this_boot() {
   esp_reset_reason_t reason = esp_reset_reason();
 
-  // Only a deliberate software restart (esp_restart() → ESP_RST_SW) counts
-  // toward the rapid-reset tally.  Every other reset reason is excluded:
-  //
-  //  POWERON / BROWNOUT: mains power event.  A mains-powered BMS gateway must
-  //    survive any number of power outages without losing WiFi/config.
-  //
-  //  PANIC / INT_WDT / TASK_WDT / WDT: firmware crash.  A crashing device must
-  //    NOT also lose its WiFi credentials — that compounds one failure into two
-  //    and prevents the operator from reaching the Web UI to diagnose the crash.
-  //    Root-cause P3: TLS-under-load crash (ESP_RST_PANIC) was filling the ring
-  //    and triggering a WiFi wipe.
-  //
-  //  All other reasons (UNKNOWN, EXT, DEEPSLEEP, SDIO): excluded conservatively.
+  // Only ESP_RST_SW (deliberate software restart via esp_restart()) counts.
+  // All other reset reasons excluded: crashes/WDT never wipe config, and
+  // POWERON/BROWNOUT are indistinguishable on ESP32-S3.
   if (reason != ESP_RST_SW) {
     ESP_LOGD(TAG,
-             "record_this_boot: reset_reason=%d — excluded from rapid-reset tally "
-             "(only ESP_RST_SW counts; crashes/WDT/power-events never wipe config)",
+             "record_this_boot: reset_reason=%d — excluded (only ESP_RST_SW counts)",
              (int)reason);
     return;
   }
 
+  // Record this early-boot uptime (always ~100 ms — esp_timer resets on every
+  // hardware reset so we cannot observe the PREVIOUS boot's runtime here).
+  // mark_healthy() is the mechanism that clears the ring after a stable run.
   uint32_t uptime_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-
-  // A SW reset that follows a long-running boot is a normal operation restart
-  // (OTA apply, settings save). Clear the ring so routine restarts never
-  // accumulate toward the factory-reset threshold.
-  if (uptime_ms >= NORMAL_BOOT_MS) {
-    load_ring();
-    memset(g_ring, 0, sizeof(g_ring));
-    g_loaded = true;
-    save_ring();
-    ESP_LOGD(TAG, "record_this_boot: SW restart after %u ms (normal) — ring cleared",
-             (unsigned)uptime_ms);
-    return;
-  }
-
-  // Quick SW reset (uptime < 30 s): counts toward deliberate rapid-reset gesture.
-  ESP_LOGI(TAG, "record_this_boot: uptime=%u ms (SW reset, quick — counting)",
-           (unsigned)uptime_ms);
+  ESP_LOGI(TAG, "record_this_boot: uptime=%u ms (SW reset — counting)", (unsigned)uptime_ms);
   load_ring();
   memmove(g_ring, g_ring + 1, sizeof(uint32_t) * (RING_SIZE - 1));
   g_ring[RING_SIZE - 1] = uptime_ms;
   save_ring();
+}
+
+void mark_healthy() {
+  // Called by housekeeping once the device has been running stably for ≥ 30 s.
+  // Clears the rapid-reset ring so that legitimate SW restarts (OTA apply, settings
+  // save, self-test timeout) do not accumulate toward the 5x-wipe threshold across
+  // separate boot cycles.
+  //
+  // Background: record_this_boot() always sees early-boot uptime (~100 ms) because
+  // esp_timer resets on every hardware reset — there is no software-visible way to
+  // observe how long the PREVIOUS boot ran.  The "clear on long-running boot" logic
+  // must therefore run DURING the current boot, not at the next boot's record call.
+  load_ring();
+  bool had_entries = false;
+  for (size_t i = 0; i < RING_SIZE; i++) {
+    if (g_ring[i] != 0) { had_entries = true; break; }
+  }
+  if (had_entries) {
+    memset(g_ring, 0, sizeof(g_ring));
+    g_loaded = true;
+    save_ring();
+    ESP_LOGI(TAG, "mark_healthy: stable ≥30 s — rapid-reset ring cleared");
+  }
 }
 
 bool is_5x_reset_detected() {

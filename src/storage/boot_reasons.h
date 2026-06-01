@@ -7,24 +7,28 @@
 // that trigger esp_restart or 5 quick UI restart actions) clears auth + WiFi,
 // providing a no-screen recovery path.
 //
-// IMPORTANT — POWERON/BROWNOUT are explicitly excluded:
-//   On ESP32-S3, both a genuine power outage and pressing the hardware RESET/EN
-//   pin produce ESP_RST_POWERON — they are indistinguishable. A mains-powered BMS
-//   gateway must survive repeated power outages without losing credentials. Only
-//   ESP_RST_SW (software restart) counts toward the tally.
+// IMPORTANT — only ESP_RST_SW counts toward the tally.  All other reset reasons
+// (POWERON, BROWNOUT, PANIC, WDT variants, etc.) are excluded.  See boot_reasons.cpp.
 //
-// Normal-operation restarts (OTA apply, settings save) are excluded by the
-// NORMAL_BOOT_MS threshold: a SW restart that follows a long-running boot clears
-// the ring rather than accumulating it.
+// Ring clearing — the other half of the protection:
+//   Any device that has been running stably for ≥ 30 s calls mark_healthy(), which
+//   clears the ring.  This prevents legitimate SW restarts (OTA apply, settings save)
+//   from accumulating across separate boot cycles.  mark_healthy() must be called
+//   from a task that runs on every normal boot; the housekeeping task does this.
 
 namespace storage::boot_reasons {
 
-// Record this boot's uptime. Call as early as possible in the boot sequence,
-// after NVS is initialised. Only counts POWERON and BROWNOUT reset causes.
+// Record this boot's entry in the ring.  Call early in boot, after NVS init.
+// Only ESP_RST_SW entries are counted; crashes/power-events are silently ignored.
 void record_this_boot();
 
+// Must be called once the device has been running stably for ≥ 30 s (housekeeping
+// task calls this).  Clears the ring so that legitimate long-running boots never
+// accumulate toward the wipe threshold across separate restart cycles.
+void mark_healthy();
+
 // Returns true if the last 5 recorded boots all had uptime < 5 000 ms,
-// indicating the user rapid-power-cycled the device 5 times.
+// indicating the user rapid-reset the device 5 times.
 bool is_5x_reset_detected();
 
 // Clear the ring (call after acting on a 5x reset so subsequent normal boots

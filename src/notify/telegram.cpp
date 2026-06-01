@@ -6,9 +6,15 @@
 
 static const char* TAG = "notify_tg";
 
-// Maximum URL: https://api.telegram.org/bot<token>/sendMessage
-// Telegram bot tokens are ~50 chars; allow up to 120 for the token part.
-static constexpr int TG_TIMEOUT_MS = 10000;
+// Per-operation socket timeout for the Telegram HTTPS request.
+// esp_tls applies this as SO_RCVTIMEO / SO_SNDTIMEO — it is a PER-OPERATION
+// limit, not a total timeout.  A TLS 1.2 handshake has ~9 sequential socket
+// operations (ClientHello→ServerHello, Certificate, ServerKeyExchange, etc.).
+// With 10 000 ms per operation the worst-case total is ~90 s, which can hang
+// the notify task long enough to confuse the UI and risk the OTA self-test
+// window.  5 000 ms caps the worst case at ~50 s while leaving adequate
+// headroom for a congested WiFi link (normal RTT is 30-300 ms; 5 s is 16-166×).
+static constexpr int TG_TIMEOUT_MS = 5000;
 
 namespace {
 
