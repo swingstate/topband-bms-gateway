@@ -203,12 +203,20 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
   // Notifications
   if (doc["notify_telegram_enabled"].is<bool>())
     c.notify_telegram_enabled = doc["notify_telegram_enabled"];
-  // Token: only update if non-empty (leave-blank-to-keep pattern, same as passwords).
+  // Token: leave-blank-to-keep — never echoed to browser, only written when non-empty.
   if (doc["notify_telegram_token"].is<const char*>()) {
     const char* t = doc["notify_telegram_token"].as<const char*>();
     if (t && t[0] != '\0') snprintf(c.notify_telegram_token, sizeof(c.notify_telegram_token), "%s", t);
   }
-  copy_str(doc["notify_telegram_chat_id"], c.notify_telegram_chat_id);
+  // chat_id: leave-blank-to-keep for consistency with the token and other
+  // credential fields.  config_to_json echoes the stored value so an unmodified
+  // round-trip through the UI is lossless.  An empty incoming value is treated
+  // as "keep current" — a blank field in the form must not silently wipe a
+  // configured chat ID. (src/web/config_json.cpp P2 fix)
+  if (doc["notify_telegram_chat_id"].is<const char*>()) {
+    const char* cid = doc["notify_telegram_chat_id"].as<const char*>();
+    if (cid && cid[0] != '\0') snprintf(c.notify_telegram_chat_id, sizeof(c.notify_telegram_chat_id), "%s", cid);
+  }
 
   return true;
 }

@@ -375,6 +375,21 @@ struct Config_v2 {
 static_assert(sizeof(Config_v2) == sizeof(Config_v1),
     "Config_v2 / Config_v1 size mismatch — padding assumption violated");
 
+}  // namespace
+
+// Config (v3) layout check.
+// v2 baseline: 540 B.  v3 additions: bool(1) + char[80] + char[24] = 105 B.
+// One of the notify_telegram_enabled bool fills an existing 1-byte tail gap in
+// Config_v2, so the net struct growth is 104 B → 644 B (verified by compiler).
+// 644 is already 4-byte aligned; no trailing padding.
+// This assert catches field additions or reorderings that silently change the
+// NVS blob size.
+static_assert(sizeof(Config) == 644,
+    "Config size drifted from expected 644 B — if intentional, bump schema version, "
+    "add a migration, and update this assert");
+
+namespace {
+
 static bool migrate_v2_to_v3(const uint8_t* buf, size_t len, Config& out) {
   if (len < sizeof(Config_v2)) return false;
 

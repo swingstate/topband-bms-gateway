@@ -102,3 +102,45 @@ TEST_CASE("CRC-32 known-answer test: '123456789' -> 0xCBF43926", "[crc]") {
   uint32_t crc = storage::crc32(input, sizeof(input));
   REQUIRE(crc == 0xCBF43926u);
 }
+
+// ── P2 notification-field round-trip tests ────────────────────────────────────
+
+TEST_CASE("Round-trip: notify_telegram_token survives serialize/deserialize", "[config][notify]") {
+  Config src = DEFAULT_CONFIG;
+  src.notify_telegram_enabled = true;
+  // Typical Telegram bot token format: bot<id>:<hash>, usually ~46 chars.
+  strncpy(src.notify_telegram_token,
+          "bot1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabc",
+          sizeof(src.notify_telegram_token) - 1);
+  strncpy(src.notify_telegram_chat_id, "987654321",
+          sizeof(src.notify_telegram_chat_id) - 1);
+
+  Config dst{};
+  bool ok = round_trip(src, dst);
+
+  REQUIRE(ok);
+  REQUIRE(dst.notify_telegram_enabled == true);
+  REQUIRE(std::string(dst.notify_telegram_token) == "bot1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabc");
+  REQUIRE(std::string(dst.notify_telegram_chat_id) == "987654321");
+}
+
+TEST_CASE("Round-trip: empty notify fields survive serialize/deserialize", "[config][notify]") {
+  // DEFAULT_CONFIG has notify disabled and empty token/chat_id.
+  Config dst{};
+  bool ok = round_trip(DEFAULT_CONFIG, dst);
+
+  REQUIRE(ok);
+  REQUIRE(dst.notify_telegram_enabled == false);
+  REQUIRE(dst.notify_telegram_token[0] == '\0');
+  REQUIRE(dst.notify_telegram_chat_id[0] == '\0');
+}
+
+TEST_CASE("Config struct is 644 bytes (v3 layout: 540 + 104 net)", "[config]") {
+  // v2 baseline: 540 B (verified by static_assert in config.cpp).
+  // v3 adds: bool(1) + char[80] + char[24] = 105 B payload; one bool fills an
+  // existing tail gap so net struct growth is 104 B → 644 B.  644 is 4-byte
+  // aligned; no trailing padding.  This test mirrors the static_assert in
+  // config.cpp and catches ABI drift between the host build and the target.
+  REQUIRE(sizeof(Config) == 644);
+  REQUIRE(sizeof(Config) > sizeof(uint16_t));   // at least schema_version
+}
