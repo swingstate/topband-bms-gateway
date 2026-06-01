@@ -1030,6 +1030,8 @@ const SETTINGS_SECTIONS = [
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg>' },
+  { id: 'notifications', label: 'Notify',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' },
   { id: 'account', label: 'Account',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
   { id: 'system',  label: 'System',
@@ -1089,8 +1091,9 @@ function renderSettingsSection(id) {
     case 'hardware': content.innerHTML = renderSettingsHardware(); break;
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
-    case 'mqtt':     content.innerHTML = renderSettingsMqtt();     break;
-    case 'account':  content.innerHTML = renderSettingsAccount();  break;
+    case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
+    case 'notifications': content.innerHTML = renderSettingsNotifications(); break;
+    case 'account':       content.innerHTML = renderSettingsAccount();       break;
     case 'system':   content.innerHTML = renderSettingsSystem();   break;
     case 'reset':    content.innerHTML = renderSettingsReset();    break;
     default:         content.innerHTML = renderSettingsBattery();  break;
@@ -1612,6 +1615,182 @@ function renderSettingsMqtt() {
       </div>
     </div>
   `;
+}
+
+/* ── Notifications section ──────────────────────────────────────────────────── */
+
+function renderSettingsNotifications() {
+  const c = g_config;
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">Telegram</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Receive alerts from this gateway directly in a Telegram chat.
+          <strong>Setup:</strong>
+          (1) Message <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
+          and run <code>/newbot</code> to get a bot token.
+          (2) Start a chat with your new bot (or add it to a group).
+          (3) Find your Chat ID using
+          <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>
+          (for personal chats) or
+          <a href="https://t.me/getidsbot" target="_blank" rel="noopener">@getidsbot</a>
+          (for groups — use the negative group ID).
+        </p>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-notify_telegram_enabled"
+                 ${c.notify_telegram_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-notify_telegram_enabled" style="margin:0">Enable Telegram notifications</label>
+        </div>
+        <div class="form-group">
+          <label>Bot Token</label>
+          <input type="password" id="cfg-notify_telegram_token" value=""
+                 autocomplete="new-password" placeholder="Leave blank to keep current">
+          <div class="help">Get from BotFather — format: <code>1234567890:ABCDef...</code></div>
+        </div>
+        <div class="form-group">
+          <label>Chat ID</label>
+          <input type="text" id="cfg-notify_telegram_chat_id"
+                 value="${escHtml(c.notify_telegram_chat_id || '')}"
+                 placeholder="e.g. 123456789 or -1001234567890">
+          <div class="help">Your personal ID or a group ID (negative number for groups)</div>
+        </div>
+        <div id="notify-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveNotificationsSection()">Save</button>
+          <button class="btn btn-secondary" onclick="testTelegramNotification()">Send test notification</button>
+        </div>
+        <div id="notify-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
+      </div>
+    </div>
+  `;
+}
+
+async function saveNotificationsSection() {
+  const msg = document.getElementById('notify-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash    = '';
+  cfg.mqtt_pass_obf = '';
+
+  const fields = [
+    ['cfg-notify_telegram_enabled', 'notify_telegram_enabled', 'bool'],
+    ['cfg-notify_telegram_chat_id', 'notify_telegram_chat_id', 'str'],
+  ];
+  fields.forEach(([id, key, type]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (type === 'bool') cfg[key] = el.checked;
+    if (type === 'str')  cfg[key] = el.value;
+  });
+
+  // Token: blank means keep existing; non-blank means update.
+  const tokenEl = document.getElementById('cfg-notify_telegram_token');
+  cfg.notify_telegram_token = (tokenEl && tokenEl.value.length > 0) ? tokenEl.value : '';
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (tokenEl) tokenEl.value = '';
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+    } else {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── Telegram notification test ─────────────────────────────────────────────── */
+
+let g_notify_test_poll = null;
+
+async function testTelegramNotification() {
+  const resultEl = document.getElementById('notify-test-result');
+  if (!resultEl) return;
+
+  if (g_notify_test_poll) { clearInterval(g_notify_test_poll); g_notify_test_poll = null; }
+
+  const enabled = (document.getElementById('cfg-notify_telegram_enabled') || {}).checked || false;
+  const tokenEl = document.getElementById('cfg-notify_telegram_token');
+  const token   = tokenEl ? tokenEl.value : '';
+  const chatId  = (document.getElementById('cfg-notify_telegram_chat_id') || {}).value || '';
+
+  if (!chatId) {
+    resultEl.style.display = 'block';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.textContent = 'Enter a Chat ID first.';
+    return;
+  }
+
+  resultEl.style.display = 'block';
+  resultEl.style.borderColor = 'var(--border)';
+  resultEl.style.color = 'var(--text-muted)';
+  resultEl.innerHTML = '<span class="spinner"></span> Sending test notification…' +
+    (token === '' ? ' <em style="font-size:11px">(using saved token)</em>' : '');
+
+  try {
+    const r = await apiFetch('/api/notify/telegram/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        notify_telegram_enabled: enabled,
+        notify_telegram_token:   token,
+        notify_telegram_chat_id: chatId,
+      }),
+    });
+    if (!r) return;
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      resultEl.style.color = 'var(--color-alarm)';
+      resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = d.error || 'Failed to start test.';
+      return;
+    }
+  } catch (e) {
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.textContent = 'Network error: ' + e.message;
+    return;
+  }
+
+  // Poll until done (max ~15 s at 1 s intervals — TLS handshake can be slow).
+  let polls = 0;
+  g_notify_test_poll = setInterval(async function() {
+    polls++;
+    if (polls > 15) {
+      clearInterval(g_notify_test_poll); g_notify_test_poll = null;
+      resultEl.style.color = 'var(--color-alarm)';
+      resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = 'Test timed out — no result after 15 s.';
+      return;
+    }
+    try {
+      const r2 = await apiFetch('/api/notify/telegram/test');
+      if (!r2) return;
+      const d = await r2.json();
+      if (d.status === 'running') return;
+      clearInterval(g_notify_test_poll); g_notify_test_poll = null;
+      if (d.status === 'ok') {
+        resultEl.style.color = 'var(--color-success)';
+        resultEl.style.borderColor = 'var(--color-success)';
+        resultEl.textContent = d.message || 'Test notification sent.';
+      } else {
+        resultEl.style.color = 'var(--color-alarm)';
+        resultEl.style.borderColor = 'var(--color-alarm)';
+        resultEl.textContent = d.message || 'Test failed.';
+      }
+    } catch (e) { /* ignore transient poll errors */ }
+  }, 1000);
 }
 
 function renderSettingsAccount() {
