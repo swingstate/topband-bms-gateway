@@ -88,6 +88,28 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
+# ── MbedTLS dynamic buffer + asymmetric content lengths ─────────────────────
+# Default mbedTLS allocates two fixed 16 KB SSL I/O buffers per connection
+# (32 KB DRAM total).  Under MQTT load the largest contiguous DRAM block may
+# be smaller than this, causing the TLS handshake to fail deep inside mbedTLS
+# with a cryptic allocator error (observed on production device, 3 packs,
+# PerCell + HA discovery load).
+#
+# Dynamic buffer: buffers start at the minimum size needed for the current
+# flight and grow only as needed, dramatically reducing the peak DRAM spike
+# during handshake.  For a Telegram sendMessage POST (tiny body, small JSON
+# response), the peak never exceeds a few KB.
+#
+# Asymmetric content: outbound TLS messages to api.telegram.org are tiny
+# (< 512 B POST body).  A 4 KB out-buffer is ample; leaves more DRAM for
+# lwIP and MQTT.  In-buffer stays at 16 KB default for incoming responses.
+#
+# NOTE: after editing sdkconfig.defaults, regenerate the active sdkconfig:
+#   rm sdkconfig.esp32s3 && pio run -e esp32s3 -t clean && pio run -e esp32s3
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

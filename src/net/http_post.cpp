@@ -1,6 +1,7 @@
 #include "http_post.h"
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <cstdio>
 #include <cstring>
@@ -74,6 +75,29 @@ HttpPostResult https_post(const char*        url,
     return result;
   }
 
+  // Capture DRAM state immediately before the handshake so failures can be
+  // diagnosed.  mbedTLS SSL I/O buffers allocate from DRAM; under MQTT load
+  // (lwIP + MQTT TCP buffers in DRAM) the largest contiguous block may be
+  // smaller than the handshake needs.  These values surface in the test-result
+  // error string so the operator sees them without a serial console.
+  uint32_t dram_free    = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  uint32_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  ESP_LOGI(TAG, "TLS connect: host=%s DRAM free=%u largest_block=%u",
+           host, (unsigned)dram_free, (unsigned)dram_largest);
+
+  // Guard: refuse to attempt a handshake when DRAM is already tight.
+  // mbedTLS needs a contiguous DRAM block for SSL buffers; a failed allocation
+  // deep inside the stack produces a cryptic error.  Fail early and cleanly.
+  static constexpr uint32_t TLS_DRAM_MIN_BYTES = 20480;  // 20 KB
+  if (dram_largest < TLS_DRAM_MIN_BYTES) {
+    snprintf(result.error, sizeof(result.error),
+             "insufficient DRAM for TLS (largest=%u B < %u B)",
+             (unsigned)dram_largest, (unsigned)TLS_DRAM_MIN_BYTES);
+    ESP_LOGW(TAG, "TLS connect aborted: %s", result.error);
+    esp_tls_conn_destroy(tls);
+    return result;
+  }
+
   int conn_ret = esp_tls_conn_http_new_sync(url, &tls_cfg, tls);
   if (conn_ret != 1) {
     esp_tls_error_handle_t err_h = nullptr;
@@ -83,12 +107,15 @@ HttpPostResult https_post(const char*        url,
     }
     if (tls_code != 0) {
       snprintf(result.error, sizeof(result.error),
-               "TLS handshake failed (-0x%04X)", (unsigned)(-tls_code));
+               "TLS handshake failed (-0x%04X); DRAM largest=%u B",
+               (unsigned)(-tls_code), (unsigned)dram_largest);
     } else {
       snprintf(result.error, sizeof(result.error),
-               "TLS connect failed — host unreachable or timeout");
+               "TLS connect failed (unreachable/timeout); DRAM largest=%u B",
+               (unsigned)dram_largest);
     }
-    ESP_LOGW(TAG, "esp_tls_conn_http_new_sync → %d, tls_code=0x%04X", conn_ret, (unsigned)(-tls_code));
+    ESP_LOGW(TAG, "esp_tls_conn_http_new_sync → %d, tls_code=0x%04X, DRAM_largest=%u",
+             conn_ret, (unsigned)(-tls_code), (unsigned)dram_largest);
     esp_tls_conn_destroy(tls);
     return result;
   }
