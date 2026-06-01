@@ -86,9 +86,12 @@ HttpPostResult https_post(const char*        url,
            host, (unsigned)dram_free, (unsigned)dram_largest);
 
   // Guard: refuse to attempt a handshake when DRAM is already tight.
-  // mbedTLS needs a contiguous DRAM block for SSL buffers; a failed allocation
-  // deep inside the stack produces a cryptic error.  Fail early and cleanly.
-  static constexpr uint32_t TLS_DRAM_MIN_BYTES = 20480;  // 20 KB
+  // Without CONFIG_MBEDTLS_DYNAMIC_BUFFER, mbedTLS allocates two fixed ~17 KB
+  // I/O buffers (34 KB total) from DRAM.  40 KB gives a safe margin and catches
+  // fragmentation where the largest free block is under the mbedTLS minimum.
+  // With dynamic buffers the actual need is ~20 KB, so 40 KB is conservative but
+  // not restrictive on a healthy device (free DRAM is typically 80–150 KB).
+  static constexpr uint32_t TLS_DRAM_MIN_BYTES = 40960;  // 40 KB
   if (dram_largest < TLS_DRAM_MIN_BYTES) {
     snprintf(result.error, sizeof(result.error),
              "insufficient DRAM for TLS (largest=%u B < %u B)",
@@ -180,16 +183,18 @@ HttpPostResult https_post(const char*        url,
     return result;
   }
 
-  // ── Read response status line ─────────────────────────────────────────────
-  // Read until we get a newline or fill the buffer.
-  char resp[128] = {};
+  // ── Read response (status line + headers + body snippet) ─────────────────
+  // We use HTTP/1.0 with Connection:close so the server closes after sending.
+  // Read up to RES_MAX bytes: enough to capture status + headers + the short
+  // JSON error body that Telegram returns on 4xx responses.
+  static constexpr size_t RES_MAX = 768;
+  char resp[RES_MAX + 1] = {};
   int  resp_len  = 0;
-  while (resp_len < (int)sizeof(resp) - 1) {
+  while (resp_len < (int)RES_MAX) {
     ssize_t n = esp_tls_conn_read(tls, resp + resp_len,
-                                  (size_t)(sizeof(resp) - 1 - resp_len));
+                                  (size_t)(RES_MAX - (size_t)resp_len));
     if (n <= 0) break;
     resp_len += (int)n;
-    if (memchr(resp, '\n', (size_t)resp_len)) break;
   }
   resp[resp_len] = '\0';
 
@@ -200,6 +205,17 @@ HttpPostResult https_post(const char*        url,
   if (resp_len > 9) {
     const char* sp = strchr(resp, ' ');
     if (sp) status = atoi(sp + 1);
+  }
+
+  // Extract body snippet: everything after the header-body separator \r\n\r\n.
+  // Telegram includes a JSON body on 4xx responses with a "description" field.
+  const char* body_start = strstr(resp, "\r\n\r\n");
+  if (body_start) {
+    body_start += 4;
+    size_t blen = (size_t)(resp + resp_len - body_start);
+    if (blen > sizeof(result.body_snippet) - 1) blen = sizeof(result.body_snippet) - 1;
+    memcpy(result.body_snippet, body_start, blen);
+    result.body_snippet[blen] = '\0';
   }
 
   result.http_status = status;

@@ -98,17 +98,50 @@ bool TelegramProvider::send(const NotifyMessage& msg,
     return true;
   }
 
+  // Try to extract the "description" field from Telegram's JSON error body.
+  // Telegram returns: {"ok":false,"error_code":NNN,"description":"Bad Request: ..."}
+  // Showing the real description tells the user exactly what Telegram rejected
+  // (e.g. "PEER_ID_INVALID" vs "chat not found" are very different issues).
+  char tg_desc[80] = {};
+  if (r.body_snippet[0] != '\0') {
+    const char* key = strstr(r.body_snippet, "\"description\":\"");
+    if (key) {
+      const char* start = key + 15;  // skip  "description":"
+      const char* end   = strchr(start, '"');
+      if (end) {
+        size_t len = (size_t)(end - start);
+        if (len > sizeof(tg_desc) - 1) len = sizeof(tg_desc) - 1;
+        memcpy(tg_desc, start, len);
+        tg_desc[len] = '\0';
+      }
+    }
+  }
+
   // Map known HTTP error codes to clear messages.
   if (r.http_status == 401) {
     snprintf(err_out, err_out_size,
              "Invalid bot token — check the token from BotFather (HTTP 401)");
   } else if (r.http_status == 400) {
-    snprintf(err_out, err_out_size,
-             "Chat not found — check the Chat ID (HTTP 400). "
-             "Use @userinfobot or send a message to your bot first.");
+    if (tg_desc[0] != '\0') {
+      // Show the actual Telegram error (e.g. "Bad Request: chat not found",
+      // "Bad Request: PEER_ID_INVALID") so the user can diagnose the exact issue.
+      snprintf(err_out, err_out_size,
+               "Telegram rejected request: %s. "
+               "Use @userinfobot to verify your Chat ID format.",
+               tg_desc);
+    } else {
+      snprintf(err_out, err_out_size,
+               "Chat not found — check the Chat ID (HTTP 400). "
+               "Use @userinfobot or send a message to your bot first.");
+    }
   } else if (r.http_status == 403) {
-    snprintf(err_out, err_out_size,
-             "Bot was blocked or chat doesn't exist (HTTP 403)");
+    if (tg_desc[0] != '\0') {
+      snprintf(err_out, err_out_size,
+               "Telegram rejected request: %s (HTTP 403)", tg_desc);
+    } else {
+      snprintf(err_out, err_out_size,
+               "Bot was blocked or chat doesn't exist (HTTP 403)");
+    }
   } else if (r.http_status > 0) {
     snprintf(err_out, err_out_size,
              "Telegram API error (HTTP %d)", r.http_status);

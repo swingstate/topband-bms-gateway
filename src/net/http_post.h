@@ -15,6 +15,7 @@ struct HttpPostResult {
   bool success;
   int  http_status;   // HTTP response code, or -1 if no response was received
   char error[96];     // human-readable failure reason; empty on success
+  char body_snippet[128]; // first bytes of response body; useful for 4xx diagnosis
 };
 
 // HTTPS POST to url with a JSON body.

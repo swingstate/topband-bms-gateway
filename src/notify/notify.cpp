@@ -153,6 +153,12 @@ bool test(const char* provider_id,
            saved_cfg.notify_telegram_token,
            sizeof(merged.notify_telegram_token));
   }
+  if (merged.notify_telegram_chat_id[0] == '\0') {
+    // Chat ID was not provided in the form — use the saved one.
+    memcpy(merged.notify_telegram_chat_id,
+           saved_cfg.notify_telegram_chat_id,
+           sizeof(merged.notify_telegram_chat_id));
+  }
 
   auto* a = static_cast<TestTaskArgs*>(malloc(sizeof(TestTaskArgs)));
   if (!a) {
