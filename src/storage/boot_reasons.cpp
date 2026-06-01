@@ -50,32 +50,45 @@ namespace storage::boot_reasons {
 void record_this_boot() {
   esp_reset_reason_t reason = esp_reset_reason();
 
-  // Power-on and brownout resets must NEVER count toward the rapid-reset tally.
-  // On ESP32-S3, both a genuine power outage and a hardware RESET/EN-pin press
-  // produce ESP_RST_POWERON — they are indistinguishable. A mains-powered BMS
-  // gateway must survive repeated power outages without losing credentials.
-  if (reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT) {
-    ESP_LOGD(TAG, "record_this_boot: reset_reason=%d (POWERON/BROWNOUT) — excluded from rapid-reset tally",
+  // Only a deliberate software restart (esp_restart() → ESP_RST_SW) counts
+  // toward the rapid-reset tally.  Every other reset reason is excluded:
+  //
+  //  POWERON / BROWNOUT: mains power event.  A mains-powered BMS gateway must
+  //    survive any number of power outages without losing WiFi/config.
+  //
+  //  PANIC / INT_WDT / TASK_WDT / WDT: firmware crash.  A crashing device must
+  //    NOT also lose its WiFi credentials — that compounds one failure into two
+  //    and prevents the operator from reaching the Web UI to diagnose the crash.
+  //    Root-cause P3: TLS-under-load crash (ESP_RST_PANIC) was filling the ring
+  //    and triggering a WiFi wipe.
+  //
+  //  All other reasons (UNKNOWN, EXT, DEEPSLEEP, SDIO): excluded conservatively.
+  if (reason != ESP_RST_SW) {
+    ESP_LOGD(TAG,
+             "record_this_boot: reset_reason=%d — excluded from rapid-reset tally "
+             "(only ESP_RST_SW counts; crashes/WDT/power-events never wipe config)",
              (int)reason);
     return;
   }
 
   uint32_t uptime_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
 
-  // A SW reset (OTA apply, settings save, esp_restart()) that follows a long
-  // running boot is a normal operation restart. Clear the ring so these routine
-  // restarts never accumulate toward the factory-reset threshold.
+  // A SW reset that follows a long-running boot is a normal operation restart
+  // (OTA apply, settings save). Clear the ring so routine restarts never
+  // accumulate toward the factory-reset threshold.
   if (uptime_ms >= NORMAL_BOOT_MS) {
     load_ring();
     memset(g_ring, 0, sizeof(g_ring));
     g_loaded = true;
     save_ring();
-    ESP_LOGD(TAG, "record_this_boot: SW restart after %u ms (normal) — ring cleared", (unsigned)uptime_ms);
+    ESP_LOGD(TAG, "record_this_boot: SW restart after %u ms (normal) — ring cleared",
+             (unsigned)uptime_ms);
     return;
   }
 
   // Quick SW reset (uptime < 30 s): counts toward deliberate rapid-reset gesture.
-  ESP_LOGI(TAG, "record_this_boot: uptime=%u ms (SW reset, quick — counting)", (unsigned)uptime_ms);
+  ESP_LOGI(TAG, "record_this_boot: uptime=%u ms (SW reset, quick — counting)",
+           (unsigned)uptime_ms);
   load_ring();
   memmove(g_ring, g_ring + 1, sizeof(uint32_t) * (RING_SIZE - 1));
   g_ring[RING_SIZE - 1] = uptime_ms;
