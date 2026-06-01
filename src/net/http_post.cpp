@@ -2,6 +2,17 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"  // esp_crt_bundle_attach
 #include "esp_log.h"
+
+// Cert bundle is required — if this fires, delete sdkconfig.esp32s3 and do
+// a clean rebuild so the new sdkconfig.defaults options are compiled in.
+// Without CONFIG_MBEDTLS_CERTIFICATE_BUNDLE, esp_http_client_init silently
+// returns NULL when crt_bundle_attach is set (not a linker error — a runtime
+// #else branch deep in esp_transport_ssl.c).
+#ifndef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+#error "CONFIG_MBEDTLS_CERTIFICATE_BUNDLE is not enabled. " \
+       "Add CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y to sdkconfig.defaults, " \
+       "delete sdkconfig.esp32s3, and run: pio run -e esp32s3 -t clean && pio run -e esp32s3"
+#endif
 #include <cstdio>
 #include <cstring>
 
