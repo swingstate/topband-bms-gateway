@@ -37,7 +37,10 @@ namespace web {
 // Body JSON keys: notify_telegram_enabled, notify_telegram_token, notify_telegram_chat_id.
 // Token field blank → use the saved token (leave-blank-to-keep pattern).
 esp_err_t handle_notify_telegram_test_post(httpd_req_t* req) {
-  char body[512] = {};
+  // 1024 B: the test POST carries only 3 notify fields (~150 B typical), but
+  // keep margin so an oversized body is rejected cleanly rather than causing
+  // httpd to RST the connection with an unconsumed socket buffer.
+  char body[1024] = {};
   size_t n = read_body_notify(req, body, sizeof(body) - 1);
   if (n == 0) return send_err_notify(req, 400, "Empty body");
 

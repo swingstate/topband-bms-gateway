@@ -80,7 +80,11 @@ void send(Severity severity, const char* title, const char* body) {
   // Get a snapshot of the current live config.
   a->cfg = app::get_config();
 
-  BaseType_t ok = xTaskCreate(send_task, "notify_send", 6144, a, 2, nullptr);
+  // 12 KB stack: mbedTLS TLS 1.2 handshake alone consumes 4-6 KB of stack
+  // (cipher suite negotiation, cert verify, key exchange).  Add https_post()
+  // frame (~600 B), task overhead, and FreeRTOS interrupt-save context under
+  // MQTT load, and 6 KB reliably overflows → StoreProhibited panic.
+  BaseType_t ok = xTaskCreate(send_task, "notify_send", 12288, a, 2, nullptr);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "send: xTaskCreate failed");
     free(a);
@@ -160,7 +164,8 @@ bool test(const char* provider_id,
 
   set_test_result(TestStatus::Running, "Sending test notification…");
 
-  BaseType_t ok = xTaskCreate(test_task, "notify_test", 8192, a, 2, nullptr);
+  // 12 KB stack for the same TLS reason as send_task above.
+  BaseType_t ok = xTaskCreate(test_task, "notify_test", 12288, a, 2, nullptr);
   if (ok != pdPASS) {
     set_test_result(TestStatus::Failed, "Task create failed");
     free(a);
