@@ -49,7 +49,11 @@ idf_component_register(
     "web/handlers_diag.cpp"
     "web/handlers_alerts.cpp"
     "web/handlers_ota.cpp"
+    "web/handlers_notify.cpp"
     "web/handlers_static.cpp"
+    "net/http_post.cpp"
+    "notify/notify.cpp"
+    "notify/telegram.cpp"
     "mqtt/topics.cpp"
     "mqtt/payloads.cpp"
     "mqtt/publisher.cpp"
@@ -77,6 +81,7 @@ idf_component_register(
     esp_littlefs
     esp_rom
     mbedtls
+    esp_http_client
     mqtt
     app_update
 )

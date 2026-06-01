@@ -80,6 +80,14 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
+# ── MbedTLS certificate bundle (for outbound TLS / Telegram HTTPS) ───────────
+# Validates outbound HTTPS against common CA roots (DigiCert, Let's Encrypt,
+# etc.) without shipping per-service CAs that expire and need maintenance.
+# api.telegram.org uses DigiCert roots included in the full bundle.
+# Without this, esp_http_client TLS handshake returns MBEDTLS certificate errors.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
