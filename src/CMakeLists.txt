@@ -81,6 +81,7 @@ idf_component_register(
     esp_littlefs
     esp_rom
     mbedtls
+    esp-tls
     esp_http_client
     mqtt
     app_update
