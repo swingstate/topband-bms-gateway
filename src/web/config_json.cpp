@@ -66,6 +66,11 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["last_reset_ts"]         = c.last_reset_ts;
   doc["serial_debug_enabled"]  = c.serial_debug_enabled;
   doc["spy_persist_default"]   = c.spy_persist_default;
+
+  // Notifications — token is redacted (SECRET: same treatment as mqtt_pass_obf).
+  doc["notify_telegram_enabled"]  = c.notify_telegram_enabled;
+  doc["notify_telegram_token"]    = "";   // always redacted
+  doc["notify_telegram_chat_id"]  = c.notify_telegram_chat_id;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -194,6 +199,17 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.serial_debug_enabled = doc["serial_debug_enabled"];
   if (doc["spy_persist_default"].is<bool>())
     c.spy_persist_default = doc["spy_persist_default"];
+
+  // Notifications
+  if (doc["notify_telegram_enabled"].is<bool>())
+    c.notify_telegram_enabled = doc["notify_telegram_enabled"];
+  // Token: only update if non-empty (leave-blank-to-keep pattern, same as passwords).
+  if (doc["notify_telegram_token"].is<const char*>()) {
+    const char* t = doc["notify_telegram_token"].as<const char*>();
+    if (t && t[0] != '\0') snprintf(c.notify_telegram_token, sizeof(c.notify_telegram_token), "%s", t);
+  }
+  copy_str(doc["notify_telegram_chat_id"], c.notify_telegram_chat_id);
+
   return true;
 }
 

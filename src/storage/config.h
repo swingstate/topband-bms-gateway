@@ -7,7 +7,9 @@
 // uses this to upgrade older blobs stored in NVS.
 // v1 → v2: added rs485_enabled; renamed BoardPreset (LilyGo→Manual, dropped Custom).
 //           v1 blobs fail deserialization → device loads DEFAULT_CONFIG (Waveshare).
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 2;
+// v2 → v3: added notify_telegram_enabled/token/chat_id.
+//           Explicit Config_v2 struct copy migration (struct grew, no padding trick).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 3;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -137,6 +139,13 @@ struct Config {
   // ── Debug ───────────────────────────────────────────────────────────────────
   bool serial_debug_enabled;
   bool spy_persist_default;
+
+  // ── Notifications ────────────────────────────────────────────────────────────
+  // notify_telegram_token is a SECRET: excluded from backup export, never echoed
+  // to the browser, force-cleared on import, leave-blank-to-keep in UI.
+  bool notify_telegram_enabled;
+  char notify_telegram_token[80];    // bot token from BotFather — SECRET
+  char notify_telegram_chat_id[24];  // numeric chat ID or @channel
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

@@ -426,9 +426,10 @@ esp_err_t handle_restore(httpd_req_t* req) {
     new_cfg.rs485_enabled = live.rs485_enabled;
   }
 
-  // Passwords are never in backups — force-clear regardless of what the backup says.
-  new_cfg.mqtt_pass_obf[0] = '\0';
-  new_cfg.auth_hash[0]     = '\0';
+  // Secrets are never in backups — force-clear regardless of what the backup says.
+  new_cfg.mqtt_pass_obf[0]          = '\0';
+  new_cfg.auth_hash[0]              = '\0';
+  new_cfg.notify_telegram_token[0]  = '\0';
 
   // Full value-range validation (same path as /api/config POST).
   char field_err[64] = {};

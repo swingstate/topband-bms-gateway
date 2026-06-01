@@ -21,7 +21,7 @@ TEST_CASE("Round-trip: DEFAULT_CONFIG serializes and deserializes identically", 
   REQUIRE(ok);
   // Byte-for-byte identity (memcmp covers every field including padding)
   REQUIRE(memcmp(&DEFAULT_CONFIG, &out, sizeof(Config)) == 0);
-  REQUIRE(out.schema_version == 1);
+  REQUIRE(out.schema_version == CURRENT_SCHEMA_VERSION);
 }
 
 TEST_CASE("Schema version mismatch: corrupted version byte rejected", "[config]") {
