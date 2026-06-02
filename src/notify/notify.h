@@ -1,23 +1,35 @@
 #pragma once
 #include "provider.h"
 #include "storage/config.h"
+#include "safety_state.h"
 #include <cstddef>
+#include <cstdint>
 
 // ── Notification dispatcher ───────────────────────────────────────────────────
 //
-// Public API.  Event-wiring (alerts → notify::send) is deferred to a later
-// iteration; for now only the Test button calls into this module.
-//
-// Thread safety: notify::send() and notify::test() are safe to call from any
-// task.  Both schedule work off-thread so they return immediately.
+// Thread safety: all public functions are safe to call from any task.
+// send() and on_safety_event() serialize TLS operations via a binary semaphore
+// so at most one TLS handshake runs at a time, keeping DRAM pressure bounded.
 
 namespace notify {
 
+// Initialize the notify module (create TLS serialization semaphore, load
+// persisted verified state).  Call once from app::run_boot() before tasks start.
+void init();
+
 // Fan out a message to all enabled providers.  Non-blocking — work runs in a
-// short-lived FreeRTOS task.  Failures are logged; callers are not notified.
+// short-lived FreeRTOS task.  Acquires the TLS semaphore; drops silently if
+// another send is already in flight.  Failures are logged; callers are not notified.
 void send(Severity severity, const char* title, const char* body);
 
-// Result of a test send (polled by GET /api/notify/<id>/test).
+// Route a SafetyEvent to notifications.  Called per-cycle from the BMS poller
+// after runSafety() produces events.  Applies: event-type enable bitmask,
+// global poll-interval floor, per-type cooldown, and TLS serialization.
+// Non-blocking; drops silently when rate-limited or TLS is busy.
+void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms);
+
+// ── Test send ─────────────────────────────────────────────────────────────────
+
 enum class TestStatus : uint8_t { Idle, Running, Ok, Failed };
 
 struct TestResult {
@@ -37,5 +49,23 @@ bool test(const char* provider_id,
 
 // Read the current test result (snapshot, safe to call from HTTP handler).
 TestResult test_result();
+
+// ── Verified state ────────────────────────────────────────────────────────────
+
+// Call after a successful test send to persist the verified state to NVS.
+void mark_telegram_verified();
+
+// Call when Telegram credentials change to reset verified state.
+// Persists the reset to NVS if the old state was verified.
+void reset_telegram_verified();
+
+// Polled status for the UI (GET /api/notify/status).
+struct TelegramStatus {
+  bool     token_stored;     // true if notify_telegram_token is non-empty
+  bool     chat_id_stored;   // true if notify_telegram_chat_id is non-empty
+  bool     verified;         // true if last test/send succeeded
+  uint32_t last_ok_ts;       // epoch of last successful send; 0 if never
+};
+TelegramStatus telegram_status();
 
 }  // namespace notify

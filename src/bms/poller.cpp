@@ -13,6 +13,7 @@
 #include "net/ntp.h"
 #include "app/boot.h"
 #include "diag/alerts.h"
+#include "notify/notify.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -392,8 +393,9 @@ static void control_task_entry(void* param) {
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
 
-        // Log and route safety events to MQTT alarm topic.
-        uint64_t ts_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+        // Log and route safety events to MQTT alarm topic and notification system.
+        uint64_t ts_ms  = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+        uint32_t now_ms = static_cast<uint32_t>(ts_ms);
         for (uint8_t ev = 0; ev < tmp.event_count; ++ev) {
           const SafetyState::EventEntry& entry = tmp.events[ev];
           ESP_LOGI(TAG, "safety event %u bms=%u bits=0x%llx",
@@ -404,6 +406,8 @@ static void control_task_entry(void* param) {
             // Non-blocking: drop if queue full (event already logged above).
             route_alarm_event_to_mqtt(entry, ts_ms);
           }
+          // Route to Telegram notifications (non-blocking; rate-limited internally).
+          notify::on_safety_event(entry, now_ms);
         }
         if (tmp.alarm_flags)
           ESP_LOGW(TAG, "safety: flags=0x%02X ccl=%.0fA dcl=%.0fA msg=%s",

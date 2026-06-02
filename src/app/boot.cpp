@@ -25,6 +25,7 @@
 #include "app/self_test.h"
 #include "mqtt/publisher.h"
 #include "mqtt/ha_discovery.h"
+#include "notify/notify.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -142,6 +143,9 @@ void run_boot() {
                (unsigned)(heap_before - heap_after));
     }
   }
+
+  // ── Step 3a: Notify module (TLS semaphore + persisted verified state) ─────
+  notify::init();
 
   // ── Step 4: Snapshot bus (PSRAM double-buffer) ───────────────────────────
   {
