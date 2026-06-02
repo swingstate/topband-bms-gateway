@@ -1,6 +1,7 @@
 #include "handlers_config.h"
 #include "config_json.h"
 #include "app/boot.h"
+#include "notify/notify.h"
 #include "storage/config.h"
 #include "storage/nvs_store.h"
 #include "net/wifi.h"
@@ -130,9 +131,20 @@ esp_err_t handle_config_post(httpd_req_t* req) {
                        strcmp(old_cfg.mqtt_base_topic, new_cfg.mqtt_base_topic) != 0 ||
                        (new_cfg.mqtt_pass_obf[0] != '\0'));  // non-empty = password updated
 
+  // Detect Telegram credential changes before overwriting old_cfg.
+  // When token or chat_id changes, reset verified state so the UI reflects
+  // that the new credentials have not yet been confirmed with Telegram.
+  bool creds_changed =
+      strcmp(old_cfg.notify_telegram_token,   new_cfg.notify_telegram_token)   != 0 ||
+      strcmp(old_cfg.notify_telegram_chat_id, new_cfg.notify_telegram_chat_id) != 0;
+
   // Persist to NVS and update runtime config.
   if (!app::update_and_save_config(new_cfg)) {
     return send_json_error(req, 500, "NVS save failed");
+  }
+
+  if (creds_changed) {
+    notify::reset_telegram_verified();
   }
 
   ESP_LOGI(TAG, "Config saved via HTTP POST /api/config");

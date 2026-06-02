@@ -131,11 +131,15 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/mqtt/test", HTTP_POST, handle_mqtt_test_post);
   reg_auth(g_server, "/api/mqtt/test", HTTP_GET,  handle_mqtt_test_get);
 
-  // ── Notification test (iter/notifications-telegram) ───────────────────────
+  // ── Notification endpoints (iter/notifications-telegram) ─────────────────
   reg_auth(g_server, "/api/notify/telegram/test", HTTP_POST,
            web::handle_notify_telegram_test_post);
   reg_auth(g_server, "/api/notify/telegram/test", HTTP_GET,
            web::handle_notify_telegram_test_get);
+  reg_auth(g_server, "/api/notify/status",      HTTP_GET,
+           web::handle_notify_status_get);
+  reg_auth(g_server, "/api/notify/alert-types", HTTP_GET,
+           web::handle_notify_alert_types_get);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

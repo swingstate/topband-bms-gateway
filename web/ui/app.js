@@ -1092,7 +1092,7 @@ function renderSettingsSection(id) {
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
     case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
-    case 'notifications': content.innerHTML = renderSettingsNotifications(); break;
+    case 'notifications': content.innerHTML = renderSettingsNotifications(); loadNotifyData(); break;
     case 'account':       content.innerHTML = renderSettingsAccount();       break;
     case 'system':   content.innerHTML = renderSettingsSystem();   break;
     case 'reset':    content.innerHTML = renderSettingsReset();    break;
@@ -1621,49 +1621,184 @@ function renderSettingsMqtt() {
 
 function renderSettingsNotifications() {
   const c = g_config;
+  const pollVal  = (c.notify_poll_interval_s != null) ? c.notify_poll_interval_s : 60;
+  const coolVal  = (c.notify_cooldown_s      != null) ? c.notify_cooldown_s      : 120;
   return `
     <div class="settings-page">
+
+      <!-- ── Group 1: Connection ──────────────────────────────────────────── -->
       <div class="settings-section">
-        <div class="settings-section-title">Telegram</div>
+        <div class="settings-section-title">Connection</div>
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
           Receive alerts from this gateway directly in a Telegram chat.
           <strong>Setup:</strong>
           (1) Message <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
           and run <code>/newbot</code> to get a bot token.
-          (2) Start a chat with your new bot (or add it to a group).
-          (3) Find your Chat ID using
+          (2) Start a chat with your bot (or add it to a group).
+          (3) Find your Chat ID with
           <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>
-          (for personal chats) or
+          (personal chats) or
           <a href="https://t.me/getidsbot" target="_blank" rel="noopener">@getidsbot</a>
-          (for groups — use the negative group ID).
+          (groups — use the negative group ID).
         </p>
-        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
           <input type="checkbox" id="cfg-notify_telegram_enabled"
                  ${c.notify_telegram_enabled ? 'checked' : ''} style="width:auto">
           <label for="cfg-notify_telegram_enabled" style="margin:0">Enable Telegram notifications</label>
         </div>
+
+        <div id="notify-status-line" style="font-size:13px;padding:8px 10px;border-radius:5px;
+             margin-bottom:14px;border:1px solid var(--border);background:var(--surface-alt)">
+          Loading status…
+        </div>
+
         <div class="form-group">
-          <label>Bot Token</label>
+          <label>Bot Token (API key)</label>
           <input type="password" id="cfg-notify_telegram_token" value=""
                  autocomplete="new-password" placeholder="Leave blank to keep current">
-          <div class="help">Get from BotFather — format: <code>1234567890:ABCDef...</code></div>
+          <div class="help">Secret — never displayed here. Leave blank to keep the saved token.
+            Format from BotFather: <code>1234567890:ABCDef...</code></div>
         </div>
+
         <div class="form-group">
           <label>Chat ID</label>
           <input type="text" id="cfg-notify_telegram_chat_id"
                  value="${escHtml(c.notify_telegram_chat_id || '')}"
                  placeholder="e.g. 123456789 or -1001234567890">
-          <div class="help">Your personal ID or a group ID (negative number for groups)</div>
+          <div class="help">Your personal numeric ID or a negative group ID.
+            Find it with @userinfobot or @getidsbot.</div>
         </div>
+
+        <div class="form-group">
+          <label>Sender name</label>
+          <input type="text" id="cfg-notify_sender_name"
+                 value="${escHtml(c.notify_sender_name || '')}"
+                 maxlength="31" placeholder="Leave blank to use device hostname">
+          <div class="help">Name shown in outgoing messages so you know which gateway sent it.</div>
+        </div>
+
         <div id="notify-feedback" class="feedback-msg"></div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="saveNotificationsSection()">Save</button>
-          <button class="btn btn-secondary" onclick="testTelegramNotification()">Send test notification</button>
+          <button class="btn btn-secondary" onclick="testTelegramNotification()">Send test</button>
         </div>
-        <div id="notify-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
+        <div id="notify-test-result" style="display:none;margin-top:12px;padding:10px 12px;
+             border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
       </div>
+
+      <!-- ── Group 2: Alerts ───────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Alerts</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Choose which conditions trigger a notification. A message is sent when a condition
+          begins and again when it clears. Per-alert cooldown and global poll interval
+          (Timing section below) prevent flooding.
+        </p>
+        <div id="notify-alert-types-list" style="font-size:13px;color:var(--text-muted)">
+          Loading alert types…
+        </div>
+      </div>
+
+      <!-- ── Group 3: Timing ───────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Timing</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Both limits are enforced in the firmware regardless of what is saved here.
+          Minimum for both is 60 seconds.
+        </p>
+
+        <div class="form-group">
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="cfg-notify_poll_interval_s"
+                 value="${pollVal}" min="60" max="3600" step="1">
+          <div class="help">Global minimum time between any two notification sends.
+            Floor: 60 s. Example values: 60, 120, 300.</div>
+        </div>
+
+        <div class="form-group">
+          <label>Per-alert cooldown (seconds)</label>
+          <input type="number" id="cfg-notify_cooldown_s"
+                 value="${coolVal}" min="60" max="3600" step="1">
+          <div class="help">Minimum time before the same alert type can fire again (e.g. repeated
+            under-voltage). Floor: 60 s. Does not affect clear/recovery messages.</div>
+        </div>
+      </div>
+
     </div>
   `;
+}
+
+// Load status and alert-types asynchronously after the notifications page renders.
+async function loadNotifyData() {
+  loadNotifyStatus();
+  loadNotifyAlertTypes();
+}
+
+async function loadNotifyStatus() {
+  const el = document.getElementById('notify-status-line');
+  if (!el) return;
+  try {
+    const r = await apiFetch('/api/notify/status');
+    if (!r) return;
+    const s = await r.json();
+    let html = '';
+    if (!s.token_stored || !s.chat_id_stored) {
+      html = '<span style="color:var(--text-muted)">Not configured. Enter a Bot Token and Chat ID above.</span>';
+    } else if (!s.verified) {
+      html = '<span style="color:var(--color-warning)">API key: stored (&#x2022;&#x2022;&#x2022;&#x2022;) &nbsp;|&nbsp; '
+           + 'Chat ID: ' + escHtml(((window.g_config||{}).notify_telegram_chat_id)||'stored') + '</span>'
+           + '<br><span style="font-size:12px;color:var(--text-muted)">Not yet verified with Telegram. Use Send test to verify.</span>';
+    } else {
+      const dt = s.last_ok_ts ? new Date(s.last_ok_ts * 1000).toLocaleString() : '';
+      html = '<span style="color:var(--color-success)">API key and Chat ID stored and verified &#x2713;</span>'
+           + (dt ? '<br><span style="font-size:12px;color:var(--text-muted)">Last verified: ' + escHtml(dt) + '</span>' : '');
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    const el2 = document.getElementById('notify-status-line');
+    if (el2) el2.textContent = 'Status unavailable.';
+  }
+}
+
+async function loadNotifyAlertTypes() {
+  const container = document.getElementById('notify-alert-types-list');
+  if (!container) return;
+  try {
+    const r = await apiFetch('/api/notify/alert-types');
+    if (!r) return;
+    const types = await r.json();
+    const flags = (g_config && g_config.notify_alert_flags != null)
+                  ? g_config.notify_alert_flags : 0;
+
+    // Group by 'group' field.
+    const groups = {};
+    for (const t of types) {
+      if (!groups[t.group]) groups[t.group] = [];
+      groups[t.group].push(t);
+    }
+    const groupLabels = { voltage: 'Voltage', temperature: 'Temperature', cell: 'Cell', system: 'System' };
+
+    let html = '';
+    for (const [gkey, items] of Object.entries(groups)) {
+      html += '<div style="margin-bottom:12px">';
+      html += '<div style="font-size:12px;font-weight:600;text-transform:uppercase;'
+            + 'letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px">'
+            + escHtml(groupLabels[gkey] || gkey) + '</div>';
+      for (const t of items) {
+        const checked = (flags & (1 << t.id)) ? 'checked' : '';
+        html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <input type="checkbox" id="notify-ev-${t.id}" data-ev-id="${t.id}" ${checked} style="width:auto">
+          <label for="notify-ev-${t.id}" style="margin:0;font-size:13px">${escHtml(t.name)}</label>
+        </div>`;
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html || '<span style="color:var(--text-muted)">No alert types available.</span>';
+  } catch (e) {
+    const c2 = document.getElementById('notify-alert-types-list');
+    if (c2) c2.textContent = 'Could not load alert types.';
+  }
 }
 
 async function saveNotificationsSection() {
@@ -1671,23 +1806,41 @@ async function saveNotificationsSection() {
   if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
 
   const cfg = Object.assign({}, g_config);
-  cfg.auth_hash    = '';
+  cfg.auth_hash     = '';
   cfg.mqtt_pass_obf = '';
 
-  const fields = [
-    ['cfg-notify_telegram_enabled', 'notify_telegram_enabled', 'bool'],
-    ['cfg-notify_telegram_chat_id', 'notify_telegram_chat_id', 'str'],
-  ];
-  fields.forEach(([id, key, type]) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    if (type === 'bool') cfg[key] = el.checked;
-    if (type === 'str')  cfg[key] = el.value;
-  });
+  const enabledEl = document.getElementById('cfg-notify_telegram_enabled');
+  if (enabledEl) cfg.notify_telegram_enabled = enabledEl.checked;
+
+  const chatIdEl = document.getElementById('cfg-notify_telegram_chat_id');
+  if (chatIdEl) cfg.notify_telegram_chat_id = chatIdEl.value;
+
+  const senderEl = document.getElementById('cfg-notify_sender_name');
+  if (senderEl) cfg.notify_sender_name = senderEl.value;
 
   // Token: blank means keep existing; non-blank means update.
   const tokenEl = document.getElementById('cfg-notify_telegram_token');
   cfg.notify_telegram_token = (tokenEl && tokenEl.value.length > 0) ? tokenEl.value : '';
+
+  // Timing fields — clamp to floor of 60.
+  const pollEl = document.getElementById('cfg-notify_poll_interval_s');
+  if (pollEl) {
+    const v = parseInt(pollEl.value, 10);
+    cfg.notify_poll_interval_s = (isNaN(v) || v < 60) ? 60 : v;
+  }
+  const coolEl = document.getElementById('cfg-notify_cooldown_s');
+  if (coolEl) {
+    const v = parseInt(coolEl.value, 10);
+    cfg.notify_cooldown_s = (isNaN(v) || v < 60) ? 60 : v;
+  }
+
+  // Alert flags: collect checked state from all rendered checkboxes.
+  let flags = 0;
+  document.querySelectorAll('[data-ev-id]').forEach(cb => {
+    const id = parseInt(cb.dataset.evId, 10);
+    if (!isNaN(id) && cb.checked) flags |= (1 << id);
+  });
+  cfg.notify_alert_flags = flags >>> 0;  // ensure uint32
 
   try {
     const r = await apiFetch('/api/config', {
@@ -1701,6 +1854,8 @@ async function saveNotificationsSection() {
       g_config = data;
       if (tokenEl) tokenEl.value = '';
       if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+      // Refresh status line — credentials may have changed.
+      loadNotifyStatus();
     } else {
       if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
     }
@@ -1764,7 +1919,7 @@ async function testTelegramNotification() {
   }
 
   // Poll until done (max 60 s at 1 s intervals).
-  // TLS handshake under MQTT load: up to ~45 s worst case (9 ops × 5 s timeout).
+  // TLS handshake under MQTT load: up to ~45 s worst case (9 ops x 5 s timeout).
   // DRAM retry in http_post adds up to 3 s before the handshake.
   let polls = 0;
   g_notify_test_poll = setInterval(async function() {
@@ -1786,6 +1941,8 @@ async function testTelegramNotification() {
         resultEl.style.color = 'var(--color-success)';
         resultEl.style.borderColor = 'var(--color-success)';
         resultEl.textContent = d.message || 'Test notification sent.';
+        // Refresh the status line to show "verified".
+        loadNotifyStatus();
       } else {
         resultEl.style.color = 'var(--color-alarm)';
         resultEl.style.borderColor = 'var(--color-alarm)';
