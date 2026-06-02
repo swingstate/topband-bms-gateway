@@ -115,3 +115,62 @@ TEST_CASE("config_to_json: chat_id is echoed (not redacted)", "[config_json][not
   const char* cid = doc["notify_telegram_chat_id"] | "";
   REQUIRE(std::string(cid) == "42424242");
 }
+
+// ── v4 notify fields: json_to_config / config_to_json ─────────────────────────
+
+TEST_CASE("json_to_config: v4 fields notify_sender_name round-trips", "[config_json][notify][v4]") {
+  Config cfg = DEFAULT_CONFIG;
+  JsonDocument doc;
+  doc["notify_sender_name"] = "GW-main";
+  web::json_to_config(doc, cfg);
+  REQUIRE(std::string(cfg.notify_sender_name) == "GW-main");
+}
+
+TEST_CASE("json_to_config: notify_alert_flags updated from JSON", "[config_json][notify][v4]") {
+  Config cfg = DEFAULT_CONFIG;
+  cfg.notify_alert_flags = 0u;  // clear
+  JsonDocument doc;
+  doc["notify_alert_flags"] = (uint32_t)0x0000000Au;
+  web::json_to_config(doc, cfg);
+  REQUIRE(cfg.notify_alert_flags == 0x0000000Au);
+}
+
+TEST_CASE("json_to_config: notify_poll_interval_s floor clamped to 60", "[config_json][notify][v4]") {
+  Config cfg = DEFAULT_CONFIG;
+  JsonDocument doc;
+  doc["notify_poll_interval_s"] = (uint16_t)10u;  // below floor
+  doc["notify_cooldown_s"]      = (uint16_t)5u;   // below floor
+  web::json_to_config(doc, cfg);
+  REQUIRE(cfg.notify_poll_interval_s >= 60u);
+  REQUIRE(cfg.notify_cooldown_s      >= 60u);
+}
+
+TEST_CASE("json_to_config: notify_poll_interval_s above floor kept as-is", "[config_json][notify][v4]") {
+  Config cfg = DEFAULT_CONFIG;
+  JsonDocument doc;
+  doc["notify_poll_interval_s"] = (uint16_t)300u;
+  doc["notify_cooldown_s"]      = (uint16_t)180u;
+  web::json_to_config(doc, cfg);
+  REQUIRE(cfg.notify_poll_interval_s == 300u);
+  REQUIRE(cfg.notify_cooldown_s      == 180u);
+}
+
+TEST_CASE("config_to_json: v4 notify fields are included in output", "[config_json][notify][v4]") {
+  Config cfg = DEFAULT_CONFIG;
+  cfg.notify_poll_interval_s = 120;
+  cfg.notify_cooldown_s      = 240;
+  cfg.notify_alert_flags     = 0xA5A5A5A5u;
+  strncpy(cfg.notify_sender_name, "Workshop", sizeof(cfg.notify_sender_name) - 1);
+  cfg.notify_telegram_verified = true;
+  cfg.notify_telegram_last_ok_ts = 1700001000u;
+
+  JsonDocument doc;
+  web::config_to_json(cfg, doc);
+
+  REQUIRE((uint32_t)(doc["notify_poll_interval_s"] | 0u)    == 120u);
+  REQUIRE((uint32_t)(doc["notify_cooldown_s"]      | 0u)    == 240u);
+  REQUIRE((uint32_t)(doc["notify_alert_flags"]     | 0u)    == 0xA5A5A5A5u);
+  REQUIRE(std::string(doc["notify_sender_name"] | "")       == "Workshop");
+  REQUIRE((bool)(doc["notify_telegram_verified"] | false)   == true);
+  REQUIRE((uint32_t)(doc["notify_telegram_last_ok_ts"] | 0u) == 1700001000u);
+}

@@ -110,6 +110,19 @@ static Config make_default() {
   c.notify_telegram_enabled  = false;
   // token and chat_id start empty (zero-init from Config{})
 
+  // v4 additions
+  // sender_name: empty — notify module uses device hostname at runtime
+  // notify_alert_flags: safety-critical events enabled by default.
+  // Bit positions match SafetyState::SafetyEvent enum values (safety_state.h):
+  // BmsWentOffline=1, PackOvervoltStart=3, PackUndervoltStart=7,
+  // TempChargeStop=9, TempDischargeStop=11, CellImbalanceStart=13,
+  // BmsReportedAlarm=15, NoPacksOnline=16
+  c.notify_alert_flags = (1u<<1)|(1u<<3)|(1u<<7)|(1u<<9)|(1u<<11)|(1u<<13)|(1u<<15)|(1u<<16);
+  c.notify_telegram_last_ok_ts = 0;
+  c.notify_poll_interval_s = 60;
+  c.notify_cooldown_s      = 120;
+  c.notify_telegram_verified = false;
+
   return c;
 }
 
@@ -375,20 +388,158 @@ struct Config_v2 {
 static_assert(sizeof(Config_v2) == sizeof(Config_v1),
     "Config_v2 / Config_v1 size mismatch — padding assumption violated");
 
+// ── Config_v3: schema version 3 layout (644 bytes) ───────────────────────────
+// Identical to Config before the v4 notify-wiring fields were appended.
+struct Config_v3 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+};
+
+static_assert(sizeof(Config_v3) == 644,
+    "Config_v3 size drifted from expected 644 B — check alignment against v3 NVS blobs");
+
 }  // namespace
 
-// Config (v3) layout check.
-// v2 baseline: 540 B.  v3 additions: bool(1) + char[80] + char[24] = 105 B.
-// One of the notify_telegram_enabled bool fills an existing 1-byte tail gap in
-// Config_v2, so the net struct growth is 104 B → 644 B (verified by compiler).
-// 644 is already 4-byte aligned; no trailing padding.
-// This assert catches field additions or reorderings that silently change the
-// NVS blob size.
-static_assert(sizeof(Config) == 644,
-    "Config size drifted from expected 644 B — if intentional, bump schema version, "
+// Config layout check (updated each schema version).
+// v3 size: 644 B.
+// v4 additions: char[32]+uint32+uint32+uint16+uint16+bool = 45 B payload; bool fills
+// existing 1-byte tail gap so net growth is 44 B → compiler pads to 692 B (4-byte
+// aligned after the trailing bool).
+// This assert catches field additions or reorderings that silently change the NVS blob.
+static_assert(sizeof(Config) == 692,
+    "Config size drifted from expected 692 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
+
+static bool migrate_v3_to_v4(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v3)) return false;
+
+  Config_v3 v3;
+  memcpy(&v3, buf, sizeof(Config_v3));
+
+  // Start from DEFAULT_CONFIG so all v4-only fields get safe default values.
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v3.board_preset;
+  out.pins                    = v3.pins;
+  out.rs485_enabled           = v3.rs485_enabled;
+  out.bms_count               = v3.bms_count;
+  out.force_cell_count        = v3.force_cell_count;
+  out.can_protocol            = v3.can_protocol;
+  out.can_enabled             = v3.can_enabled;
+  out.charge_amps_per_pack    = v3.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v3.discharge_amps_per_pack;
+  out.cvl_voltage             = v3.cvl_voltage;
+  out.safe_pack_volt          = v3.safe_pack_volt;
+  out.safe_cell_volt          = v3.safe_cell_volt;
+  out.safe_cell_drift         = v3.safe_cell_drift;
+  out.spike_volt_max          = v3.spike_volt_max;
+  out.spike_curr_max          = v3.spike_curr_max;
+  out.spike_soc_max           = v3.spike_soc_max;
+  out.charge_temp_min         = v3.charge_temp_min;
+  out.charge_temp_max         = v3.charge_temp_max;
+  out.discharge_temp_min      = v3.discharge_temp_min;
+  out.discharge_temp_max      = v3.discharge_temp_max;
+  out.temp_soft_zone          = v3.temp_soft_zone;
+  out.temp_mode               = v3.temp_mode;
+  out.soc_mode                = v3.soc_mode;
+  out.setup_mode              = v3.setup_mode;
+  out.auto_from_bms_applied   = v3.auto_from_bms_applied;
+  out.maint_charge_enabled    = v3.maint_charge_enabled;
+  out.maint_target_voltage    = v3.maint_target_voltage;
+  out.auto_balance_enabled    = v3.auto_balance_enabled;
+  out.auto_balance_last_ts    = v3.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v3.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v3.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v3.timezone_offset_h;
+  out.mqtt_enabled            = v3.mqtt_enabled;
+  memcpy(out.mqtt_host,       v3.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v3.mqtt_port;
+  memcpy(out.mqtt_user,       v3.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v3.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v3.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v3.mqtt_level;
+  out.mqtt_diag_enabled       = v3.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v3.ha_discovery_enabled;
+  out.mqtt_full_publish       = v3.mqtt_full_publish;
+  out.auth_enabled            = v3.auth_enabled;
+  memcpy(out.auth_user, v3.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v3.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v3.theme_id;
+  out.chart_series_a          = v3.chart_series_a;
+  out.chart_series_b          = v3.chart_series_b;
+  out.ui_poll_live_ms         = v3.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v3.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v3.ui_poll_alerts_ms;
+  out.last_reset_ts           = v3.last_reset_ts;
+  out.serial_debug_enabled    = v3.serial_debug_enabled;
+  out.spy_persist_default     = v3.spy_persist_default;
+  out.notify_telegram_enabled  = v3.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v3.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v3.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  // v4 fields: sender_name, alert_flags, last_ok_ts, poll_interval, cooldown, verified
+  // stay at DEFAULT_CONFIG values (safe defaults from make_default()).
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
 
 static bool migrate_v2_to_v3(const uint8_t* buf, size_t len, Config& out) {
   if (len < sizeof(Config_v2)) return false;
@@ -484,18 +635,22 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     return true;
   }
 
+  if (ver == 3) {
+    // Field-preserving v3 → v4. All v3 settings survive;
+    // notify-wiring fields (sender_name, flags, intervals, verified) default safely.
+    return migrate_v3_to_v4(buf, len, out);
+  }
+
   if (ver == 2) {
-    // Field-preserving v2 → v3 migration. All existing settings survive;
-    // notify fields are defaulted (disabled, empty strings).
+    // migrate_v2_to_v3 starts from DEFAULT_CONFIG (which now carries v4 defaults),
+    // overlays all v2 fields, and sets schema_version = CURRENT (4).
+    // The v3 notify fields and v4 alert-wiring fields stay at safe defaults.
     return migrate_v2_to_v3(buf, len, out);
   }
 
   if (ver == 1) {
-    // v1 → v2 → v3: migrate through v2 first, then the notify defaults apply.
-    if (!migrate_v1_to_v2(buf, len, out)) return false;
-    // out is now at v2 layout semantics with schema_version=CURRENT (3).
-    // No further transform needed since v2→v3 only adds new fields at defaults.
-    return true;
+    // migrate_v1_to_v2 also starts from DEFAULT_CONFIG and produces a full v4 Config.
+    return migrate_v1_to_v2(buf, len, out);
   }
 
   return false;  // unrecognised schema version

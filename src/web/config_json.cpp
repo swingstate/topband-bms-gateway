@@ -71,6 +71,13 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["notify_telegram_enabled"]  = c.notify_telegram_enabled;
   doc["notify_telegram_token"]    = "";   // always redacted
   doc["notify_telegram_chat_id"]  = c.notify_telegram_chat_id;
+  // v4 additions (non-secret, included in export/import)
+  doc["notify_sender_name"]       = c.notify_sender_name;
+  doc["notify_alert_flags"]       = c.notify_alert_flags;
+  doc["notify_telegram_last_ok_ts"] = c.notify_telegram_last_ok_ts;
+  doc["notify_poll_interval_s"]   = c.notify_poll_interval_s;
+  doc["notify_cooldown_s"]        = c.notify_cooldown_s;
+  doc["notify_telegram_verified"] = c.notify_telegram_verified;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -212,11 +219,27 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
   // credential fields.  config_to_json echoes the stored value so an unmodified
   // round-trip through the UI is lossless.  An empty incoming value is treated
   // as "keep current" — a blank field in the form must not silently wipe a
-  // configured chat ID. (src/web/config_json.cpp P2 fix)
+  // configured chat ID.
   if (doc["notify_telegram_chat_id"].is<const char*>()) {
     const char* cid = doc["notify_telegram_chat_id"].as<const char*>();
     if (cid && cid[0] != '\0') snprintf(c.notify_telegram_chat_id, sizeof(c.notify_telegram_chat_id), "%s", cid);
   }
+  // v4 additions
+  copy_str(doc["notify_sender_name"], c.notify_sender_name);
+  if (doc["notify_alert_flags"].is<uint32_t>())
+    c.notify_alert_flags = doc["notify_alert_flags"].as<uint32_t>();
+  if (doc["notify_telegram_last_ok_ts"].is<uint32_t>())
+    c.notify_telegram_last_ok_ts = doc["notify_telegram_last_ok_ts"].as<uint32_t>();
+  if (doc["notify_poll_interval_s"].is<uint16_t>()) {
+    uint16_t v = doc["notify_poll_interval_s"].as<uint16_t>();
+    c.notify_poll_interval_s = (v >= 60u) ? v : 60u;  // firmware floor
+  }
+  if (doc["notify_cooldown_s"].is<uint16_t>()) {
+    uint16_t v = doc["notify_cooldown_s"].as<uint16_t>();
+    c.notify_cooldown_s = (v >= 60u) ? v : 60u;        // firmware floor
+  }
+  if (doc["notify_telegram_verified"].is<bool>())
+    c.notify_telegram_verified = doc["notify_telegram_verified"];
 
   return true;
 }
