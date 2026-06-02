@@ -78,7 +78,7 @@ bool start_httpd(const Config& /*cfg*/) {
   config.task_priority      = 4;
   config.stack_size         = 12 * 1024;
   config.max_open_sockets   = 4;
-  config.max_uri_handlers   = 32;
+  config.max_uri_handlers   = 40;
   config.recv_wait_timeout  = 5;
   config.send_wait_timeout  = 5;
   config.lru_purge_enable   = true;
