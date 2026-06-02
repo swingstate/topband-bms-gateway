@@ -1763,15 +1763,17 @@ async function testTelegramNotification() {
     return;
   }
 
-  // Poll until done (max ~15 s at 1 s intervals — TLS handshake can be slow).
+  // Poll until done (max 60 s at 1 s intervals).
+  // TLS handshake under MQTT load: up to ~45 s worst case (9 ops × 5 s timeout).
+  // DRAM retry in http_post adds up to 3 s before the handshake.
   let polls = 0;
   g_notify_test_poll = setInterval(async function() {
     polls++;
-    if (polls > 15) {
+    if (polls > 60) {
       clearInterval(g_notify_test_poll); g_notify_test_poll = null;
       resultEl.style.color = 'var(--color-alarm)';
       resultEl.style.borderColor = 'var(--color-alarm)';
-      resultEl.textContent = 'Test timed out — no result after 15 s.';
+      resultEl.textContent = 'Test timed out — no result after 60 s.';
       return;
     }
     try {

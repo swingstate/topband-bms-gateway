@@ -80,11 +80,16 @@ void send(Severity severity, const char* title, const char* body) {
   // Get a snapshot of the current live config.
   a->cfg = app::get_config();
 
-  // 12 KB stack: mbedTLS TLS 1.2 handshake alone consumes 4-6 KB of stack
-  // (cipher suite negotiation, cert verify, key exchange).  Add https_post()
-  // frame (~600 B), task overhead, and FreeRTOS interrupt-save context under
-  // MQTT load, and 6 KB reliably overflows → StoreProhibited panic.
-  BaseType_t ok = xTaskCreate(send_task, "notify_send", 12288, a, 2, nullptr);
+  // 16 KB stack: mbedTLS TLS 1.2 handshake alone consumes 4-8 KB of stack
+  // (cipher suite negotiation, cert parsing, key exchange) depending on cipher
+  // suite and server certificate chain depth.  TelegramProvider::send() adds
+  // ~1.6 KB of local buffers (url, text, body arrays).  https_post() adds
+  // ~1.3 KB (including the 768-byte response buffer).  Plus FreeRTOS task
+  // overhead (~0.5 KB).  12 KB was dangerously tight under MQTT load; 16 KB
+  // gives ~4 KB headroom at the deepest TLS call frame.
+  // pvPortMallocStackBuf always uses MALLOC_CAP_INTERNAL so this stays in DRAM
+  // (stacks cannot be in PSRAM — ESP32-S3 context-switch requires DRAM stacks).
+  BaseType_t ok = xTaskCreate(send_task, "notify_send", 16384, a, 2, nullptr);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "send: xTaskCreate failed");
     free(a);
@@ -170,8 +175,8 @@ bool test(const char* provider_id,
 
   set_test_result(TestStatus::Running, "Sending test notification…");
 
-  // 12 KB stack for the same TLS reason as send_task above.
-  BaseType_t ok = xTaskCreate(test_task, "notify_test", 12288, a, 2, nullptr);
+  // 16 KB stack — same rationale as send_task above.
+  BaseType_t ok = xTaskCreate(test_task, "notify_test", 16384, a, 2, nullptr);
   if (ok != pdPASS) {
     set_test_result(TestStatus::Failed, "Task create failed");
     free(a);
