@@ -135,12 +135,12 @@ TEST_CASE("Round-trip: empty notify fields survive serialize/deserialize", "[con
   REQUIRE(dst.notify_telegram_chat_id[0] == '\0');
 }
 
-TEST_CASE("Config struct is 692 bytes (v4 layout: 644 + 48 net)", "[config]") {
-  // v3 baseline: 644 B.  v4 adds: char[32]+uint32+uint32+uint16+uint16+bool = 45 B payload;
-  // bool fills existing tail gap so net growth is 44 B + 4 B alignment padding = 692 B.
+TEST_CASE("Config struct is 692 bytes (v5 layout unchanged from v4)", "[config]") {
+  // v3: 644 B.  v4 adds char[32]+uint32+uint32+uint16+uint16+bool → 692 B.
+  // v5 adds uint16_t notify_debounce_s into former 3-byte tail padding → still 692 B.
   // This test mirrors the static_assert in config.cpp and catches ABI drift.
   REQUIRE(sizeof(Config) == 692);
-  REQUIRE(CURRENT_SCHEMA_VERSION == 4);
+  REQUIRE(CURRENT_SCHEMA_VERSION == 5);
 }
 
 // ── v3 → v4 migration tests ────────────────────────────────────────────────────
@@ -315,4 +315,64 @@ TEST_CASE("Round-trip: v4 notify_alert_flags all-bits survives", "[config][notif
   bool ok = round_trip(src, dst);
   REQUIRE(ok);
   REQUIRE(dst.notify_alert_flags == 0xFFFFFFFFu);
+}
+
+// ── v4 → v5 migration tests ────────────────────────────────────────────────────
+// Config_v4 is identical to Config_v5 in size (692 B) — the v5 field uses former
+// tail padding. We build a synthetic v4 blob by constructing a v5 Config, zeroing
+// the debounce field bytes (tail padding in v4), and tagging schema_version = 4.
+
+TEST_CASE("Migration v4->v5: debounce_s gets default 30 from v4 blob", "[config][migrate]") {
+  // Build a v5 Config with known v4 fields; schema_version set to 4.
+  Config src = DEFAULT_CONFIG;
+  src.schema_version         = 4;   // pretend to be a v4 blob
+  src.notify_debounce_s      = 0;   // simulates v4 tail padding (zero)
+  src.bms_count              = 7;
+  src.notify_poll_interval_s = 90;
+  src.notify_cooldown_s      = 180;
+  src.notify_telegram_enabled = true;
+  strncpy(src.notify_sender_name, "GW-test", sizeof(src.notify_sender_name) - 1);
+
+  // Serialize the blob with schema_version=4.
+  uint8_t buf[sizeof(Config) + 64];
+  size_t len = 0;
+  REQUIRE(storage::serialize(src, buf, sizeof(buf), len));
+
+  // Deserialize: should trigger v4->v5 migration.
+  Config out{};
+  bool ok = storage::deserialize(buf, len, out);
+  REQUIRE(ok);
+
+  // Schema bumped to v5.
+  REQUIRE(out.schema_version == CURRENT_SCHEMA_VERSION);
+
+  // All v4 fields preserved.
+  REQUIRE(out.bms_count == 7);
+  REQUIRE(out.notify_poll_interval_s == 90u);
+  REQUIRE(out.notify_cooldown_s      == 180u);
+  REQUIRE(out.notify_telegram_enabled == true);
+  REQUIRE(std::string(out.notify_sender_name) == "GW-test");
+
+  // notify_debounce_s should be the safe default (30), NOT 0 from the v4 zeros.
+  REQUIRE(out.notify_debounce_s == 30u);
+}
+
+TEST_CASE("Round-trip: v5 notify_debounce_s survives serialize/deserialize", "[config][migrate]") {
+  Config src = DEFAULT_CONFIG;
+  src.notify_debounce_s = 45u;
+
+  Config dst{};
+  bool ok = round_trip(src, dst);
+  REQUIRE(ok);
+  REQUIRE(dst.notify_debounce_s == 45u);
+}
+
+TEST_CASE("Round-trip: notify_debounce_s zero (disabled) survives", "[config][migrate]") {
+  Config src = DEFAULT_CONFIG;
+  src.notify_debounce_s = 0u;
+
+  Config dst{};
+  bool ok = round_trip(src, dst);
+  REQUIRE(ok);
+  REQUIRE(dst.notify_debounce_s == 0u);
 }

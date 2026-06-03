@@ -12,7 +12,9 @@
 // v3 → v4: added notify_sender_name, notify_alert_flags, notify_telegram_last_ok_ts,
 //           notify_poll_interval_s, notify_cooldown_s, notify_telegram_verified.
 //           Struct grows from 644 B to 692 B. Explicit Config_v3 copy migration.
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 4;
+// v4 → v5: added notify_debounce_s (uint16_t) — placed in the former 3-byte tail
+//           padding so sizeof(Config) stays 692 B. Default 30 s; 0 = disabled.
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 5;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -165,7 +167,12 @@ struct Config {
   uint16_t notify_cooldown_s;
   // true once a test or alert send has succeeded; reset when credentials change
   bool     notify_telegram_verified;
-  // 3 bytes implicit padding to maintain 4-byte alignment (sizeof(Config)==692)
+  // 1 byte implicit padding (aligns notify_debounce_s to 2-byte boundary)
+  // Alert debounce: a condition must persist this many seconds before it is
+  // logged and sent. 0 = disabled (immediate). Applies ONLY to the alert
+  // log + notifications — the safety control loop is always edge-immediate.
+  uint16_t notify_debounce_s;
+  // (former 3-byte tail pad now consumed: sizeof(Config) still 692 B)
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

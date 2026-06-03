@@ -1621,8 +1621,9 @@ function renderSettingsMqtt() {
 
 function renderSettingsNotifications() {
   const c = g_config;
-  const pollVal  = (c.notify_poll_interval_s != null) ? c.notify_poll_interval_s : 60;
-  const coolVal  = (c.notify_cooldown_s      != null) ? c.notify_cooldown_s      : 120;
+  const pollVal     = (c.notify_poll_interval_s != null) ? c.notify_poll_interval_s : 60;
+  const coolVal     = (c.notify_cooldown_s      != null) ? c.notify_cooldown_s      : 120;
+  const debounceVal = (c.notify_debounce_s      != null) ? c.notify_debounce_s      : 30;
   return `
     <div class="settings-page">
 
@@ -1704,9 +1705,18 @@ function renderSettingsNotifications() {
       <div class="settings-section">
         <div class="settings-section-title">Timing</div>
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
-          Both limits are enforced in the firmware regardless of what is saved here.
-          Minimum for both is 60 seconds.
+          Poll interval and cooldown floors are enforced at 60 s. Debounce minimum is 0 (disabled).
         </p>
+
+        <div class="form-group">
+          <label>Alert debounce (seconds)</label>
+          <input type="number" id="cfg-notify_debounce_s"
+                 value="${debounceVal}" min="0" max="300" step="1">
+          <div class="help">A condition must persist this long before it is logged and notified.
+            Filters brief flaps (e.g. a pack that reconnects within seconds).
+            0 = disabled (immediate). Does not affect the gateway's safety response,
+            which always reacts immediately.</div>
+        </div>
 
         <div class="form-group">
           <label>Poll interval (seconds)</label>
@@ -1822,7 +1832,12 @@ async function saveNotificationsSection() {
   const tokenEl = document.getElementById('cfg-notify_telegram_token');
   cfg.notify_telegram_token = (tokenEl && tokenEl.value.length > 0) ? tokenEl.value : '';
 
-  // Timing fields — clamp to floor of 60.
+  // Timing fields — debounce floor 0, poll/cooldown floor 60.
+  const debounceEl = document.getElementById('cfg-notify_debounce_s');
+  if (debounceEl) {
+    const v = parseInt(debounceEl.value, 10);
+    cfg.notify_debounce_s = (isNaN(v) || v < 0) ? 0 : v;
+  }
   const pollEl = document.getElementById('cfg-notify_poll_interval_s');
   if (pollEl) {
     const v = parseInt(pollEl.value, 10);
@@ -3029,6 +3044,24 @@ function renderDiagData(d) {
         ${kvRow('Stored alerts', d.alerts_count||0)}
       </div>
     </div>
+
+    ${(function() {
+      const cd = d.coredump || {};
+      if (!cd.present) return '';
+      return `<div class="diag-section">
+      <h3>Previous panic (coredump)</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Crashing task', cd.crashing_task || '—')}
+        ${cd.exc_pc   ? kvRow('Exception PC', cd.exc_pc) : ''}
+        ${cd.build_sha256 ? kvRow('Build (SHA256)', cd.build_sha256.slice(0,16) + '…') : ''}
+      </div>
+      <div style="margin-top:10px">
+        <a href="/api/diag/coredump.bin" class="btn btn-secondary" download="coredump.bin">
+          Download coredump
+        </a>
+      </div>
+    </div>`;
+    })()}
 
     <div class="diag-section">
       <h3>Log (last ${(d.log_ring||[]).length} lines)</h3>

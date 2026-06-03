@@ -246,6 +246,29 @@ esp_err_t handle_diag(httpd_req_t* req) {
   // ── alerts summary ────────────────────────────────────────────────────────
   hs_str(s, ",\"alerts_count\":"); hs_uint(s, storage::alerts_store::stored_count());
 
+  // ── coredump ──────────────────────────────────────────────────────────────
+  // Present when the previous boot left a valid coredump in flash (ELF format).
+  hs_str(s, ",\"coredump\":{");
+  bool cd_valid = (esp_core_dump_image_check() == ESP_OK);
+  hs_str(s, "\"present\":"); hs_bool(s, cd_valid);
+  if (cd_valid) {
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+    esp_core_dump_summary_t sum{};
+    if (esp_core_dump_get_summary(&sum) == ESP_OK) {
+      hs_str(s, ",\"crashing_task\":");  hs_json_str(s, sum.exc_task);
+      hs_str(s, ",\"build_sha256\":");
+      // app_elf_sha256 is already a null-terminated hex string.
+      hs_json_str(s, reinterpret_cast<const char*>(sum.app_elf_sha256));
+      // exc_pc as a readable hex string.
+      char pc_buf[16];
+      snprintf(pc_buf, sizeof(pc_buf), "0x%08lx", (unsigned long)sum.exc_pc);
+      hs_str(s, ",\"exc_pc\":"); hs_json_str(s, pc_buf);
+      hs_str(s, ",\"core_dump_version\":"); hs_uint(s, sum.core_dump_version);
+    }
+#endif
+  }
+  hs_str(s, "}");
+
   // ── tasks (FreeRTOS stack HWM) ────────────────────────────────────────────
   // Requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y and
   // CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y (sdkconfig.esp32s3).

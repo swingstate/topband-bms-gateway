@@ -301,8 +301,7 @@ void run_boot() {
   // Per docs/diag-mqtt-crash-review.md Finding 9.
   if (esp_core_dump_image_check() == ESP_OK) {
     diag::alerts::emit(diag::alerts::Severity::Critical, "boot",
-                       "coredump found from previous panic — retrieve via "
-                       "GET /api/diag/coredump.bin");
+                       "Previous panic detected — details on the Diagnostics page");
   }
 
   // ── Step 12: Boot-complete alert ─────────────────────────────────────────

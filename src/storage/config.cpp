@@ -122,6 +122,7 @@ static Config make_default() {
   c.notify_poll_interval_s = 60;
   c.notify_cooldown_s      = 120;
   c.notify_telegram_verified = false;
+  c.notify_debounce_s      = 30;  // 30 s default: filters brief flaps
 
   return c;
 }
@@ -454,19 +455,177 @@ struct Config_v3 {
 static_assert(sizeof(Config_v3) == 644,
     "Config_v3 size drifted from expected 644 B — check alignment against v3 NVS blobs");
 
+// ── Config_v4: schema version 4 layout (692 bytes) ───────────────────────────
+// Identical to Config before notify_debounce_s was placed in the tail padding.
+// The v4 NVS blob is 692 B; the former 3-byte tail pad occupies offsets 689-691.
+// After v5 the same 692 B blob has: bool(1) + pad(1) + uint16(2) at those offsets.
+struct Config_v4 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  // 3 bytes tail padding (offset 689-691 in the blob are zero)
+};
+
+static_assert(sizeof(Config_v4) == 692,
+    "Config_v4 size drifted from expected 692 B — check alignment against v4 NVS blobs");
+
 }  // namespace
 
 // Config layout check (updated each schema version).
 // v3 size: 644 B.
 // v4 additions: char[32]+uint32+uint32+uint16+uint16+bool = 45 B payload; bool fills
-// existing 1-byte tail gap so net growth is 44 B → compiler pads to 692 B (4-byte
-// aligned after the trailing bool).
+// existing 1-byte tail gap so net growth is 44 B → compiler pads to 692 B.
+// v5 addition: uint16_t notify_debounce_s fits in former 3-byte tail padding →
+// sizeof(Config) stays 692 B.
 // This assert catches field additions or reorderings that silently change the NVS blob.
 static_assert(sizeof(Config) == 692,
     "Config size drifted from expected 692 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
+
+// ── v4 → v5 migration ────────────────────────────────────────────────────────
+// notify_debounce_s occupies the former tail padding bytes (offset 690, size 2).
+// A v4 blob has zeros there, which would give debounce=0 (immediate — no debounce).
+// Migration sets the default (30 s) so existing users get the intended behavior.
+static bool migrate_v4_to_v5(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v4)) return false;
+
+  Config_v4 v4;
+  memcpy(&v4, buf, sizeof(Config_v4));
+
+  // Start from DEFAULT_CONFIG so notify_debounce_s gets its safe default (30).
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v4.board_preset;
+  out.pins                    = v4.pins;
+  out.rs485_enabled           = v4.rs485_enabled;
+  out.bms_count               = v4.bms_count;
+  out.force_cell_count        = v4.force_cell_count;
+  out.can_protocol            = v4.can_protocol;
+  out.can_enabled             = v4.can_enabled;
+  out.charge_amps_per_pack    = v4.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v4.discharge_amps_per_pack;
+  out.cvl_voltage             = v4.cvl_voltage;
+  out.safe_pack_volt          = v4.safe_pack_volt;
+  out.safe_cell_volt          = v4.safe_cell_volt;
+  out.safe_cell_drift         = v4.safe_cell_drift;
+  out.spike_volt_max          = v4.spike_volt_max;
+  out.spike_curr_max          = v4.spike_curr_max;
+  out.spike_soc_max           = v4.spike_soc_max;
+  out.charge_temp_min         = v4.charge_temp_min;
+  out.charge_temp_max         = v4.charge_temp_max;
+  out.discharge_temp_min      = v4.discharge_temp_min;
+  out.discharge_temp_max      = v4.discharge_temp_max;
+  out.temp_soft_zone          = v4.temp_soft_zone;
+  out.temp_mode               = v4.temp_mode;
+  out.soc_mode                = v4.soc_mode;
+  out.setup_mode              = v4.setup_mode;
+  out.auto_from_bms_applied   = v4.auto_from_bms_applied;
+  out.maint_charge_enabled    = v4.maint_charge_enabled;
+  out.maint_target_voltage    = v4.maint_target_voltage;
+  out.auto_balance_enabled    = v4.auto_balance_enabled;
+  out.auto_balance_last_ts    = v4.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v4.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v4.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v4.timezone_offset_h;
+  out.mqtt_enabled            = v4.mqtt_enabled;
+  memcpy(out.mqtt_host,       v4.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v4.mqtt_port;
+  memcpy(out.mqtt_user,       v4.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v4.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v4.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v4.mqtt_level;
+  out.mqtt_diag_enabled       = v4.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v4.ha_discovery_enabled;
+  out.mqtt_full_publish       = v4.mqtt_full_publish;
+  out.auth_enabled            = v4.auth_enabled;
+  memcpy(out.auth_user, v4.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v4.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v4.theme_id;
+  out.chart_series_a          = v4.chart_series_a;
+  out.chart_series_b          = v4.chart_series_b;
+  out.ui_poll_live_ms         = v4.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v4.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v4.ui_poll_alerts_ms;
+  out.last_reset_ts           = v4.last_reset_ts;
+  out.serial_debug_enabled    = v4.serial_debug_enabled;
+  out.spy_persist_default     = v4.spy_persist_default;
+  out.notify_telegram_enabled  = v4.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v4.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v4.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  memcpy(out.notify_sender_name,      v4.notify_sender_name,      sizeof(out.notify_sender_name));
+  out.notify_alert_flags          = v4.notify_alert_flags;
+  out.notify_telegram_last_ok_ts  = v4.notify_telegram_last_ok_ts;
+  out.notify_poll_interval_s      = v4.notify_poll_interval_s;
+  out.notify_cooldown_s           = v4.notify_cooldown_s;
+  out.notify_telegram_verified    = v4.notify_telegram_verified;
+  // notify_debounce_s: stays at DEFAULT_CONFIG value (30 s).
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
 
 static bool migrate_v3_to_v4(const uint8_t* buf, size_t len, Config& out) {
   if (len < sizeof(Config_v3)) return false;
@@ -635,8 +794,14 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     return true;
   }
 
+  if (ver == 4) {
+    // Field-preserving v4 → v5. All v4 settings survive;
+    // notify_debounce_s gets safe default (30 s) from DEFAULT_CONFIG.
+    return migrate_v4_to_v5(buf, len, out);
+  }
+
   if (ver == 3) {
-    // Field-preserving v3 → v4. All v3 settings survive;
+    // Field-preserving v3 → v4 → v5. All v3 settings survive;
     // notify-wiring fields (sender_name, flags, intervals, verified) default safely.
     return migrate_v3_to_v4(buf, len, out);
   }

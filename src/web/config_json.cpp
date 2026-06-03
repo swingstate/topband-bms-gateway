@@ -78,6 +78,8 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["notify_poll_interval_s"]   = c.notify_poll_interval_s;
   doc["notify_cooldown_s"]        = c.notify_cooldown_s;
   doc["notify_telegram_verified"] = c.notify_telegram_verified;
+  // v5 addition (non-secret, included in export/import)
+  doc["notify_debounce_s"]        = c.notify_debounce_s;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -240,6 +242,8 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
   }
   if (doc["notify_telegram_verified"].is<bool>())
     c.notify_telegram_verified = doc["notify_telegram_verified"];
+  if (doc["notify_debounce_s"].is<uint16_t>())
+    c.notify_debounce_s = doc["notify_debounce_s"].as<uint16_t>();
 
   return true;
 }

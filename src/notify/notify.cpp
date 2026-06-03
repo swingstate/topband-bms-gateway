@@ -3,6 +3,7 @@
 #include "app/boot.h"
 #include "net/ntp.h"
 #include "net/wifi.h"
+#include "diag/alerts.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -156,6 +157,8 @@ void send(Severity severity, const char* title, const char* body) {
 
 // Human-readable labels for each SafetyEvent value.
 // Index matches SafetyState::SafetyEvent enum; index 0 (None) is nullptr.
+// A2: this table is the SINGLE source of truth for event text — both the alert
+// log entry and the Telegram message body derive from it via format_event_body().
 struct EventDesc {
   const char*    label;      // short message description
   notify::Severity severity;
@@ -165,43 +168,76 @@ struct EventDesc {
 static constexpr uint8_t K_EV_MAX = 17;
 
 static const EventDesc k_event_desc[K_EVENT_COUNT] = {
-  { nullptr, notify::Severity::Info },          //  0: None        — never fires
-  { "Pack went offline",      notify::Severity::Warning  },  //  1: BmsWentOffline
-  { "Pack came online",       notify::Severity::Info     },  //  2: BmsCameOnline
-  { "Over-voltage started",   notify::Severity::Critical },  //  3: PackOvervoltStart
-  { "Over-voltage cleared",   notify::Severity::Info     },  //  4: PackOvervoltClear
-  { "Cell over-voltage",      notify::Severity::Critical },  //  5: CellOvervoltStart
-  { "Cell over-voltage cleared", notify::Severity::Info  },  //  6: CellOvervoltClear
-  { "Under-voltage started",  notify::Severity::Critical },  //  7: PackUndervoltStart
-  { "Under-voltage cleared",  notify::Severity::Info     },  //  8: PackUndervoltClear
-  { "Charge stopped: temperature", notify::Severity::Warning },  //  9: TempChargeStop
-  { "Charge resumed: temperature", notify::Severity::Info   },  // 10: TempChargeResume
-  { "Discharge stopped: temperature", notify::Severity::Warning }, // 11: TempDischargeStop
-  { "Discharge resumed: temperature", notify::Severity::Info    }, // 12: TempDischargeResume
-  { "Cell imbalance detected",notify::Severity::Warning  },  // 13: CellImbalanceStart
-  { "Cell imbalance cleared", notify::Severity::Info     },  // 14: CellImbalanceClear
-  { "BMS reported alarm",     notify::Severity::Critical },  // 15: BmsReportedAlarm
-  { "No packs online",        notify::Severity::Critical },  // 16: NoPacksOnline
-  { "Packs online recovered", notify::Severity::Info     },  // 17: PacksOnlineRecovered
+  { nullptr, notify::Severity::Info },                              //  0: None
+  { "Pack went offline",               notify::Severity::Warning  }, //  1: BmsWentOffline
+  { "Pack came online",                notify::Severity::Info     }, //  2: BmsCameOnline
+  { "Over-voltage started",            notify::Severity::Critical }, //  3: PackOvervoltStart
+  { "Over-voltage cleared",            notify::Severity::Info     }, //  4: PackOvervoltClear
+  { "Cell over-voltage started",       notify::Severity::Critical }, //  5: CellOvervoltStart
+  { "Cell over-voltage cleared",       notify::Severity::Info     }, //  6: CellOvervoltClear
+  { "Under-voltage started",           notify::Severity::Critical }, //  7: PackUndervoltStart
+  { "Under-voltage cleared",           notify::Severity::Info     }, //  8: PackUndervoltClear
+  { "Charge stopped: temperature",     notify::Severity::Warning  }, //  9: TempChargeStop
+  { "Charge resumed: temperature",     notify::Severity::Info     }, // 10: TempChargeResume
+  { "Discharge stopped: temperature",  notify::Severity::Warning  }, // 11: TempDischargeStop
+  { "Discharge resumed: temperature",  notify::Severity::Info     }, // 12: TempDischargeResume
+  { "Cell imbalance detected",         notify::Severity::Warning  }, // 13: CellImbalanceStart
+  { "Cell imbalance cleared",          notify::Severity::Info     }, // 14: CellImbalanceClear
+  { "BMS reported alarm",              notify::Severity::Critical }, // 15: BmsReportedAlarm
+  { "No packs online",                 notify::Severity::Critical }, // 16: NoPacksOnline
+  { "Packs online recovered",          notify::Severity::Info     }, // 17: PacksOnlineRecovered
 };
 
-namespace notify {
-
-void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
-  if (!s_tls_sem) return;  // not initialized
-
+// ── A2: single formatting function ───────────────────────────────────────────
+// Writes the human-readable body string for a safety event into buf.
+// Used by both the alert log emit and the Telegram send, so they always match.
+static void format_event_body(const SafetyState::EventEntry& entry, char* buf, size_t sz) {
   uint8_t ev_id = static_cast<uint8_t>(entry.type);
-  if (ev_id == 0 || ev_id > K_EV_MAX) return;  // None or out-of-range
+  if (ev_id == 0 || ev_id > K_EV_MAX || !k_event_desc[ev_id].label) {
+    snprintf(buf, sz, "Unknown safety event %u", (unsigned)ev_id);
+    return;
+  }
+  const char* label = k_event_desc[ev_id].label;
+  if (entry.bms_id != 0xFF) {
+    snprintf(buf, sz, "Pack %u: %s", (unsigned)(entry.bms_id + 1), label);
+  } else {
+    snprintf(buf, sz, "%s", label);
+  }
+}
 
+// ── A2: alert log + notify fire helper ───────────────────────────────────────
+// Emits an alert log entry and sends a Telegram notification for a safety event.
+// Called after debounce clears (or immediately when debounce=0).
+// Rate-limit is applied here before sending to Telegram.
+static void fire_alert_and_notify(const SafetyState::EventEntry& entry, uint32_t now_ms) {
+  uint8_t ev_id = static_cast<uint8_t>(entry.type);
+  if (ev_id == 0 || ev_id > K_EV_MAX) return;
+
+  const EventDesc& desc = k_event_desc[ev_id];
+  if (!desc.label) return;
+
+  // Build body text (shared by alert log and Telegram).
+  char body[160];
+  format_event_body(entry, body, sizeof(body));
+
+  // Always write to the alert log regardless of Telegram config.
+  diag::alerts::Severity alert_sev;
+  switch (desc.severity) {
+    case notify::Severity::Critical: alert_sev = diag::alerts::Severity::Critical; break;
+    case notify::Severity::Warning:  alert_sev = diag::alerts::Severity::Warn;     break;
+    default:                         alert_sev = diag::alerts::Severity::Info;     break;
+  }
+  diag::alerts::emit(alert_sev, "safety", "%s", body);
+
+  // Telegram: only if configured.
+  if (!s_tls_sem) return;
   const Config& cfg = app::get_config();
   if (!cfg.notify_telegram_enabled) return;
   if (cfg.notify_telegram_token[0]   == '\0') return;
   if (cfg.notify_telegram_chat_id[0] == '\0') return;
-
-  // Check event-type enable bitmask.
   if (!(cfg.notify_alert_flags & (1u << ev_id))) return;
 
-  // Enforce safe floors (never below 60 s regardless of config value).
+  // Enforce rate-limit floors (never below 60 s).
   uint32_t poll_ms = (cfg.notify_poll_interval_s >= 60u)
                      ? (uint32_t)cfg.notify_poll_interval_s * 1000u
                      : 60000u;
@@ -209,7 +245,6 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
                      ? (uint32_t)cfg.notify_cooldown_s * 1000u
                      : 60000u;
 
-  // Rate-limit check under critical section to avoid TOCTOU races.
   bool fire = false;
   portENTER_CRITICAL(&s_event_mux);
   bool global_ok = (s_last_any_send_ms == 0) ||
@@ -225,7 +260,6 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
 
   if (!fire) return;
 
-  // Build sender name: config field if non-empty, else device hostname.
   char sender[48];
   if (cfg.notify_sender_name[0] != '\0') {
     snprintf(sender, sizeof(sender), "%s", cfg.notify_sender_name);
@@ -233,23 +267,156 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
     net::wifi::get_hostname(sender, sizeof(sender));
   }
 
-  // Build title and body.
-  const EventDesc& desc = k_event_desc[ev_id];
-  char title[80];
-  char body[160];
+  ESP_LOGI(TAG, "alert notify: event=%u pack=%u: %s", ev_id, entry.bms_id, body);
+  send(desc.severity, sender, body);
+}
 
-  if (entry.bms_id != 0xFF) {
-    // Per-pack event.
-    snprintf(title, sizeof(title), "%s", sender);
-    snprintf(body,  sizeof(body),  "Pack %u: %s", (unsigned)(entry.bms_id + 1), desc.label);
-  } else {
-    // System-wide event.
-    snprintf(title, sizeof(title), "%s", sender);
-    snprintf(body,  sizeof(body),  "%s", desc.label);
+// ── A1: debounce pending table ────────────────────────────────────────────────
+// Tracks begin events waiting for the debounce window to expire.
+// If the matching clear arrives before the window expires, both are suppressed.
+struct PendingAlert {
+  bool     active;
+  SafetyState::SafetyEvent begin_type;  // the begin-edge event type
+  uint8_t  bms_id;
+  SafetyState::EventEntry  entry;       // full entry for deferred emit
+  uint32_t start_ms;
+};
+
+static constexpr size_t K_PENDING_CAP = 8;
+static PendingAlert       s_pending[K_PENDING_CAP];
+static portMUX_TYPE       s_pending_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Returns the begin event that a given clear event cancels, or None if not a clear.
+static SafetyState::SafetyEvent begin_for_clear(SafetyState::SafetyEvent ev) {
+  switch (ev) {
+    case SafetyState::SafetyEvent::BmsCameOnline:        return SafetyState::SafetyEvent::BmsWentOffline;
+    case SafetyState::SafetyEvent::PackOvervoltClear:    return SafetyState::SafetyEvent::PackOvervoltStart;
+    case SafetyState::SafetyEvent::CellOvervoltClear:    return SafetyState::SafetyEvent::CellOvervoltStart;
+    case SafetyState::SafetyEvent::PackUndervoltClear:   return SafetyState::SafetyEvent::PackUndervoltStart;
+    case SafetyState::SafetyEvent::TempChargeResume:     return SafetyState::SafetyEvent::TempChargeStop;
+    case SafetyState::SafetyEvent::TempDischargeResume:  return SafetyState::SafetyEvent::TempDischargeStop;
+    case SafetyState::SafetyEvent::CellImbalanceClear:   return SafetyState::SafetyEvent::CellImbalanceStart;
+    case SafetyState::SafetyEvent::PacksOnlineRecovered: return SafetyState::SafetyEvent::NoPacksOnline;
+    default:                                              return SafetyState::SafetyEvent::None;
+  }
+}
+
+// Returns true if this event is a "begin" (condition starting).
+static bool is_begin_event(SafetyState::SafetyEvent ev) {
+  return begin_for_clear(ev) == SafetyState::SafetyEvent::None && ev != SafetyState::SafetyEvent::None;
+}
+
+namespace notify {
+
+void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
+  uint8_t ev_id = static_cast<uint8_t>(entry.type);
+  if (ev_id == 0 || ev_id > K_EV_MAX) return;
+
+  const Config& cfg = app::get_config();
+  uint32_t debounce_ms = (uint32_t)cfg.notify_debounce_s * 1000u;
+
+  SafetyState::SafetyEvent pair_begin = begin_for_clear(entry.type);
+  bool is_clear = (pair_begin != SafetyState::SafetyEvent::None);
+  bool is_begin = is_begin_event(entry.type);
+
+  if (is_clear) {
+    // Check if the corresponding begin is pending (not yet fired).
+    bool suppressed = false;
+    portENTER_CRITICAL(&s_pending_mux);
+    for (size_t i = 0; i < K_PENDING_CAP; ++i) {
+      if (s_pending[i].active &&
+          s_pending[i].begin_type == pair_begin &&
+          s_pending[i].bms_id    == entry.bms_id) {
+        // Begin is still pending (within debounce window) — suppress both.
+        s_pending[i].active = false;
+        suppressed = true;
+        break;
+      }
+    }
+    portEXIT_CRITICAL(&s_pending_mux);
+
+    if (suppressed) {
+      ESP_LOGD(TAG, "debounce: suppressed flap event=%u bms=%u", ev_id, entry.bms_id);
+      return;
+    }
+    // Begin already fired (or debounce=0) — emit clear normally.
+    fire_alert_and_notify(entry, now_ms);
+    return;
   }
 
-  ESP_LOGI(TAG, "alert notify: event=%u pack=%u: %s", ev_id, entry.bms_id, body);
-  send(desc.severity, title, body);
+  if (is_begin) {
+    if (debounce_ms == 0) {
+      // Debounce disabled: emit immediately.
+      fire_alert_and_notify(entry, now_ms);
+      return;
+    }
+    // Debounce enabled: add to pending table.
+    portENTER_CRITICAL(&s_pending_mux);
+    int slot = -1;
+    for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
+      if (!s_pending[i].active) { slot = i; break; }
+    }
+    if (slot >= 0) {
+      s_pending[slot].active     = true;
+      s_pending[slot].begin_type = entry.type;
+      s_pending[slot].bms_id     = entry.bms_id;
+      s_pending[slot].entry      = entry;
+      s_pending[slot].start_ms   = now_ms;
+    } else {
+      // Table full (8 simultaneous pending events) — fire immediately rather than drop.
+      ESP_LOGW(TAG, "debounce table full — firing event=%u immediately", ev_id);
+    }
+    portEXIT_CRITICAL(&s_pending_mux);
+
+    if (slot < 0) {
+      fire_alert_and_notify(entry, now_ms);
+    }
+    return;
+  }
+
+  // Not a begin or clear (BmsReportedAlarm=15 has no clear — treated as begin).
+  if (debounce_ms == 0) {
+    fire_alert_and_notify(entry, now_ms);
+  } else {
+    portENTER_CRITICAL(&s_pending_mux);
+    int slot = -1;
+    for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
+      if (!s_pending[i].active) { slot = i; break; }
+    }
+    if (slot >= 0) {
+      s_pending[slot].active     = true;
+      s_pending[slot].begin_type = entry.type;
+      s_pending[slot].bms_id     = entry.bms_id;
+      s_pending[slot].entry      = entry;
+      s_pending[slot].start_ms   = now_ms;
+    }
+    portEXIT_CRITICAL(&s_pending_mux);
+    if (slot < 0) fire_alert_and_notify(entry, now_ms);
+  }
+}
+
+void flush_pending_alerts(uint32_t now_ms) {
+  const Config& cfg = app::get_config();
+  uint32_t debounce_ms = (uint32_t)cfg.notify_debounce_s * 1000u;
+  if (debounce_ms == 0) return;  // nothing pending when debounce is off
+
+  for (size_t i = 0; i < K_PENDING_CAP; ++i) {
+    SafetyState::EventEntry entry_copy{};
+    bool should_fire = false;
+
+    portENTER_CRITICAL(&s_pending_mux);
+    if (s_pending[i].active &&
+        (now_ms - s_pending[i].start_ms) >= debounce_ms) {
+      entry_copy   = s_pending[i].entry;
+      should_fire  = true;
+      s_pending[i].active = false;  // remove from table after firing
+    }
+    portEXIT_CRITICAL(&s_pending_mux);
+
+    if (should_fire) {
+      fire_alert_and_notify(entry_copy, now_ms);
+    }
+  }
 }
 
 }  // namespace notify

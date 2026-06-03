@@ -22,11 +22,18 @@ void init();
 // another send is already in flight.  Failures are logged; callers are not notified.
 void send(Severity severity, const char* title, const char* body);
 
-// Route a SafetyEvent to notifications.  Called per-cycle from the BMS poller
-// after runSafety() produces events.  Applies: event-type enable bitmask,
-// global poll-interval floor, per-type cooldown, and TLS serialization.
+// Route a SafetyEvent through the debounce layer, then to alert log and
+// notifications.  Called per-event from the BMS poller after runSafety().
+// Debounce (A1): begin events are held until notify_debounce_s elapses; if the
+// matching clear arrives first both are suppressed.  The safety CONTROL LOOP is
+// unaffected — only the human-facing log/notify layer is debounced.
+// A2: alert log text and Telegram body derive from the same format_event_body().
 // Non-blocking; drops silently when rate-limited or TLS is busy.
 void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms);
+
+// Flush debounced events whose window has expired.  Call once per poller cycle
+// AFTER processing all events for that cycle (same task, same thread).
+void flush_pending_alerts(uint32_t now_ms);
 
 // ── Test send ─────────────────────────────────────────────────────────────────
 
