@@ -8,6 +8,7 @@
 #include "can/tx.h"
 #include "storage/alerts_store.h"
 #include "storage/energy_store.h"
+#include "storage/boot_reasons.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -86,9 +87,11 @@ static void housekeeping_task_entry(void* /*arg*/) {
 
   uint32_t last_cells_ms[16]   = {};
   uint32_t last_alert_flush_ms = 0;
+  bool     ring_cleared        = false;  // one-shot at ≥ 30 s uptime
 
   static constexpr uint32_t CELLS_JSON_PERIOD_MS   = 30000;  // Cells JSON blob per pack
   static constexpr uint32_t ALERT_FLUSH_PERIOD_MS  = 300000; // 5 min
+  static constexpr uint32_t HEALTHY_UPTIME_S        = 30;
 
   for (;;) {
     uint32_t now_ms   = (uint32_t)(esp_timer_get_time() / 1000);
@@ -97,6 +100,17 @@ static void housekeeping_task_entry(void* /*arg*/) {
     s_tick++;
 
     const Config& cfg = app::get_config();
+
+    // ── Healthy-uptime ring clear (once, at ≥ 30 s) ──────────────────────────
+    // record_this_boot() always sees ~100 ms at call time (esp_timer resets on
+    // every hardware reset), so it cannot detect whether the PREVIOUS boot ran
+    // long.  We clear the rapid-reset ring here instead, once we've been running
+    // stably for ≥ 30 s — ensuring that legitimate SW restarts (OTA apply, MQTT
+    // settings save, self-test timeout) never accumulate toward the 5x-wipe tally.
+    if (!ring_cleared && uptime_s >= HEALTHY_UPTIME_S) {
+      storage::boot_reasons::mark_healthy();
+      ring_cleared = true;
+    }
 
     // ── Alert queue drain (always, regardless of MQTT state) ─────────────────
     // Process up to 8 alerts per cycle to bound stack time; use a static

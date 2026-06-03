@@ -7,6 +7,7 @@
 #include "handlers_diag.h"
 #include "handlers_alerts.h"
 #include "handlers_ota.h"
+#include "handlers_notify.h"
 #include "handlers_static.h"
 #include "app/self_test.h"
 #include "esp_log.h"
@@ -46,13 +47,13 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[28];
+static AuthCtx g_auth_ctx[30];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
                      const char* uri, httpd_method_t method,
                      esp_err_t (*handler)(httpd_req_t*)) {
-  if (g_auth_ctx_count >= 28) {
+  if (g_auth_ctx_count >= 30) {
     ESP_LOGE(TAG, "reg_auth: out of context slots");
     return;
   }
@@ -77,7 +78,7 @@ bool start_httpd(const Config& /*cfg*/) {
   config.task_priority      = 4;
   config.stack_size         = 12 * 1024;
   config.max_open_sockets   = 4;
-  config.max_uri_handlers   = 32;
+  config.max_uri_handlers   = 40;
   config.recv_wait_timeout  = 5;
   config.send_wait_timeout  = 5;
   config.lru_purge_enable   = true;
@@ -129,6 +130,16 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/restore",   HTTP_POST, handle_restore);
   reg_auth(g_server, "/api/mqtt/test", HTTP_POST, handle_mqtt_test_post);
   reg_auth(g_server, "/api/mqtt/test", HTTP_GET,  handle_mqtt_test_get);
+
+  // ── Notification endpoints (iter/notifications-telegram) ─────────────────
+  reg_auth(g_server, "/api/notify/telegram/test", HTTP_POST,
+           web::handle_notify_telegram_test_post);
+  reg_auth(g_server, "/api/notify/telegram/test", HTTP_GET,
+           web::handle_notify_telegram_test_get);
+  reg_auth(g_server, "/api/notify/status",      HTTP_GET,
+           web::handle_notify_status_get);
+  reg_auth(g_server, "/api/notify/alert-types", HTTP_GET,
+           web::handle_notify_alert_types_get);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

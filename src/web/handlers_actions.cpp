@@ -109,6 +109,7 @@ esp_err_t handle_health(httpd_req_t* req) {
 }
 
 // FreeRTOS task that waits 2 s then calls esp_restart().
+// 4096 bytes: ESP_LOGI + esp_restart() need more than 2048 on ESP-IDF 5.x.
 static void restart_task(void* arg) {
   vTaskDelay(pdMS_TO_TICKS(2000));
   ESP_LOGI(TAG, "Executing soft restart (scheduled by POST /api/restart)");
@@ -121,7 +122,7 @@ esp_err_t handle_restart(httpd_req_t* req) {
   httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"Restarting in 2s\"}");
 
   // Detached task so the response is sent before restart.
-  xTaskCreate(restart_task, "restart", 2048, NULL, 1, NULL);
+  xTaskCreate(restart_task, "restart", 4096, NULL, 1, NULL);
   return ESP_OK;
 }
 
@@ -426,9 +427,10 @@ esp_err_t handle_restore(httpd_req_t* req) {
     new_cfg.rs485_enabled = live.rs485_enabled;
   }
 
-  // Passwords are never in backups — force-clear regardless of what the backup says.
-  new_cfg.mqtt_pass_obf[0] = '\0';
-  new_cfg.auth_hash[0]     = '\0';
+  // Secrets are never in backups — force-clear regardless of what the backup says.
+  new_cfg.mqtt_pass_obf[0]          = '\0';
+  new_cfg.auth_hash[0]              = '\0';
+  new_cfg.notify_telegram_token[0]  = '\0';
 
   // Full value-range validation (same path as /api/config POST).
   char field_err[64] = {};
@@ -453,7 +455,7 @@ esp_err_t handle_restore(httpd_req_t* req) {
   xTaskCreate([](void*) {
     vTaskDelay(pdMS_TO_TICKS(3000));
     esp_restart();
-  }, "restore_rst", 2048, nullptr, 1, nullptr);
+  }, "restore_rst", 4096, nullptr, 1, nullptr);
 
   return ESP_OK;
 }

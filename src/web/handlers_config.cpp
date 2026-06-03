@@ -1,6 +1,7 @@
 #include "handlers_config.h"
 #include "config_json.h"
 #include "app/boot.h"
+#include "notify/notify.h"
 #include "storage/config.h"
 #include "storage/nvs_store.h"
 #include "net/wifi.h"
@@ -14,7 +15,8 @@
 static const char* TAG = "web_cfg";
 
 // Delayed restart — same pattern as handlers_actions. Lets the HTTP response
-// flush before esp_restart() fires.
+// flush before esp_restart() fires. 4096 bytes: ESP_LOGI + esp_restart() on
+// ESP-IDF 5.x need more stack than 2048 (cleanup handlers, WiFi teardown).
 static void deferred_restart(void* /*arg*/) {
   vTaskDelay(pdMS_TO_TICKS(2000));
   esp_restart();
@@ -130,9 +132,20 @@ esp_err_t handle_config_post(httpd_req_t* req) {
                        strcmp(old_cfg.mqtt_base_topic, new_cfg.mqtt_base_topic) != 0 ||
                        (new_cfg.mqtt_pass_obf[0] != '\0'));  // non-empty = password updated
 
+  // Detect Telegram credential changes before overwriting old_cfg.
+  // When token or chat_id changes, reset verified state so the UI reflects
+  // that the new credentials have not yet been confirmed with Telegram.
+  bool creds_changed =
+      strcmp(old_cfg.notify_telegram_token,   new_cfg.notify_telegram_token)   != 0 ||
+      strcmp(old_cfg.notify_telegram_chat_id, new_cfg.notify_telegram_chat_id) != 0;
+
   // Persist to NVS and update runtime config.
   if (!app::update_and_save_config(new_cfg)) {
     return send_json_error(req, 500, "NVS save failed");
+  }
+
+  if (creds_changed) {
+    notify::reset_telegram_verified();
   }
 
   ESP_LOGI(TAG, "Config saved via HTTP POST /api/config");
@@ -145,7 +158,7 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     httpd_resp_sendstr(req,
         "{\"ok\":true,\"restart_required\":true,\"rebooting_in_s\":2,"
         "\"reason\":\"hardware_pins_changed\"}");
-    xTaskCreate(deferred_restart, "hw_restart", 2048, nullptr, 1, nullptr);
+    xTaskCreate(deferred_restart, "hw_restart", 4096, nullptr, 1, nullptr);
     return ESP_OK;
   }
 
@@ -158,7 +171,7 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req,
         "{\"ok\":true,\"restart_required\":true,\"rebooting_in_s\":2}");
-    xTaskCreate(deferred_restart, "mqtt_restart", 2048, nullptr, 1, nullptr);
+    xTaskCreate(deferred_restart, "mqtt_restart", 4096, nullptr, 1, nullptr);
     return ESP_OK;
   }
 

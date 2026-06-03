@@ -7,7 +7,14 @@
 // uses this to upgrade older blobs stored in NVS.
 // v1 → v2: added rs485_enabled; renamed BoardPreset (LilyGo→Manual, dropped Custom).
 //           v1 blobs fail deserialization → device loads DEFAULT_CONFIG (Waveshare).
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 2;
+// v2 → v3: added notify_telegram_enabled/token/chat_id.
+//           Explicit Config_v2 struct copy migration (struct grew, no padding trick).
+// v3 → v4: added notify_sender_name, notify_alert_flags, notify_telegram_last_ok_ts,
+//           notify_poll_interval_s, notify_cooldown_s, notify_telegram_verified.
+//           Struct grows from 644 B to 692 B. Explicit Config_v3 copy migration.
+// v4 → v5: added notify_debounce_s (uint16_t) — placed in the former 3-byte tail
+//           padding so sizeof(Config) stays 692 B. Default 30 s; 0 = disabled.
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 5;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -137,6 +144,35 @@ struct Config {
   // ── Debug ───────────────────────────────────────────────────────────────────
   bool serial_debug_enabled;
   bool spy_persist_default;
+
+  // ── Notifications (v3 base fields) ──────────────────────────────────────────
+  // notify_telegram_token is a SECRET: excluded from backup export, never echoed
+  // to the browser, force-cleared on import, leave-blank-to-keep in UI.
+  bool notify_telegram_enabled;
+  char notify_telegram_token[80];    // bot token from BotFather — SECRET
+  char notify_telegram_chat_id[24];  // numeric chat ID or @channel
+
+  // ── Notifications (v4 additions) ─────────────────────────────────────────────
+  // sender name shown in outgoing messages; empty = use device hostname at runtime
+  char     notify_sender_name[32];
+  // bitmask: bit(N) enables notifications for SafetyState::SafetyEvent value N.
+  // Bit 0 (None) is always ignored. Bit positions match safety_state.h enum values.
+  uint32_t notify_alert_flags;
+  // epoch timestamp of last successful Telegram send (0 = never).
+  // Updated on successful test or alert send.
+  uint32_t notify_telegram_last_ok_ts;
+  // global minimum seconds between any two notification sends (floor: 60 s)
+  uint16_t notify_poll_interval_s;
+  // per-event-type minimum seconds between repeated sends of same type (floor: 60 s)
+  uint16_t notify_cooldown_s;
+  // true once a test or alert send has succeeded; reset when credentials change
+  bool     notify_telegram_verified;
+  // 1 byte implicit padding (aligns notify_debounce_s to 2-byte boundary)
+  // Alert debounce: a condition must persist this many seconds before it is
+  // logged and sent. 0 = disabled (immediate). Applies ONLY to the alert
+  // log + notifications — the safety control loop is always edge-immediate.
+  uint16_t notify_debounce_s;
+  // (former 3-byte tail pad now consumed: sizeof(Config) still 692 B)
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

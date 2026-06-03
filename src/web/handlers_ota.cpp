@@ -70,6 +70,8 @@ static const char* next_part_state_str(esp_err_t err, esp_ota_img_states_t s) {
 }
 
 // Delayed-restart task: sends the HTTP response before rebooting.
+// Stack sized for ESP_LOGI + esp_restart() on ESP-IDF 5.x (cleanup handlers,
+// WiFi teardown). 2048 was insufficient; 4096 gives comfortable headroom.
 static void reboot_task(void* /*arg*/) {
   vTaskDelay(pdMS_TO_TICKS(3000));
   ESP_LOGI(TAG, "Executing OTA reboot");
@@ -244,7 +246,7 @@ esp_err_t handler_ota_upload(httpd_req_t* req) {
       "{\"status\":\"ok\",\"message\":\"Firmware uploaded. Rebooting in 3s.\",\"rebooting_in_s\":3}");
 
   // Detached task so the HTTP response is flushed before restart.
-  xTaskCreate(reboot_task, "ota_reboot", 2048, nullptr, 1, nullptr);
+  xTaskCreate(reboot_task, "ota_reboot", 4096, nullptr, 1, nullptr);
   return ESP_OK;
 }
 

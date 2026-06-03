@@ -66,6 +66,20 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["last_reset_ts"]         = c.last_reset_ts;
   doc["serial_debug_enabled"]  = c.serial_debug_enabled;
   doc["spy_persist_default"]   = c.spy_persist_default;
+
+  // Notifications — token is redacted (SECRET: same treatment as mqtt_pass_obf).
+  doc["notify_telegram_enabled"]  = c.notify_telegram_enabled;
+  doc["notify_telegram_token"]    = "";   // always redacted
+  doc["notify_telegram_chat_id"]  = c.notify_telegram_chat_id;
+  // v4 additions (non-secret, included in export/import)
+  doc["notify_sender_name"]       = c.notify_sender_name;
+  doc["notify_alert_flags"]       = c.notify_alert_flags;
+  doc["notify_telegram_last_ok_ts"] = c.notify_telegram_last_ok_ts;
+  doc["notify_poll_interval_s"]   = c.notify_poll_interval_s;
+  doc["notify_cooldown_s"]        = c.notify_cooldown_s;
+  doc["notify_telegram_verified"] = c.notify_telegram_verified;
+  // v5 addition (non-secret, included in export/import)
+  doc["notify_debounce_s"]        = c.notify_debounce_s;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -194,6 +208,43 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.serial_debug_enabled = doc["serial_debug_enabled"];
   if (doc["spy_persist_default"].is<bool>())
     c.spy_persist_default = doc["spy_persist_default"];
+
+  // Notifications
+  if (doc["notify_telegram_enabled"].is<bool>())
+    c.notify_telegram_enabled = doc["notify_telegram_enabled"];
+  // Token: leave-blank-to-keep — never echoed to browser, only written when non-empty.
+  if (doc["notify_telegram_token"].is<const char*>()) {
+    const char* t = doc["notify_telegram_token"].as<const char*>();
+    if (t && t[0] != '\0') snprintf(c.notify_telegram_token, sizeof(c.notify_telegram_token), "%s", t);
+  }
+  // chat_id: leave-blank-to-keep for consistency with the token and other
+  // credential fields.  config_to_json echoes the stored value so an unmodified
+  // round-trip through the UI is lossless.  An empty incoming value is treated
+  // as "keep current" — a blank field in the form must not silently wipe a
+  // configured chat ID.
+  if (doc["notify_telegram_chat_id"].is<const char*>()) {
+    const char* cid = doc["notify_telegram_chat_id"].as<const char*>();
+    if (cid && cid[0] != '\0') snprintf(c.notify_telegram_chat_id, sizeof(c.notify_telegram_chat_id), "%s", cid);
+  }
+  // v4 additions
+  copy_str(doc["notify_sender_name"], c.notify_sender_name);
+  if (doc["notify_alert_flags"].is<uint32_t>())
+    c.notify_alert_flags = doc["notify_alert_flags"].as<uint32_t>();
+  if (doc["notify_telegram_last_ok_ts"].is<uint32_t>())
+    c.notify_telegram_last_ok_ts = doc["notify_telegram_last_ok_ts"].as<uint32_t>();
+  if (doc["notify_poll_interval_s"].is<uint16_t>()) {
+    uint16_t v = doc["notify_poll_interval_s"].as<uint16_t>();
+    c.notify_poll_interval_s = (v >= 60u) ? v : 60u;  // firmware floor
+  }
+  if (doc["notify_cooldown_s"].is<uint16_t>()) {
+    uint16_t v = doc["notify_cooldown_s"].as<uint16_t>();
+    c.notify_cooldown_s = (v >= 60u) ? v : 60u;        // firmware floor
+  }
+  if (doc["notify_telegram_verified"].is<bool>())
+    c.notify_telegram_verified = doc["notify_telegram_verified"];
+  if (doc["notify_debounce_s"].is<uint16_t>())
+    c.notify_debounce_s = doc["notify_debounce_s"].as<uint16_t>();
+
   return true;
 }
 

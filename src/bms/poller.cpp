@@ -13,6 +13,7 @@
 #include "net/ntp.h"
 #include "app/boot.h"
 #include "diag/alerts.h"
+#include "notify/notify.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -28,8 +29,8 @@ static const char* TAG = "poller";
 static portMUX_TYPE  s_stats_mux   = portMUX_INITIALIZER_UNLOCKED;
 static bms::poller::PollerStats s_stats{};
 
-// Per-pack online state for alert edge detection.
-static bool s_pack_was_online[16] = {};
+// (Per-pack online state was here for direct alert emit; removed when
+// BmsWentOffline/BmsCameOnline events from runSafety took over — see A1/A2.)
 // Last safety alarm_flags for all-clear edge detection.
 static uint8_t s_last_alarm_flags = 0;
 
@@ -161,6 +162,34 @@ static bool rs485_receive_frame(uint8_t* buf, size_t buf_size, size_t& out_len) 
 }
 
 // (Phase E: can::tx::init() called at ControlTask startup; can_tx_if_due() called per tick)
+
+// Translate SafetyState alarm_flags bits to a human-readable comma-separated
+// string. A4: replaces raw hex in user-facing alert log entries.
+static void alarm_flags_to_str(uint8_t flags, char* buf, size_t sz) {
+  static const struct { uint8_t bit; const char* name; } k_bits[] = {
+    { 0x02, "over-voltage"    },
+    { 0x08, "temperature"     },
+    { 0x10, "under-voltage"   },
+    { 0x20, "cell imbalance"  },
+    { 0x40, "BMS alarm"       },
+    { 0x80, "no packs online" },
+  };
+  buf[0] = '\0';
+  size_t pos = 0;
+  for (auto& b : k_bits) {
+    if (!(flags & b.bit)) continue;
+    if (pos > 0 && pos < sz - 2) { buf[pos++] = ','; buf[pos++] = ' '; }
+    size_t rem = sz - pos;
+    size_t n   = strlen(b.name);
+    if (n >= rem) n = rem - 1;
+    memcpy(buf + pos, b.name, n);
+    pos += n;
+    buf[pos] = '\0';
+  }
+  if (buf[0] == '\0' && sz > 0) {
+    snprintf(buf, sz, "0x%02X", (unsigned)flags);  // fallback for unknown bits
+  }
+}
 
 // Post one alarm event to q_mqtt_publish. Separated from control_task_entry
 // so the 1030-byte MqttPublishRequest never lands on the ControlTask frame
@@ -365,19 +394,9 @@ static void control_task_entry(void* param) {
       // ── Decay offline / update aggregates ────────────────────────────
       now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
       for (uint8_t i = 0; i < effective_bms_count; ++i) {
-        bool was = s_pack_was_online[i];
         if (bms::decay_online_status(sys->pack[i], now_ms, bms::poller::OFFLINE_THRESHOLD_MS)) {
           ESP_LOGW(TAG, "pack[%u] went offline", i);
         }
-        bool now_online = sys->pack[i].online;
-        if (was && !now_online) {
-          diag::alerts::emit(diag::alerts::Severity::Warn, "poller",
-                             "pack %u offline", (unsigned)i + 1);
-        } else if (!was && now_online) {
-          diag::alerts::emit(diag::alerts::Severity::Info, "poller",
-                             "pack %u online", (unsigned)i + 1);
-        }
-        s_pack_was_online[i] = now_online;
       }
       bms::update_system_aggregates(*sys);
 
@@ -392,8 +411,9 @@ static void control_task_entry(void* param) {
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
 
-        // Log and route safety events to MQTT alarm topic.
-        uint64_t ts_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+        // Log and route safety events to MQTT alarm topic and notification system.
+        uint64_t ts_ms  = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+        uint32_t now_ms = static_cast<uint32_t>(ts_ms);
         for (uint8_t ev = 0; ev < tmp.event_count; ++ev) {
           const SafetyState::EventEntry& entry = tmp.events[ev];
           ESP_LOGI(TAG, "safety event %u bms=%u bits=0x%llx",
@@ -404,7 +424,11 @@ static void control_task_entry(void* param) {
             // Non-blocking: drop if queue full (event already logged above).
             route_alarm_event_to_mqtt(entry, ts_ms);
           }
+          // Route through debounce → alert log + notifications (A1, A2).
+          notify::on_safety_event(entry, now_ms);
         }
+        // Flush any debounced events whose window has now expired.
+        notify::flush_pending_alerts(now_ms);
         if (tmp.alarm_flags)
           ESP_LOGW(TAG, "safety: flags=0x%02X ccl=%.0fA dcl=%.0fA msg=%s",
                    tmp.alarm_flags, tmp.ccl_amps, tmp.dcl_amps, tmp.sys_message);
@@ -413,12 +437,14 @@ static void control_task_entry(void* param) {
         {
           uint8_t new_bits = tmp.alarm_flags & ~s_last_alarm_flags;
           if (new_bits) {
+            char flag_str[80];
+            alarm_flags_to_str(new_bits, flag_str, sizeof(flag_str));
             diag::alerts::emit(diag::alerts::Severity::Warn, "safety",
-                               "flag 0x%02X active", (unsigned)new_bits);
+                               "Safety alarm: %s", flag_str);
           }
           // All-clear edge: flags just went from non-zero to zero.
           if (s_last_alarm_flags != 0 && tmp.alarm_flags == 0) {
-            diag::alerts::emit(diag::alerts::Severity::Info, "safety", "all clear");
+            diag::alerts::emit(diag::alerts::Severity::Info, "safety", "Safety alarm cleared");
           }
           s_last_alarm_flags = tmp.alarm_flags;
         }

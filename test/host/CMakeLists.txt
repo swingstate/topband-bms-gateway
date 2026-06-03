@@ -314,3 +314,27 @@ target_compile_definitions(test_alerts PRIVATE ${HOST_COMPILE_DEFS})
 target_compile_options(test_alerts PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_alerts PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_alerts)
+
+# ── test_config_json ──────────────────────────────────────────────────────────
+# Tests for config_to_json / json_to_config (web layer on top of Config).
+# Verifies the leave-blank-to-keep pattern for notify_telegram_token and
+# notify_telegram_chat_id, and that config_to_json redacts the token.
+# config_json.cpp has no IDF dependencies — only storage/config.h + ArduinoJson.
+add_executable(test_config_json
+  test_config_json.cpp
+  ../../src/storage/config.cpp
+  ../../src/web/config_json.cpp
+)
+
+target_include_directories(test_config_json PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_config_json PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_config_json PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_config_json PRIVATE
+  Catch2::Catch2WithMain
+  ArduinoJson
+)
+catch_discover_tests(test_config_json)

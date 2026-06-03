@@ -1030,6 +1030,8 @@ const SETTINGS_SECTIONS = [
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg>' },
+  { id: 'notifications', label: 'Notify',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' },
   { id: 'account', label: 'Account',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
   { id: 'system',  label: 'System',
@@ -1089,8 +1091,9 @@ function renderSettingsSection(id) {
     case 'hardware': content.innerHTML = renderSettingsHardware(); break;
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
-    case 'mqtt':     content.innerHTML = renderSettingsMqtt();     break;
-    case 'account':  content.innerHTML = renderSettingsAccount();  break;
+    case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
+    case 'notifications': content.innerHTML = renderSettingsNotifications(); loadNotifyData(); break;
+    case 'account':       content.innerHTML = renderSettingsAccount();       break;
     case 'system':   content.innerHTML = renderSettingsSystem();   break;
     case 'reset':    content.innerHTML = renderSettingsReset();    break;
     default:         content.innerHTML = renderSettingsBattery();  break;
@@ -1612,6 +1615,356 @@ function renderSettingsMqtt() {
       </div>
     </div>
   `;
+}
+
+/* ── Notifications section ──────────────────────────────────────────────────── */
+
+function renderSettingsNotifications() {
+  const c = g_config;
+  const pollVal     = (c.notify_poll_interval_s != null) ? c.notify_poll_interval_s : 60;
+  const coolVal     = (c.notify_cooldown_s      != null) ? c.notify_cooldown_s      : 120;
+  const debounceVal = (c.notify_debounce_s      != null) ? c.notify_debounce_s      : 30;
+  return `
+    <div class="settings-page">
+
+      <!-- ── Group 1: Connection ──────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Connection</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Receive alerts from this gateway directly in a Telegram chat.
+          <strong>Setup:</strong>
+          (1) Message <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
+          and run <code>/newbot</code> to get a bot token.
+          (2) Start a chat with your bot (or add it to a group).
+          (3) Find your Chat ID with
+          <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>
+          (personal chats) or
+          <a href="https://t.me/getidsbot" target="_blank" rel="noopener">@getidsbot</a>
+          (groups — use the negative group ID).
+        </p>
+
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <input type="checkbox" id="cfg-notify_telegram_enabled"
+                 ${c.notify_telegram_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-notify_telegram_enabled" style="margin:0">Enable Telegram notifications</label>
+        </div>
+
+        <div id="notify-status-line" style="font-size:13px;padding:8px 10px;border-radius:5px;
+             margin-bottom:14px;border:1px solid var(--border);background:var(--surface-alt)">
+          Loading status…
+        </div>
+
+        <div class="form-group">
+          <label>Bot Token (API key)</label>
+          <input type="password" id="cfg-notify_telegram_token" value=""
+                 autocomplete="new-password" placeholder="Leave blank to keep current">
+          <div class="help">Secret — never displayed here. Leave blank to keep the saved token.
+            Format from BotFather: <code>1234567890:ABCDef...</code></div>
+        </div>
+
+        <div class="form-group">
+          <label>Chat ID</label>
+          <input type="text" id="cfg-notify_telegram_chat_id"
+                 value="${escHtml(c.notify_telegram_chat_id || '')}"
+                 placeholder="e.g. 123456789 or -1001234567890">
+          <div class="help">Your personal numeric ID or a negative group ID.
+            Find it with @userinfobot or @getidsbot.</div>
+        </div>
+
+        <div class="form-group">
+          <label>Sender name</label>
+          <input type="text" id="cfg-notify_sender_name"
+                 value="${escHtml(c.notify_sender_name || '')}"
+                 maxlength="31" placeholder="Leave blank to use device hostname">
+          <div class="help">Name shown in outgoing messages so you know which gateway sent it.</div>
+        </div>
+
+        <div id="notify-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveNotificationsSection()">Save</button>
+          <button class="btn btn-secondary" onclick="testTelegramNotification()">Send test</button>
+        </div>
+        <div id="notify-test-result" style="display:none;margin-top:12px;padding:10px 12px;
+             border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
+      </div>
+
+      <!-- ── Group 2: Alerts ───────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Alerts</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Choose which conditions trigger a notification. A message is sent when a condition
+          begins and again when it clears. Per-alert cooldown and global poll interval
+          (Timing section below) prevent flooding.
+        </p>
+        <div id="notify-alert-types-list" style="font-size:13px;color:var(--text-muted)">
+          Loading alert types…
+        </div>
+      </div>
+
+      <!-- ── Group 3: Timing ───────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Timing</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Poll interval and cooldown floors are enforced at 60 s. Debounce minimum is 0 (disabled).
+        </p>
+
+        <div class="form-group">
+          <label>Alert debounce (seconds)</label>
+          <input type="number" id="cfg-notify_debounce_s"
+                 value="${debounceVal}" min="0" max="300" step="1">
+          <div class="help">A condition must persist this long before it is logged and notified.
+            Filters brief flaps (e.g. a pack that reconnects within seconds).
+            0 = disabled (immediate). Does not affect the gateway's safety response,
+            which always reacts immediately.</div>
+        </div>
+
+        <div class="form-group">
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="cfg-notify_poll_interval_s"
+                 value="${pollVal}" min="60" max="3600" step="1">
+          <div class="help">Global minimum time between any two notification sends.
+            Floor: 60 s. Example values: 60, 120, 300.</div>
+        </div>
+
+        <div class="form-group">
+          <label>Per-alert cooldown (seconds)</label>
+          <input type="number" id="cfg-notify_cooldown_s"
+                 value="${coolVal}" min="60" max="3600" step="1">
+          <div class="help">Minimum time before the same alert type can fire again (e.g. repeated
+            under-voltage). Floor: 60 s. Does not affect clear/recovery messages.</div>
+        </div>
+      </div>
+
+    </div>
+  `;
+}
+
+// Load status and alert-types asynchronously after the notifications page renders.
+async function loadNotifyData() {
+  loadNotifyStatus();
+  loadNotifyAlertTypes();
+}
+
+async function loadNotifyStatus() {
+  const el = document.getElementById('notify-status-line');
+  if (!el) return;
+  try {
+    const r = await apiFetch('/api/notify/status');
+    if (!r) return;
+    const s = await r.json();
+    let html = '';
+    if (!s.token_stored || !s.chat_id_stored) {
+      html = '<span style="color:var(--text-muted)">Not configured. Enter a Bot Token and Chat ID above.</span>';
+    } else if (!s.verified) {
+      html = '<span style="color:var(--color-warning)">API key: stored (&#x2022;&#x2022;&#x2022;&#x2022;) &nbsp;|&nbsp; '
+           + 'Chat ID: ' + escHtml(((window.g_config||{}).notify_telegram_chat_id)||'stored') + '</span>'
+           + '<br><span style="font-size:12px;color:var(--text-muted)">Not yet verified with Telegram. Use Send test to verify.</span>';
+    } else {
+      const dt = s.last_ok_ts ? new Date(s.last_ok_ts * 1000).toLocaleString() : '';
+      html = '<span style="color:var(--color-success)">API key and Chat ID stored and verified &#x2713;</span>'
+           + (dt ? '<br><span style="font-size:12px;color:var(--text-muted)">Last verified: ' + escHtml(dt) + '</span>' : '');
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    const el2 = document.getElementById('notify-status-line');
+    if (el2) el2.textContent = 'Status unavailable.';
+  }
+}
+
+async function loadNotifyAlertTypes() {
+  const container = document.getElementById('notify-alert-types-list');
+  if (!container) return;
+  try {
+    const r = await apiFetch('/api/notify/alert-types');
+    if (!r) return;
+    const types = await r.json();
+    const flags = (g_config && g_config.notify_alert_flags != null)
+                  ? g_config.notify_alert_flags : 0;
+
+    // Group by 'group' field.
+    const groups = {};
+    for (const t of types) {
+      if (!groups[t.group]) groups[t.group] = [];
+      groups[t.group].push(t);
+    }
+    const groupLabels = { voltage: 'Voltage', temperature: 'Temperature', cell: 'Cell', system: 'System' };
+
+    let html = '';
+    for (const [gkey, items] of Object.entries(groups)) {
+      html += '<div style="margin-bottom:12px">';
+      html += '<div style="font-size:12px;font-weight:600;text-transform:uppercase;'
+            + 'letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px">'
+            + escHtml(groupLabels[gkey] || gkey) + '</div>';
+      for (const t of items) {
+        const checked = (flags & (1 << t.id)) ? 'checked' : '';
+        html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <input type="checkbox" id="notify-ev-${t.id}" data-ev-id="${t.id}" ${checked} style="width:auto">
+          <label for="notify-ev-${t.id}" style="margin:0;font-size:13px">${escHtml(t.name)}</label>
+        </div>`;
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html || '<span style="color:var(--text-muted)">No alert types available.</span>';
+  } catch (e) {
+    const c2 = document.getElementById('notify-alert-types-list');
+    if (c2) c2.textContent = 'Could not load alert types.';
+  }
+}
+
+async function saveNotificationsSection() {
+  const msg = document.getElementById('notify-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash     = '';
+  cfg.mqtt_pass_obf = '';
+
+  const enabledEl = document.getElementById('cfg-notify_telegram_enabled');
+  if (enabledEl) cfg.notify_telegram_enabled = enabledEl.checked;
+
+  const chatIdEl = document.getElementById('cfg-notify_telegram_chat_id');
+  if (chatIdEl) cfg.notify_telegram_chat_id = chatIdEl.value;
+
+  const senderEl = document.getElementById('cfg-notify_sender_name');
+  if (senderEl) cfg.notify_sender_name = senderEl.value;
+
+  // Token: blank means keep existing; non-blank means update.
+  const tokenEl = document.getElementById('cfg-notify_telegram_token');
+  cfg.notify_telegram_token = (tokenEl && tokenEl.value.length > 0) ? tokenEl.value : '';
+
+  // Timing fields — debounce floor 0, poll/cooldown floor 60.
+  const debounceEl = document.getElementById('cfg-notify_debounce_s');
+  if (debounceEl) {
+    const v = parseInt(debounceEl.value, 10);
+    cfg.notify_debounce_s = (isNaN(v) || v < 0) ? 0 : v;
+  }
+  const pollEl = document.getElementById('cfg-notify_poll_interval_s');
+  if (pollEl) {
+    const v = parseInt(pollEl.value, 10);
+    cfg.notify_poll_interval_s = (isNaN(v) || v < 60) ? 60 : v;
+  }
+  const coolEl = document.getElementById('cfg-notify_cooldown_s');
+  if (coolEl) {
+    const v = parseInt(coolEl.value, 10);
+    cfg.notify_cooldown_s = (isNaN(v) || v < 60) ? 60 : v;
+  }
+
+  // Alert flags: collect checked state from all rendered checkboxes.
+  let flags = 0;
+  document.querySelectorAll('[data-ev-id]').forEach(cb => {
+    const id = parseInt(cb.dataset.evId, 10);
+    if (!isNaN(id) && cb.checked) flags |= (1 << id);
+  });
+  cfg.notify_alert_flags = flags >>> 0;  // ensure uint32
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (tokenEl) tokenEl.value = '';
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+      // Refresh status line — credentials may have changed.
+      loadNotifyStatus();
+    } else {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── Telegram notification test ─────────────────────────────────────────────── */
+
+let g_notify_test_poll = null;
+
+async function testTelegramNotification() {
+  const resultEl = document.getElementById('notify-test-result');
+  if (!resultEl) return;
+
+  if (g_notify_test_poll) { clearInterval(g_notify_test_poll); g_notify_test_poll = null; }
+
+  const enabled = (document.getElementById('cfg-notify_telegram_enabled') || {}).checked || false;
+  const tokenEl = document.getElementById('cfg-notify_telegram_token');
+  const token   = tokenEl ? tokenEl.value : '';
+  const chatId  = (document.getElementById('cfg-notify_telegram_chat_id') || {}).value || '';
+
+  if (!chatId) {
+    resultEl.style.display = 'block';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.textContent = 'Enter a Chat ID first.';
+    return;
+  }
+
+  resultEl.style.display = 'block';
+  resultEl.style.borderColor = 'var(--border)';
+  resultEl.style.color = 'var(--text-muted)';
+  resultEl.innerHTML = '<span class="spinner"></span> Sending test notification…' +
+    (token === '' ? ' <em style="font-size:11px">(using saved token)</em>' : '');
+
+  try {
+    const r = await apiFetch('/api/notify/telegram/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        notify_telegram_enabled: enabled,
+        notify_telegram_token:   token,
+        notify_telegram_chat_id: chatId,
+      }),
+    });
+    if (!r) return;
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      resultEl.style.color = 'var(--color-alarm)';
+      resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = d.error || 'Failed to start test.';
+      return;
+    }
+  } catch (e) {
+    resultEl.style.color = 'var(--color-alarm)';
+    resultEl.style.borderColor = 'var(--color-alarm)';
+    resultEl.textContent = 'Network error: ' + e.message;
+    return;
+  }
+
+  // Poll until done (max 60 s at 1 s intervals).
+  // TLS handshake under MQTT load: up to ~45 s worst case (9 ops x 5 s timeout).
+  // DRAM retry in http_post adds up to 3 s before the handshake.
+  let polls = 0;
+  g_notify_test_poll = setInterval(async function() {
+    polls++;
+    if (polls > 60) {
+      clearInterval(g_notify_test_poll); g_notify_test_poll = null;
+      resultEl.style.color = 'var(--color-alarm)';
+      resultEl.style.borderColor = 'var(--color-alarm)';
+      resultEl.textContent = 'Test timed out — no result after 60 s.';
+      return;
+    }
+    try {
+      const r2 = await apiFetch('/api/notify/telegram/test');
+      if (!r2) return;
+      const d = await r2.json();
+      if (d.status === 'running') return;
+      clearInterval(g_notify_test_poll); g_notify_test_poll = null;
+      if (d.status === 'ok') {
+        resultEl.style.color = 'var(--color-success)';
+        resultEl.style.borderColor = 'var(--color-success)';
+        resultEl.textContent = d.message || 'Test notification sent.';
+        // Refresh the status line to show "verified".
+        loadNotifyStatus();
+      } else {
+        resultEl.style.color = 'var(--color-alarm)';
+        resultEl.style.borderColor = 'var(--color-alarm)';
+        resultEl.textContent = d.message || 'Test failed.';
+      }
+    } catch (e) { /* ignore transient poll errors */ }
+  }, 1000);
 }
 
 function renderSettingsAccount() {
@@ -2691,6 +3044,24 @@ function renderDiagData(d) {
         ${kvRow('Stored alerts', d.alerts_count||0)}
       </div>
     </div>
+
+    ${(function() {
+      const cd = d.coredump || {};
+      if (!cd.present) return '';
+      return `<div class="diag-section">
+      <h3>Previous panic (coredump)</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Crashing task', cd.crashing_task || '—')}
+        ${cd.exc_pc   ? kvRow('Exception PC', cd.exc_pc) : ''}
+        ${cd.build_sha256 ? kvRow('Build (SHA256)', cd.build_sha256.slice(0,16) + '…') : ''}
+      </div>
+      <div style="margin-top:10px">
+        <a href="/api/diag/coredump.bin" class="btn btn-secondary" download="coredump.bin">
+          Download coredump
+        </a>
+      </div>
+    </div>`;
+    })()}
 
     <div class="diag-section">
       <h3>Log (last ${(d.log_ring||[]).length} lines)</h3>

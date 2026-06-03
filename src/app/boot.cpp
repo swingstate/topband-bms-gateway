@@ -25,6 +25,7 @@
 #include "app/self_test.h"
 #include "mqtt/publisher.h"
 #include "mqtt/ha_discovery.h"
+#include "notify/notify.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -142,6 +143,9 @@ void run_boot() {
                (unsigned)(heap_before - heap_after));
     }
   }
+
+  // ── Step 3a: Notify module (TLS semaphore + persisted verified state) ─────
+  notify::init();
 
   // ── Step 4: Snapshot bus (PSRAM double-buffer) ───────────────────────────
   {
@@ -297,8 +301,7 @@ void run_boot() {
   // Per docs/diag-mqtt-crash-review.md Finding 9.
   if (esp_core_dump_image_check() == ESP_OK) {
     diag::alerts::emit(diag::alerts::Severity::Critical, "boot",
-                       "coredump found from previous panic — retrieve via "
-                       "GET /api/diag/coredump.bin");
+                       "Previous panic detected — details on the Diagnostics page");
   }
 
   // ── Step 12: Boot-complete alert ─────────────────────────────────────────
