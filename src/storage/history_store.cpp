@@ -2,7 +2,6 @@
 #include "lfs_store.h"
 #include "bus/types.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "esp_attr.h"
 #include <cstring>
 #include <cstdio>
@@ -17,17 +16,11 @@ static const char* TAG = "hist_store";
 static HistoryRingHeader s_fine_hdr   = {};
 static HistoryRingHeader s_coarse_hdr = {};
 
-// EXT_RAM_BSS_ATTR: ~57 KB moved from DRAM BSS to PSRAM BSS. CPU-only access
+// EXT_RAM_BSS_ATTR: ~62 KB moved from DRAM BSS to PSRAM BSS. CPU-only access
 // (fread/memcpy), never DMA. CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y required.
+// drift_mv is now embedded in each point (+1440 B fine, +4032 B coarse vs. pre-v2).
 static EXT_RAM_BSS_ATTR HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY];
 static EXT_RAM_BSS_ATTR HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY];
-
-// ── Cell-drift companion rings ────────────────────────────────────────────────
-// PSRAM-heap-allocated in init() to keep steady-state DRAM neutral.
-// Parallel ring index to s_fine_buf / s_coarse_buf — same head and count.
-// Not persisted to disk; lost on reboot (acceptable for a monitoring chart).
-static uint16_t* s_fine_drift   = nullptr;  // HISTORY_FINE_CAPACITY × 2 B in PSRAM
-static uint16_t* s_coarse_drift = nullptr;  // HISTORY_COARSE_CAPACITY × 2 B in PSRAM
 
 static bool s_fine_dirty   = false;
 static bool s_coarse_dirty = false;
@@ -48,11 +41,20 @@ static bool load_ring_fine() {
   if (!f) return false;
 
   HistoryRingHeader hdr = {};
-  if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != HISTORY_FINE_MAGIC) {
+  if (fread(&hdr, sizeof(hdr), 1, f) != 1) {
     fclose(f);
     return false;
   }
-  // Sanity check capacity stored in header.
+  // Both magic and format_version must match. Old-format files ('HFRF' magic)
+  // fail the magic check here and are discarded — one-time clear on first boot
+  // after the format-v2 upgrade. Subsequent boots see new magic and pass.
+  if (hdr.magic != HISTORY_FINE_MAGIC || hdr.format_version != HISTORY_FORMAT_VERSION) {
+    ESP_LOGI(TAG, "fine ring: format mismatch (magic=0x%08X ver=%u) — "
+             "History format updated, previous chart history cleared",
+             (unsigned)hdr.magic, (unsigned)hdr.format_version);
+    fclose(f);
+    return false;
+  }
   if (hdr.capacity != HISTORY_FINE_CAPACITY) {
     ESP_LOGW(TAG, "fine ring capacity mismatch (file=%u expected=%u) — resetting",
              (unsigned)hdr.capacity, (unsigned)HISTORY_FINE_CAPACITY);
@@ -74,7 +76,14 @@ static bool load_ring_coarse() {
   if (!f) return false;
 
   HistoryRingHeader hdr = {};
-  if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != HISTORY_COARSE_MAGIC) {
+  if (fread(&hdr, sizeof(hdr), 1, f) != 1) {
+    fclose(f);
+    return false;
+  }
+  if (hdr.magic != HISTORY_COARSE_MAGIC || hdr.format_version != HISTORY_FORMAT_VERSION) {
+    ESP_LOGI(TAG, "coarse ring: format mismatch (magic=0x%08X ver=%u) — "
+             "History format updated, previous chart history cleared",
+             (unsigned)hdr.magic, (unsigned)hdr.format_version);
     fclose(f);
     return false;
   }
@@ -119,22 +128,24 @@ static bool write_ring_file(const char* path, const char* tmp_path,
 }
 
 static void init_fine_header() {
-  s_fine_hdr.magic       = HISTORY_FINE_MAGIC;
-  s_fine_hdr.epoch_base  = 0;   // updated on first NTP-synced sample
-  s_fine_hdr.head        = 0;
-  s_fine_hdr.count       = 0;
-  s_fine_hdr.resolution_s = HISTORY_FINE_RESOLUTION_S;
-  s_fine_hdr.capacity    = HISTORY_FINE_CAPACITY;
+  s_fine_hdr.magic          = HISTORY_FINE_MAGIC;
+  s_fine_hdr.format_version = HISTORY_FORMAT_VERSION;
+  s_fine_hdr.epoch_base     = 0;   // updated on first NTP-synced sample
+  s_fine_hdr.head           = 0;
+  s_fine_hdr.count          = 0;
+  s_fine_hdr.resolution_s   = HISTORY_FINE_RESOLUTION_S;
+  s_fine_hdr.capacity       = HISTORY_FINE_CAPACITY;
   memset(s_fine_buf, 0, sizeof(s_fine_buf));
 }
 
 static void init_coarse_header() {
-  s_coarse_hdr.magic       = HISTORY_COARSE_MAGIC;
-  s_coarse_hdr.epoch_base  = 0;
-  s_coarse_hdr.head        = 0;
-  s_coarse_hdr.count       = 0;
-  s_coarse_hdr.resolution_s = HISTORY_COARSE_RESOLUTION_S;
-  s_coarse_hdr.capacity    = HISTORY_COARSE_CAPACITY;
+  s_coarse_hdr.magic          = HISTORY_COARSE_MAGIC;
+  s_coarse_hdr.format_version = HISTORY_FORMAT_VERSION;
+  s_coarse_hdr.epoch_base     = 0;
+  s_coarse_hdr.head           = 0;
+  s_coarse_hdr.count          = 0;
+  s_coarse_hdr.resolution_s   = HISTORY_COARSE_RESOLUTION_S;
+  s_coarse_hdr.capacity       = HISTORY_COARSE_CAPACITY;
   memset(s_coarse_buf, 0, sizeof(s_coarse_buf));
 }
 
@@ -147,9 +158,11 @@ bool init() {
     return false;
   }
 
-  // Try to load persisted fine ring.
+  // Try to load persisted fine ring. Format mismatch (old magic or wrong version)
+  // is logged and treated as a clean-slate start — one-time loss on this upgrade,
+  // persistent from here on. See bus/types.h for format version history.
   if (!load_ring_fine()) {
-    ESP_LOGI(TAG, "fine ring not found or invalid — starting fresh");
+    ESP_LOGI(TAG, "fine ring not found or format mismatch — starting fresh");
     init_fine_header();
     s_fine_dirty = true;
   } else {
@@ -160,7 +173,7 @@ bool init() {
 
   // Try to load persisted coarse ring.
   if (!load_ring_coarse()) {
-    ESP_LOGI(TAG, "coarse ring not found or invalid — starting fresh");
+    ESP_LOGI(TAG, "coarse ring not found or format mismatch — starting fresh");
     init_coarse_header();
     s_coarse_dirty = true;
   } else {
@@ -169,28 +182,9 @@ bool init() {
              (unsigned)s_coarse_hdr.epoch_base);
   }
 
-  // Allocate drift companion rings from PSRAM to avoid adding DRAM pressure.
-  // Falls back to regular heap if PSRAM is unavailable.
-  size_t fine_drift_bytes   = HISTORY_FINE_CAPACITY   * sizeof(uint16_t);
-  size_t coarse_drift_bytes = HISTORY_COARSE_CAPACITY * sizeof(uint16_t);
-
-  s_fine_drift = static_cast<uint16_t*>(
-      heap_caps_malloc(fine_drift_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!s_fine_drift)
-    s_fine_drift = static_cast<uint16_t*>(malloc(fine_drift_bytes));
-  if (s_fine_drift)
-    memset(s_fine_drift, 0, fine_drift_bytes);
-
-  s_coarse_drift = static_cast<uint16_t*>(
-      heap_caps_malloc(coarse_drift_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!s_coarse_drift)
-    s_coarse_drift = static_cast<uint16_t*>(malloc(coarse_drift_bytes));
-  if (s_coarse_drift)
-    memset(s_coarse_drift, 0, coarse_drift_bytes);
-
-  ESP_LOGI(TAG, "drift rings: fine=%s coarse=%s",
-           s_fine_drift   ? "PSRAM" : "FAILED",
-           s_coarse_drift ? "PSRAM" : "FAILED");
+  // Drift is now stored in each HistoryFinePoint/HistoryCoarsePoint struct and
+  // persisted to LittleFS alongside the other metrics. No separate PSRAM companion
+  // arrays are needed — they have been removed, reclaiming ~5.5 KB of PSRAM heap.
 
   s_initialized = true;
   return true;
@@ -199,10 +193,6 @@ bool init() {
 bool append_fine(const HistoryFinePoint& pt) {
   if (!s_initialized) return false;
 
-  // epoch_base is maintained by history_task. If it's still 0 and this
-  // is a valid-time sample, history_task will have set it before calling here.
-
-  // Write into ring at head slot.
   s_fine_buf[s_fine_hdr.head] = pt;
 
   s_fine_hdr.head = (s_fine_hdr.head + 1) % HISTORY_FINE_CAPACITY;
@@ -222,7 +212,6 @@ bool append_coarse(const HistoryCoarsePoint& pt) {
 
   if (s_coarse_hdr.epoch_base == 0 && pt.t_epoch != 0) {
     // First NTP-valid coarse entry — anchor epoch_base to this point's time.
-    // epoch_base = t_epoch of oldest entry; on wrap we advance by resolution.
     s_coarse_hdr.epoch_base = pt.t_epoch;
   }
 
@@ -296,35 +285,5 @@ uint32_t fine_epoch_base()   { return s_fine_hdr.epoch_base; }
 uint32_t coarse_epoch_base() { return s_coarse_hdr.epoch_base; }
 uint32_t fine_count()        { return s_fine_hdr.count; }
 uint32_t coarse_count()      { return s_coarse_hdr.count; }
-
-// ── Drift companion ring API ──────────────────────────────────────────────────
-
-void record_fine_drift_mv(uint16_t mv) {
-  // Must be called immediately after append_fine(). Writes to the slot that
-  // append_fine() just filled (head has already advanced past it).
-  if (!s_fine_drift || s_fine_hdr.count == 0) return;
-  uint32_t last = (s_fine_hdr.head + HISTORY_FINE_CAPACITY - 1) % HISTORY_FINE_CAPACITY;
-  s_fine_drift[last] = mv;
-}
-
-void record_coarse_drift_mv(uint16_t mv) {
-  if (!s_coarse_drift || s_coarse_hdr.count == 0) return;
-  uint32_t last = (s_coarse_hdr.head + HISTORY_COARSE_CAPACITY - 1) % HISTORY_COARSE_CAPACITY;
-  s_coarse_drift[last] = mv;
-}
-
-uint16_t read_fine_drift_at(size_t idx) {
-  if (!s_fine_drift || s_fine_hdr.count == 0 || idx >= s_fine_hdr.count) return 0;
-  uint32_t oldest = (s_fine_hdr.head + HISTORY_FINE_CAPACITY - s_fine_hdr.count)
-                    % HISTORY_FINE_CAPACITY;
-  return s_fine_drift[(oldest + idx) % HISTORY_FINE_CAPACITY];
-}
-
-uint16_t read_coarse_drift_at(size_t idx) {
-  if (!s_coarse_drift || s_coarse_hdr.count == 0 || idx >= s_coarse_hdr.count) return 0;
-  uint32_t oldest = (s_coarse_hdr.head + HISTORY_COARSE_CAPACITY - s_coarse_hdr.count)
-                    % HISTORY_COARSE_CAPACITY;
-  return s_coarse_drift[(oldest + idx) % HISTORY_COARSE_CAPACITY];
-}
 
 }  // namespace storage::history_store

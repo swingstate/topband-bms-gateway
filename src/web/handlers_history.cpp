@@ -118,7 +118,7 @@ static void hs_fine_series(HStream& s, const char* name, bool first) {
     else if (!strcmp(name, "voltage")) hs_f2(s, (float)fp.voltage_x100 / 100.0f);
     else if (!strcmp(name, "soc"))     hs_f1(s, (float)fp.soc_x10 / 10.0f);
     else if (!strcmp(name, "temp"))    hs_f1(s, (float)fp.temp_x10 / 10.0f);
-    else if (!strcmp(name, "drift"))   hs_uint(s, storage::history_store::read_fine_drift_at(i));
+    else if (!strcmp(name, "drift"))   hs_uint(s, fp.drift_mv);
     else                               hs_str(s, "null");
   }
   hs_str(s, "]}");
@@ -149,7 +149,7 @@ static void hs_coarse_series(HStream& s, const char* name, bool first) {
     else if (!strcmp(name, "voltage")) hs_f2(s, (float)cp.volt_avg / 100.0f);
     else if (!strcmp(name, "soc"))     hs_f1(s, (float)cp.soc_avg  / 10.0f);
     else if (!strcmp(name, "temp"))    hs_f1(s, (float)cp.temp_avg / 10.0f);
-    else if (!strcmp(name, "drift"))   hs_uint(s, storage::history_store::read_coarse_drift_at(i));
+    else if (!strcmp(name, "drift"))   hs_uint(s, cp.drift_mv);
     else                               hs_str(s, "null");
   }
   hs_str(s, "]}");
@@ -211,12 +211,12 @@ esp_err_t handle_history_export(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 
   // Header row.
-  const char* hdr = "timestamp_local,tier,power_w,voltage_v,soc_pct,temp_c\r\n";
+  const char* hdr = "timestamp_local,tier,power_w,voltage_v,soc_pct,temp_c,drift_mv\r\n";
   if (httpd_resp_send_chunk(req, hdr, strlen(hdr)) != ESP_OK) {
     return httpd_resp_send_chunk(req, nullptr, 0);
   }
 
-  char row[128];
+  char row[140];
   // Coarse rows (older data first).
   for (size_t i = 0; i < coarse_n; i++) {
     const HistoryCoarsePoint& cp = s_coarse_buf[i];
@@ -228,12 +228,13 @@ esp_err_t handle_history_export(httpd_req_t* req) {
     localtime_r(&t, &tm_local);
     char ts_str[32];
     strftime(ts_str, sizeof(ts_str), "%Y-%m-%dT%H:%M:%S", &tm_local);
-    snprintf(row, sizeof(row), "%s,coarse,%d,%.2f,%.1f,%.1f\r\n",
+    snprintf(row, sizeof(row), "%s,coarse,%d,%.2f,%.1f,%.1f,%u\r\n",
              ts_str,
              (int)cp.power_avg,
              (float)cp.volt_avg / 100.0f,
              (float)cp.soc_avg  / 10.0f,
-             (float)cp.temp_avg / 10.0f);
+             (float)cp.temp_avg / 10.0f,
+             (unsigned)cp.drift_mv);
     if (httpd_resp_send_chunk(req, row, strlen(row)) != ESP_OK)
       return httpd_resp_send_chunk(req, nullptr, 0);
   }
@@ -250,12 +251,13 @@ esp_err_t handle_history_export(httpd_req_t* req) {
     localtime_r(&t, &tm_local);
     char ts_str[32];
     strftime(ts_str, sizeof(ts_str), "%Y-%m-%dT%H:%M:%S", &tm_local);
-    snprintf(row, sizeof(row), "%s,fine,%d,%.2f,%.1f,%.1f\r\n",
+    snprintf(row, sizeof(row), "%s,fine,%d,%.2f,%.1f,%.1f,%u\r\n",
              ts_str,
              (int)fp.power_w,
              (float)fp.voltage_x100 / 100.0f,
              (float)fp.soc_x10      / 10.0f,
-             (float)fp.temp_x10     / 10.0f);
+             (float)fp.temp_x10     / 10.0f,
+             (unsigned)fp.drift_mv);
     if (httpd_resp_send_chunk(req, row, strlen(row)) != ESP_OK)
       return httpd_resp_send_chunk(req, nullptr, 0);
   }

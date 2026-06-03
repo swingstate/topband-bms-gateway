@@ -28,17 +28,16 @@ static constexpr uint32_t FINE_PER_COARSE   =
 // snapshot_bus::read(); never DMA. Must NOT be a task local (H1 lesson).
 static EXT_RAM_BSS_ATTR BmsSystemSnapshot s_snap;
 
-// Fine-sample accumulator for downsampling to coarse.
-// Holds the last FINE_PER_COARSE fine points.
+// Fine-sample accumulator for downsampling to coarse (FINE_PER_COARSE = 30 slots).
+// Each slot includes drift_mv; make_coarse_point averages it from these directly.
 static HistoryFinePoint s_fine_window[FINE_PER_COARSE] = {};
 static uint32_t s_fine_in_window = 0;   // how many fine points since last coarse
 static uint32_t s_fine_total     = 0;   // total fine points appended ever
 
 // ── Build a HistoryFinePoint from the current snapshot ───────────────────────
-// drift_mv_out: system-wide max cell drift in mV (stored in PSRAM companion ring,
-// not in the on-disk struct, to keep DRAM neutral).
-static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap,
-                                         uint16_t& drift_mv_out) {
+// drift_mv is computed here and stored directly in the returned struct so it
+// is persisted to LittleFS alongside the other metrics (format v2).
+static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap) {
   HistoryFinePoint pt = {};
   float total_power_w = 0.0f;
   float sum_voltage   = 0.0f;
@@ -68,11 +67,10 @@ static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap,
     pt.voltage_x100 = (int16_t)((sum_voltage * inv) * 100.0f + 0.5f);
     pt.soc_x10      = (int16_t)((sum_soc * inv) * 10.0f + 0.5f);
     pt.temp_x10     = (int16_t)((sum_temp * inv) * 10.0f + 0.5f);
+    pt.drift_mv     = (sys_cell_max > sys_cell_min)
+                      ? (uint16_t)((sys_cell_max - sys_cell_min) * 1000.0f + 0.5f)
+                      : 0;
   }
-
-  drift_mv_out = (online > 0 && sys_cell_max > sys_cell_min)
-                 ? (uint16_t)((sys_cell_max - sys_cell_min) * 1000.0f + 0.5f)
-                 : 0;
 
   uint32_t now = net::ntp::now_unix_s();
   pt.flags = (now != 0) ? 0x0001 : 0x0000;
@@ -81,26 +79,20 @@ static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap,
 }
 
 // ── Downsample FINE_PER_COARSE fine points into one coarse point ──────────────
-// drift_mv_out: average drift over the window (from PSRAM companion ring).
+// Drift is averaged from pts[i].drift_mv — no companion ring needed (format v2).
 static HistoryCoarsePoint make_coarse_point(const HistoryFinePoint* pts, uint32_t n,
-                                             uint32_t abs_epoch_s,
-                                             uint16_t& drift_mv_out) {
+                                             uint32_t abs_epoch_s) {
   HistoryCoarsePoint cp = {};
-  drift_mv_out = 0;
   if (n == 0) return cp;
 
   int32_t sum_p = 0, min_p = INT16_MAX, max_p = INT16_MIN;
   int32_t sum_v = 0, min_v = INT16_MAX, max_v = INT16_MIN;
   int32_t sum_s = 0;
   int32_t sum_t = 0, min_t = INT16_MAX, max_t = INT16_MIN;
-  uint32_t valid = 0;
-
-  // Drift window: average across the fine samples in this coarse bucket.
   uint32_t drift_sum = 0;
   uint32_t drift_valid = 0;
-  // Read the last n fine drift values from the companion ring.
-  // The fine ring count may be > n; read from the tail of the window.
-  uint32_t fine_total = storage::history_store::fine_count();
+  uint32_t valid = 0;
+
   for (uint32_t i = 0; i < n; i++) {
     const HistoryFinePoint& p = pts[i];
     sum_p += p.power_w;
@@ -113,12 +105,7 @@ static HistoryCoarsePoint make_coarse_point(const HistoryFinePoint* pts, uint32_
     sum_t += p.temp_x10;
     min_t = std::min(min_t, (int32_t)p.temp_x10);
     max_t = std::max(max_t, (int32_t)p.temp_x10);
-    // Map window slot i to the read-order index in the fine ring.
-    if (fine_total >= n) {
-      size_t read_idx = fine_total - n + i;
-      uint16_t d = storage::history_store::read_fine_drift_at(read_idx);
-      if (d > 0) { drift_sum += d; drift_valid++; }
-    }
+    if (p.drift_mv > 0) { drift_sum += p.drift_mv; drift_valid++; }
     valid++;
   }
 
@@ -136,7 +123,7 @@ static HistoryCoarsePoint make_coarse_point(const HistoryFinePoint* pts, uint32_
     cp.temp_max  = (int16_t)max_t;
   }
   if (drift_valid > 0)
-    drift_mv_out = (uint16_t)(drift_sum / drift_valid);
+    cp.drift_mv = (uint16_t)(drift_sum / drift_valid);
 
   cp.t_epoch = abs_epoch_s;
   return cp;
@@ -161,9 +148,8 @@ static void history_task_entry(void* /*arg*/) {
       continue;
     }
 
-    // ── Build fine point ──────────────────────────────────────────────────────
-    uint16_t fine_drift_mv = 0;
-    HistoryFinePoint fp = make_fine_point(s_snap, fine_drift_mv);
+    // ── Build fine point (drift_mv embedded in struct) ───────────────────────
+    HistoryFinePoint fp = make_fine_point(s_snap);
 
     // Compute t_offset_s: offset from epoch_base stored in fine ring header.
     uint32_t now_s = net::ntp::now_unix_s();
@@ -178,7 +164,6 @@ static void history_task_entry(void* /*arg*/) {
                     : 0;
 
     storage::history_store::append_fine(fp);
-    storage::history_store::record_fine_drift_mv(fine_drift_mv);
     s_fine_total++;
 
     // Store in rolling window for downsampling.
@@ -198,11 +183,8 @@ static void history_task_entry(void* /*arg*/) {
       uint32_t coarse_ts = (now_s != 0) ? (now_s / HISTORY_COARSE_RESOLUTION_S)
                                             * HISTORY_COARSE_RESOLUTION_S
                                         : 0;
-      uint16_t coarse_drift_mv = 0;
-      HistoryCoarsePoint cp = make_coarse_point(s_fine_window, FINE_PER_COARSE,
-                                                  coarse_ts, coarse_drift_mv);
+      HistoryCoarsePoint cp = make_coarse_point(s_fine_window, FINE_PER_COARSE, coarse_ts);
       storage::history_store::append_coarse(cp);
-      storage::history_store::record_coarse_drift_mv(coarse_drift_mv);
       storage::history_store::flush();
 
       // Also persist energy counters every 5 min.
