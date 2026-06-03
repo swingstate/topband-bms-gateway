@@ -15,7 +15,8 @@
 static const char* TAG = "web_cfg";
 
 // Delayed restart — same pattern as handlers_actions. Lets the HTTP response
-// flush before esp_restart() fires.
+// flush before esp_restart() fires. 4096 bytes: ESP_LOGI + esp_restart() on
+// ESP-IDF 5.x need more stack than 2048 (cleanup handlers, WiFi teardown).
 static void deferred_restart(void* /*arg*/) {
   vTaskDelay(pdMS_TO_TICKS(2000));
   esp_restart();
@@ -157,7 +158,7 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     httpd_resp_sendstr(req,
         "{\"ok\":true,\"restart_required\":true,\"rebooting_in_s\":2,"
         "\"reason\":\"hardware_pins_changed\"}");
-    xTaskCreate(deferred_restart, "hw_restart", 2048, nullptr, 1, nullptr);
+    xTaskCreate(deferred_restart, "hw_restart", 4096, nullptr, 1, nullptr);
     return ESP_OK;
   }
 
@@ -170,7 +171,7 @@ esp_err_t handle_config_post(httpd_req_t* req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req,
         "{\"ok\":true,\"restart_required\":true,\"rebooting_in_s\":2}");
-    xTaskCreate(deferred_restart, "mqtt_restart", 2048, nullptr, 1, nullptr);
+    xTaskCreate(deferred_restart, "mqtt_restart", 4096, nullptr, 1, nullptr);
     return ESP_OK;
   }
 
