@@ -3098,6 +3098,37 @@ function renderDiagData(d) {
       <div class="diag-log-box" id="diag-log">
         ${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}
       </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>About</h3>
+      <p style="font-size:13px;margin-bottom:12px">
+        TopBand BMS Gateway V3.0 is a ground-up rewrite that builds on the work of
+        the projects below. With thanks to their authors:
+      </p>
+      <ul style="font-size:13px;line-height:1.8;padding-left:1.2em;margin:0 0 14px">
+        <li>Protocol reverse-engineering:
+          <a href="https://github.com/linedot/topband-bms"
+             target="_blank" rel="noopener noreferrer">linedot/topband-bms</a></li>
+        <li>Base framework:
+          <a href="https://github.com/atomi23/Topband-BMS-to-CAN"
+             target="_blank" rel="noopener noreferrer">atomi23/Topband-BMS-to-CAN</a>
+          V1.25</li>
+        <li>Captive portal:
+          <a href="https://github.com/tzapu/WiFiManager"
+             target="_blank" rel="noopener noreferrer">tzapu/WiFiManager</a></li>
+      </ul>
+      <div class="diag-kv-grid">
+        ${kvRow('Version', sys.fw || '—')}
+        ${kvRow('Build', sys.build || '—')}
+        ${kvRow('License', 'MIT')}
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:10px">
+        <a href="https://github.com/swingstate/topband-bms-gateway"
+           target="_blank" rel="noopener noreferrer">
+          github.com/swingstate/topband-bms-gateway
+        </a>
+      </div>
     </div>`;
 
   // Scroll log to bottom.
