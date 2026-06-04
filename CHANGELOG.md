@@ -3,6 +3,101 @@
 All notable changes to TopBand BMS Gateway are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.0.0] - 2026-06-04
+
+Ground-up rewrite of the firmware from a single-file Arduino sketch (6364 lines)
+to a modular ESP-IDF application targeting the ESP32-S3. No code was carried over
+from the legacy .ino; V3.0 is a clean-room implementation with V2.67 as the
+behavioural reference.
+
+### Architecture
+
+- Rewritten in ESP-IDF native (no Arduino framework). PlatformIO build system
+  replaces Arduino IDE.
+- Modular source tree: `bms/`, `safety/`, `can/`, `web/`, `mqtt/`, `storage/`,
+  `diag/`, `notify/`.
+- `runSafety()` is a pure function — same inputs produce the same output, no I/O,
+  no timers, enabling deterministic host-side unit testing.
+- Target hardware: ESP32-S3 with 16 MB flash and 8 MB PSRAM. Classic ESP32 and
+  S3 boards without PSRAM are not supported.
+- Config schema v5: versioned, CRC-protected, migrated on first boot from earlier
+  schema versions.
+- Board selector: Waveshare ESP32-S3-RS485-CAN (built-in preset) and Manual mode
+  for any qualifying ESP32-S3 board with user-configured GPIO pins. Reserved-GPIO
+  blocklist prevents unsafe pin assignments.
+
+### Added
+
+- **Web dashboard** — glassmorphism UI, light/dark mode, responsive mobile layout.
+  Served from LittleFS with cache-busting by `UI_VERSION`.
+- **48-hour chart history** — power, voltage, SOC, temperature. Persistent across
+  reboots via LittleFS ring buffers.
+- **Cell drift chart** — persistent cell drift history stored in PSRAM companion
+  arrays.
+- **Energy tracking** — today in/out, 7-day, monthly counters. Persistent in NVS.
+- **Runtime estimator** — time until empty or until full based on current draw.
+- **MQTT** — plain-text per-entity retained topics (one value per topic), five
+  publish levels (Off / StatusOnly / DataSystem / PerPack / PerCell), JSON
+  `/data` legacy blob, `/alarm` on safety state transition, optional `/diag`.
+- **Home Assistant auto-discovery** — gateway device + per-pack sub-devices
+  (`via_device`). Staggered discovery publish, stale-entity tombstone cleanup on
+  firmware upgrade. HA entities for all 20 system metrics and all per-pack fields.
+- **External notifications** — Telegram bot support with configurable alert
+  event wiring, debounce window, and rate limiting. Debounce is applied only to
+  the notification layer; the safety control response is always immediate.
+- **OTA firmware update** — web UI upload with ESP-IDF rollback self-test. Bad
+  firmware automatically rolled back to previous image.
+- **Config backup/export** — portable JSON export with schema version and device
+  tag. Import validates schema, all field ranges, and target compatibility before
+  applying. Malformed or out-of-range imports are rejected without reboot.
+- **Coredump capture** — crash coredump written to dedicated partition, accessible
+  at `/api/diag/coredump.bin` and summarised in the diagnostics panel.
+- **Alert ring buffer** — last 25 alerts with timestamps, persisted in NVS,
+  restored on boot. Human-readable ISO-8601 timestamps in UI.
+- **Diagnostics panel** — task high-water marks, CAN counters, poller stats,
+  reset reason, heap/PSRAM free, log ring buffer (last 200 lines), coredump
+  summary. Collapsible log window.
+- **About section** — firmware version with build hash, UI version, board type,
+  uptime, license, and third-party credits.
+- **mDNS** — accessible at `topband-gateway.local`.
+- **NTP** — time sync with configurable server and UTC offset. Charts and
+  timestamps use real time once synced; pre-NTP state shown safely (no 1970 output
+  to user).
+- **MQTT test** — one-click test publish from Settings with pass/fail result.
+- **HA re-send discovery** — force re-publish of all HA discovery payloads from
+  the Settings UI or API.
+- **CSV history export** — `/api/history/export.csv`.
+- **WiFi scan** — live AP scan in the WiFi settings section.
+
+### Changed
+
+- CAN output now supports three protocols selectable at runtime: Victron
+  (5 frames), Pylontech (6 frames, adds 0x359/0x35C), SMA Sunny Island
+  (6 frames, adds 0x35B). V2.67 supported all three but required recompile.
+- Safety aggregation logic ported from V2.67 `calculateVictronData()` with
+  identical alarm bitmap, CVL/CCL/DCL computation, temperature throttle (4-step
+  factor: 0.0/0.2/0.5/1.0), and sysparam protocol caps from BMS 0x47 frame.
+- Alarm flags byte kept byte-identical to V2.67 (CAN-level constraint).
+- RS485 polling ported from V2.67 with identical frame parsing for commands
+  0x42/0x44/0x47/0x4F/0xA1/0xB1/0xB2.
+- Authentication uses SHA-256 hashed password with session cookies and
+  CSRF protection (replaces V2.67 plain-text password in NVS).
+- NVS layout is fully migrated from V2.67 key-per-value scheme to a single
+  serialised struct with CRC, schema versioning, and a one-shot migration runner.
+
+### Fixed (V3.0 vs V2.67 known issues)
+
+- MQTT-load panic: snapshot taken outside mutex hold before publish; staggered
+  scheduler prevents burst publish. (V2.67 H4 / CODE_REVIEW_V2.66.md)
+- DRAM optimisation: MQTT IV topics array and HA discovery tables moved to BSS/
+  DRAM allocation. Eliminates fragmentation from repeated malloc/free under load.
+- Power-cut WiFi retention: rapid-reset counter (5× within 10 s) cleared at 30 s
+  healthy uptime. Eliminates spurious AP-mode wipe on power interruption.
+- Deferred-restart stack fix: OTA and config-apply restarts use a dedicated
+  low-stack task instead of blocking in the HTTP handler stack.
+- MQTT client reconnect loop: cooperative shutdown flag prevents spinlock orphan
+  when MqttTask is deleted during a publish.
+
 ## [2.67.2] - 2026-04-24
 
 GUI-Cleanup-Release. Reine UI-Arbeit, keine funktionalen Änderungen am MQTT-, RS485-, CAN- oder HA-Discovery-Pfad. OTA-kompatibel, keine Breaking Changes, keine NVS-Schema-Änderungen.
