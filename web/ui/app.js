@@ -1029,7 +1029,7 @@ const SETTINGS_SECTIONS = [
   { id: 'time',    label: 'Time',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
-    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg>' },
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' },
   { id: 'notifications', label: 'Notify',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' },
   { id: 'account', label: 'Account',
@@ -2103,6 +2103,31 @@ function renderSettingsSystem() {
           <div id="restore-status" class="feedback-msg" style="margin-top:8px"></div>
         </div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">About</div>
+        <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:14px">
+          Bridges up to 16 TopBand LiFePO4 BMS packs to a solar inverter via CAN bus
+          (Victron, Pylontech, or SMA). Aggregates cell voltages, temperatures, and alarms,
+          applies safety limits, and controls charge/discharge in real time.
+          Publishes live data via MQTT with Home Assistant auto-discovery.
+        </p>
+        <div class="diag-kv-grid" style="margin-bottom:12px">
+          ${kvRow('Version', h ? escHtml(h.version || '—') : '—')}
+          ${kvRow('UI Version', h ? escHtml(h.ui_version || '—') : '—')}
+          ${kvRow('Build', h ? escHtml(h.build || '—') : '—')}
+          ${kvRow('License', 'MIT')}
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
+          With thanks to
+          <a href="https://github.com/linedot/topband-bms" target="_blank" rel="noopener noreferrer">linedot/topband-bms</a>
+          for TopBand RS485 protocol reverse-engineering.
+        </p>
+        <div style="font-size:12px;color:var(--text-muted)">
+          <a href="https://github.com/swingstate/topband-bms-gateway" target="_blank" rel="noopener noreferrer">
+            github.com/swingstate/topband-bms-gateway
+          </a>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -3105,36 +3130,7 @@ function renderDiagData(d) {
       </div>
     </details>
 
-    <div class="diag-section">
-      <h3>About</h3>
-      <p style="font-size:13px;margin-bottom:12px">
-        TopBand BMS Gateway V3.0 is a ground-up rewrite that builds on the work of
-        the projects below. With thanks to their authors:
-      </p>
-      <ul style="font-size:13px;line-height:1.8;padding-left:1.2em;margin:0 0 14px">
-        <li>Protocol reverse-engineering:
-          <a href="https://github.com/linedot/topband-bms"
-             target="_blank" rel="noopener noreferrer">linedot/topband-bms</a></li>
-        <li>Base framework:
-          <a href="https://github.com/atomi23/Topband-BMS-to-CAN"
-             target="_blank" rel="noopener noreferrer">atomi23/Topband-BMS-to-CAN</a>
-          V1.25</li>
-        <li>Captive portal:
-          <a href="https://github.com/tzapu/WiFiManager"
-             target="_blank" rel="noopener noreferrer">tzapu/WiFiManager</a></li>
-      </ul>
-      <div class="diag-kv-grid">
-        ${kvRow('Version', sys.fw || '—')}
-        ${kvRow('Build', sys.build || '—')}
-        ${kvRow('License', 'MIT')}
-      </div>
-      <div style="font-size:12px;color:var(--text-muted);margin-top:10px">
-        <a href="https://github.com/swingstate/topband-bms-gateway"
-           target="_blank" rel="noopener noreferrer">
-          github.com/swingstate/topband-bms-gateway
-        </a>
-      </div>
-    </div>`;
+    `;
 
   // Restore log open/closed state (innerHTML replacement resets <details> to closed).
   const details = document.getElementById('diag-log-details');
