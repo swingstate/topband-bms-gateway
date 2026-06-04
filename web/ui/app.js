@@ -2117,11 +2117,11 @@ function renderSettingsSystem() {
           ${kvRow('Build', h ? escHtml(h.build || '—') : '—')}
           ${kvRow('License', 'MIT')}
         </div>
-        <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">
-          With thanks to
-          <a href="https://github.com/linedot/topband-bms" target="_blank" rel="noopener noreferrer">linedot/topband-bms</a>
-          for TopBand RS485 protocol reverse-engineering.
-        </p>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">With thanks to:</p>
+        <ul style="font-size:12px;color:var(--text-muted);line-height:1.8;padding-left:1.2em;margin:0 0 6px">
+          <li><a href="https://github.com/linedot/topband-bms" target="_blank" rel="noopener noreferrer">linedot/topband-bms</a> — TopBand RS485 protocol reverse-engineering</li>
+          <li><a href="https://github.com/atomi23/Topband-BMS-to-CAN" target="_blank" rel="noopener noreferrer">atomi23/Topband-BMS-to-CAN</a> — original BMS-to-CAN concept</li>
+        </ul>
         <div style="font-size:12px;color:var(--text-muted)">
           <a href="https://github.com/swingstate/topband-bms-gateway" target="_blank" rel="noopener noreferrer">
             github.com/swingstate/topband-bms-gateway
