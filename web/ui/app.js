@@ -2751,7 +2751,10 @@ async function pollUntilOnline() {
       if (r.ok) {
         const data = await r.json();
         if (data.uptime_s < 30) {
-          window.location.href = '/login.html';
+          // Only redirect to login if auth is actually enabled.
+          // With auth disabled the dashboard is served directly; defaulting to
+          // login before auth_enabled is known caused the intermittent reboot race.
+          window.location.href = data.auth_enabled ? '/login.html' : '/';
           return;
         }
       }
@@ -2771,6 +2774,7 @@ let g_alerts_data    = [];
 let g_alerts_total   = 0;
 let g_diag_timer     = null;
 let g_network_timer  = null;
+let g_diag_log_open  = false;  // persists across 5 s polls
 
 const SEV_NAMES = ['INFO', 'WARN', 'ERROR', 'CRITICAL'];
 const SEV_CLASSES = ['sev-info', 'sev-warn', 'sev-error', 'sev-critical'];
@@ -2788,6 +2792,31 @@ function fmtRelTime(epochS) {
 function fmtAbsTime(epochS) {
   if (!epochS) return '—';
   return new Date(epochS * 1000).toLocaleString();
+}
+
+// Epoch values below 2020-01-01 indicate pre-NTP (clock not yet synced).
+const MIN_VALID_EPOCH = 1577836800;
+
+// Format an alert timestamp using the device's configured timezone offset.
+// Pre-NTP alerts (ts_epoch < 2020) fall back to a boot-relative indication.
+function fmtAlertTs(tsEpoch, uptimeS) {
+  if (tsEpoch && tsEpoch >= MIN_VALID_EPOCH) {
+    const offsetH = (g_config && g_config.timezone_offset_h != null)
+                    ? g_config.timezone_offset_h : 0;
+    const d = new Date((tsEpoch + offsetH * 3600) * 1000);
+    const yr  = d.getUTCFullYear();
+    const mo  = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dy  = String(d.getUTCDate()).padStart(2, '0');
+    const hh  = String(d.getUTCHours()).padStart(2, '0');
+    const mm  = String(d.getUTCMinutes()).padStart(2, '0');
+    const ss  = String(d.getUTCSeconds()).padStart(2, '0');
+    return `${yr}-${mo}-${dy} ${hh}:${mm}:${ss}`;
+  }
+  // Pre-NTP: show uptime-relative so user sees "boot +5m" rather than a 1970 date.
+  if (uptimeS !== undefined && uptimeS !== null) {
+    return 'boot +' + formatUptime(uptimeS || 0);
+  }
+  return '—';
 }
 
 async function fetchAlerts(reset) {
@@ -2811,6 +2840,7 @@ function renderAlertRow(a) {
   const sevCls = SEV_CLASSES[sevIdx];
   const rel    = fmtRelTime(a.ts_epoch);
   const abs    = fmtAbsTime(a.ts_epoch);
+  const ts     = fmtAlertTs(a.ts_epoch, a.uptime_s);
   return `
     <div class="alert-row" onclick="showAlertDetail(${JSON.stringify(JSON.stringify(a))})" title="${abs}">
       <span class="sev-dot ${sevCls}"></span>
@@ -2819,6 +2849,7 @@ function renderAlertRow(a) {
         <div class="alert-meta">
           <span>${rel}</span>
           <span class="source-pill">${escHtml(a.source)}</span>
+          <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${escHtml(ts)}</span>
         </div>
       </div>
       <span style="font-size:10px;font-weight:700;color:var(--text-muted)">${a.severity}</span>
@@ -2851,7 +2882,7 @@ function showAlertDetail(jsonStr) {
     `<table style="width:100%;font-size:13px;border-collapse:collapse">
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Severity</td><td><strong>${escHtml(a.severity)}</strong></td></tr>
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Source</td><td><span class="source-pill">${escHtml(a.source)}</span></td></tr>
-      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Time</td><td>${fmtAbsTime(a.ts_epoch)}</td></tr>
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Time</td><td>${fmtAlertTs(a.ts_epoch, a.uptime_s)}</td></tr>
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Uptime</td><td>${formatUptime(a.uptime_s)}</td></tr>
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0;vertical-align:top">Message</td><td style="word-break:break-word">${escHtml(a.message)}</td></tr>
     </table>`;
@@ -2943,6 +2974,10 @@ function kvRow(k, v) {
 function renderDiagData(d) {
   const root = document.getElementById('diag-root');
   if (!root) return;
+
+  // Preserve log open/closed state across polls (innerHTML replacement resets it).
+  const existingDetails = document.getElementById('diag-log-details');
+  if (existingDetails) g_diag_log_open = existingDetails.open;
 
   const sys = d.system || {};
   const pol = d.poller || {};
@@ -3063,16 +3098,54 @@ function renderDiagData(d) {
     </div>`;
     })()}
 
-    <div class="diag-section">
-      <h3>Log (last ${(d.log_ring||[]).length} lines)</h3>
+    <details id="diag-log-details" class="diag-section diag-log-details">
+      <summary class="diag-log-summary">Log (last ${(d.log_ring||[]).length} lines)</summary>
       <div class="diag-log-box" id="diag-log">
         ${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}
       </div>
+    </details>
+
+    <div class="diag-section">
+      <h3>About</h3>
+      <p style="font-size:13px;margin-bottom:12px">
+        TopBand BMS Gateway V3.0 is a ground-up rewrite that builds on the work of
+        the projects below. With thanks to their authors:
+      </p>
+      <ul style="font-size:13px;line-height:1.8;padding-left:1.2em;margin:0 0 14px">
+        <li>Protocol reverse-engineering:
+          <a href="https://github.com/linedot/topband-bms"
+             target="_blank" rel="noopener noreferrer">linedot/topband-bms</a></li>
+        <li>Base framework:
+          <a href="https://github.com/atomi23/Topband-BMS-to-CAN"
+             target="_blank" rel="noopener noreferrer">atomi23/Topband-BMS-to-CAN</a>
+          V1.25</li>
+        <li>Captive portal:
+          <a href="https://github.com/tzapu/WiFiManager"
+             target="_blank" rel="noopener noreferrer">tzapu/WiFiManager</a></li>
+      </ul>
+      <div class="diag-kv-grid">
+        ${kvRow('Version', sys.fw || '—')}
+        ${kvRow('Build', sys.build || '—')}
+        ${kvRow('License', 'MIT')}
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:10px">
+        <a href="https://github.com/swingstate/topband-bms-gateway"
+           target="_blank" rel="noopener noreferrer">
+          github.com/swingstate/topband-bms-gateway
+        </a>
+      </div>
     </div>`;
 
-  // Scroll log to bottom.
+  // Restore log open/closed state (innerHTML replacement resets <details> to closed).
+  const details = document.getElementById('diag-log-details');
+  if (details) {
+    if (g_diag_log_open) details.open = true;
+    details.addEventListener('toggle', () => { g_diag_log_open = details.open; }, { once: true });
+  }
+
+  // Scroll log to bottom when visible.
   const logBox = document.getElementById('diag-log');
-  if (logBox) logBox.scrollTop = logBox.scrollHeight;
+  if (logBox && g_diag_log_open) logBox.scrollTop = logBox.scrollHeight;
 }
 
 async function renderDiag() {

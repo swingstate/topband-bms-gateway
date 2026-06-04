@@ -5,19 +5,19 @@ Gateway firmware, together with their licenses and attribution requirements.
 
 ---
 
-### TopBand BMS protocol byte layout
+## TopBand BMS protocol byte layout
 
 Reverse-engineering research by **linedot**:
 <https://github.com/linedot/topbands-bms>
 
 The implementation in `src/bms/protocol.cpp` is an independent clean rewrite
 for ESP-IDF. The byte-layout documentation and enum naming from linedot's work
-were used as reference. License of linedot's research: unlicensed (research
-repository). Attribution included in `src/bms/protocol.h` file header.
+were used as reference. License: MIT (Copyright (c) 2026 linedot).
+Attribution included in `src/bms/protocol.h` file header.
 
 ---
 
-### microtar
+## microtar
 
 MIT License  
 Copyright (c) 2017 rxi  
@@ -37,7 +37,7 @@ the Software.
 
 ---
 
-### tinfl (IDF embedded gzip/deflate decompressor)
+## tinfl (IDF embedded gzip/deflate decompressor)
 
 Public domain (Miniz, by Rich Geldreich)  
 Included as part of ESP-IDF's `esp_rom` component.
@@ -46,7 +46,7 @@ Used alongside microtar for decompressing `littlefs_ui.tar.gz`.
 
 ---
 
-### ESP-IDF
+## ESP-IDF
 
 Apache License 2.0  
 Copyright 2015-2024 Espressif Systems  
@@ -57,7 +57,7 @@ text at the ESP-IDF repository.
 
 ---
 
-### ArduinoJson v7
+## ArduinoJson v7
 
 MIT License  
 Copyright 2014-2024 Benoit Blanchon  
@@ -68,7 +68,7 @@ Included via PlatformIO managed library.
 
 ---
 
-### Catch2 v3
+## Catch2 v3
 
 BSL-1.0 License  
 Copyright 2021 Two Blue Cubes Ltd.  
