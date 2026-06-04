@@ -2751,7 +2751,10 @@ async function pollUntilOnline() {
       if (r.ok) {
         const data = await r.json();
         if (data.uptime_s < 30) {
-          window.location.href = '/login.html';
+          // Only redirect to login if auth is actually enabled.
+          // With auth disabled the dashboard is served directly; defaulting to
+          // login before auth_enabled is known caused the intermittent reboot race.
+          window.location.href = data.auth_enabled ? '/login.html' : '/';
           return;
         }
       }
