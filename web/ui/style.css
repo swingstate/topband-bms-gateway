@@ -911,6 +911,10 @@ a { text-decoration: none; color: inherit; }
 /* ── Diag page ─────────────────────────────────────────────────────────────── */
 .diag-section { margin-bottom: 24px; }
 .diag-section h3 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 8px; }
+.diag-log-details { list-style: none; }
+.diag-log-summary { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+.diag-log-summary::before { content: '▶'; font-size: 9px; transition: transform 0.15s; }
+details[open].diag-log-details > .diag-log-summary::before { transform: rotate(90deg); }
 .diag-kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; }
 .diag-kv { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
 .diag-kv span:first-child { color: var(--text-muted); }

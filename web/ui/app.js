@@ -2774,6 +2774,7 @@ let g_alerts_data    = [];
 let g_alerts_total   = 0;
 let g_diag_timer     = null;
 let g_network_timer  = null;
+let g_diag_log_open  = false;  // persists across 5 s polls
 
 const SEV_NAMES = ['INFO', 'WARN', 'ERROR', 'CRITICAL'];
 const SEV_CLASSES = ['sev-info', 'sev-warn', 'sev-error', 'sev-critical'];
@@ -2974,6 +2975,10 @@ function renderDiagData(d) {
   const root = document.getElementById('diag-root');
   if (!root) return;
 
+  // Preserve log open/closed state across polls (innerHTML replacement resets it).
+  const existingDetails = document.getElementById('diag-log-details');
+  if (existingDetails) g_diag_log_open = existingDetails.open;
+
   const sys = d.system || {};
   const pol = d.poller || {};
   const can = d.can    || {};
@@ -3093,12 +3098,12 @@ function renderDiagData(d) {
     </div>`;
     })()}
 
-    <div class="diag-section">
-      <h3>Log (last ${(d.log_ring||[]).length} lines)</h3>
+    <details id="diag-log-details" class="diag-section diag-log-details">
+      <summary class="diag-log-summary">Log (last ${(d.log_ring||[]).length} lines)</summary>
       <div class="diag-log-box" id="diag-log">
         ${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}
       </div>
-    </div>
+    </details>
 
     <div class="diag-section">
       <h3>About</h3>
@@ -3131,9 +3136,16 @@ function renderDiagData(d) {
       </div>
     </div>`;
 
-  // Scroll log to bottom.
+  // Restore log open/closed state (innerHTML replacement resets <details> to closed).
+  const details = document.getElementById('diag-log-details');
+  if (details) {
+    if (g_diag_log_open) details.open = true;
+    details.addEventListener('toggle', () => { g_diag_log_open = details.open; }, { once: true });
+  }
+
+  // Scroll log to bottom when visible.
   const logBox = document.getElementById('diag-log');
-  if (logBox) logBox.scrollTop = logBox.scrollHeight;
+  if (logBox && g_diag_log_open) logBox.scrollTop = logBox.scrollHeight;
 }
 
 async function renderDiag() {
