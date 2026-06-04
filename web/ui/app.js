@@ -2793,6 +2793,31 @@ function fmtAbsTime(epochS) {
   return new Date(epochS * 1000).toLocaleString();
 }
 
+// Epoch values below 2020-01-01 indicate pre-NTP (clock not yet synced).
+const MIN_VALID_EPOCH = 1577836800;
+
+// Format an alert timestamp using the device's configured timezone offset.
+// Pre-NTP alerts (ts_epoch < 2020) fall back to a boot-relative indication.
+function fmtAlertTs(tsEpoch, uptimeS) {
+  if (tsEpoch && tsEpoch >= MIN_VALID_EPOCH) {
+    const offsetH = (g_config && g_config.timezone_offset_h != null)
+                    ? g_config.timezone_offset_h : 0;
+    const d = new Date((tsEpoch + offsetH * 3600) * 1000);
+    const yr  = d.getUTCFullYear();
+    const mo  = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dy  = String(d.getUTCDate()).padStart(2, '0');
+    const hh  = String(d.getUTCHours()).padStart(2, '0');
+    const mm  = String(d.getUTCMinutes()).padStart(2, '0');
+    const ss  = String(d.getUTCSeconds()).padStart(2, '0');
+    return `${yr}-${mo}-${dy} ${hh}:${mm}:${ss}`;
+  }
+  // Pre-NTP: show uptime-relative so user sees "boot +5m" rather than a 1970 date.
+  if (uptimeS !== undefined && uptimeS !== null) {
+    return 'boot +' + formatUptime(uptimeS || 0);
+  }
+  return '—';
+}
+
 async function fetchAlerts(reset) {
   if (reset) { g_alerts_skip = 0; g_alerts_data = []; }
   const minSev = SEV_MIN[g_alerts_filter] || 0;
@@ -2814,6 +2839,7 @@ function renderAlertRow(a) {
   const sevCls = SEV_CLASSES[sevIdx];
   const rel    = fmtRelTime(a.ts_epoch);
   const abs    = fmtAbsTime(a.ts_epoch);
+  const ts     = fmtAlertTs(a.ts_epoch, a.uptime_s);
   return `
     <div class="alert-row" onclick="showAlertDetail(${JSON.stringify(JSON.stringify(a))})" title="${abs}">
       <span class="sev-dot ${sevCls}"></span>
@@ -2822,6 +2848,7 @@ function renderAlertRow(a) {
         <div class="alert-meta">
           <span>${rel}</span>
           <span class="source-pill">${escHtml(a.source)}</span>
+          <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${escHtml(ts)}</span>
         </div>
       </div>
       <span style="font-size:10px;font-weight:700;color:var(--text-muted)">${a.severity}</span>
@@ -2854,7 +2881,7 @@ function showAlertDetail(jsonStr) {
     `<table style="width:100%;font-size:13px;border-collapse:collapse">
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Severity</td><td><strong>${escHtml(a.severity)}</strong></td></tr>
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Source</td><td><span class="source-pill">${escHtml(a.source)}</span></td></tr>
-      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Time</td><td>${fmtAbsTime(a.ts_epoch)}</td></tr>
+      <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Time</td><td>${fmtAlertTs(a.ts_epoch, a.uptime_s)}</td></tr>
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0">Uptime</td><td>${formatUptime(a.uptime_s)}</td></tr>
       <tr><td style="color:var(--text-muted);padding:3px 8px 3px 0;vertical-align:top">Message</td><td style="word-break:break-word">${escHtml(a.message)}</td></tr>
     </table>`;
