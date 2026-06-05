@@ -326,8 +326,11 @@ esp_err_t handle_bms_id(httpd_req_t* req) {
   hs_str(s, ",\"alarm_bits\":"); hs_jstr(s, alarm_hex);
 
   // Sysparam section
+  uint32_t sp_age_s = (p.sysparam_valid && p.last_sysparam_ms > 0 && now_ms >= p.last_sysparam_ms)
+                      ? (now_ms - p.last_sysparam_ms) / 1000u : 0u;
   hs_str(s, ",\"sysparam\":{");
   hs_str(s, "\"valid\":"); hs_bool(s, p.sysparam_valid);
+  hs_str(s, ",\"age_s\":"); hs_u32(s, sp_age_s);
   if (p.sysparam_valid) {
     hs_str(s, ",\"cell_high_v\":"); hs_f3(s, p.sys_cell_high_v);
     hs_str(s, ",\"cell_low_v\":"); hs_f3(s, p.sys_cell_low_v);

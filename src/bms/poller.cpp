@@ -29,6 +29,23 @@ static const char* TAG = "poller";
 static portMUX_TYPE  s_stats_mux   = portMUX_INITIALIZER_UNLOCKED;
 static bms::poller::PollerStats s_stats{};
 
+// ── Part 1: per-pack SYSPARAM cache ──────────────────────────────────────────
+// init_pack_snapshot_offline() zeros the entire BmsPackSnapshot, including
+// sysparam fields, on every analog poll cycle. Since 0x47 is only polled once
+// per round-robin (~30 s per pack), the sysparam fields would revert to "not
+// yet polled" between polls. This cache holds the last-good values so they
+// survive across cycles. Firmware-side (not UI) so all consumers see stable data.
+struct SysparamCache {
+  bool     valid;
+  uint32_t last_ms;
+  float    cell_high_v, cell_low_v;
+  float    module_high_v, module_low_v, module_under_v;
+  float    charge_high_t, charge_low_t;
+  float    discharge_high_t, discharge_low_t;
+  float    charge_max_a, discharge_max_a;
+};
+static SysparamCache s_sysparam_cache[16] = {};
+
 // (Per-pack online state was here for direct alert emit; removed when
 // BmsWentOffline/BmsCameOnline events from runSafety took over — see A1/A2.)
 // Last safety alarm_flags for all-clear edge detection.
@@ -290,8 +307,24 @@ static void control_task_entry(void* param) {
       const uint8_t effective_bms_count = cfg.rs485_enabled ? cfg.bms_count : 0;
       sys->pack_count_configured = effective_bms_count;
       // Init all packs to offline; fill_from_analog will set online=true.
+      // After zeroing, restore last-good sysparam from cache (Part 1 fix).
       for (uint8_t i = 0; i < effective_bms_count; ++i) {
         bms::init_pack_snapshot_offline(sys->pack[i], i);
+        if (s_sysparam_cache[i].valid) {
+          sys->pack[i].sysparam_valid      = true;
+          sys->pack[i].last_sysparam_ms    = s_sysparam_cache[i].last_ms;
+          sys->pack[i].sys_cell_high_v     = s_sysparam_cache[i].cell_high_v;
+          sys->pack[i].sys_cell_low_v      = s_sysparam_cache[i].cell_low_v;
+          sys->pack[i].sys_module_high_v   = s_sysparam_cache[i].module_high_v;
+          sys->pack[i].sys_module_low_v    = s_sysparam_cache[i].module_low_v;
+          sys->pack[i].sys_module_under_v  = s_sysparam_cache[i].module_under_v;
+          sys->pack[i].sys_charge_high_t   = s_sysparam_cache[i].charge_high_t;
+          sys->pack[i].sys_charge_low_t    = s_sysparam_cache[i].charge_low_t;
+          sys->pack[i].sys_discharge_high_t = s_sysparam_cache[i].discharge_high_t;
+          sys->pack[i].sys_discharge_low_t  = s_sysparam_cache[i].discharge_low_t;
+          sys->pack[i].sys_charge_max_a    = s_sysparam_cache[i].charge_max_a;
+          sys->pack[i].sys_discharge_max_a = s_sysparam_cache[i].discharge_max_a;
+        }
       }
 
       for (uint8_t i = 0; i < effective_bms_count; ++i) {
@@ -378,6 +411,15 @@ static void control_task_entry(void* param) {
                 if (bms::protocol::interpret_system_parameter(pl, pl_len, sp) == bms::protocol::ParseError::Ok) {
                   now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
                   bms::fill_from_sysparam(sp, now_ms, sys->pack[rr]);
+                  // Update firmware-side cache so sysparam persists between polls.
+                  s_sysparam_cache[rr] = {
+                    true, now_ms,
+                    sp.cell_high_v, sp.cell_low_v,
+                    sp.module_high_v, sp.module_low_v, sp.module_under_v,
+                    sp.charge_high_t, sp.charge_low_t,
+                    sp.discharge_high_t, sp.discharge_low_t,
+                    sp.charge_max_a, sp.discharge_max_a,
+                  };
                   local_stats.sysparam_polls_ok++;
                 } else { local_stats.sysparam_polls_err++; }
               } else { local_stats.sysparam_polls_err++; }
