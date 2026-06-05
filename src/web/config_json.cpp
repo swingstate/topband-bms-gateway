@@ -80,6 +80,8 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["notify_telegram_verified"] = c.notify_telegram_verified;
   // v5 addition (non-secret, included in export/import)
   doc["notify_debounce_s"]        = c.notify_debounce_s;
+  // v6 addition (non-secret, included in export/import)
+  doc["battery_config_mode"]      = (uint8_t)c.battery_config_mode;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -244,6 +246,12 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.notify_telegram_verified = doc["notify_telegram_verified"];
   if (doc["notify_debounce_s"].is<uint16_t>())
     c.notify_debounce_s = doc["notify_debounce_s"].as<uint16_t>();
+  if (doc["battery_config_mode"].is<uint8_t>()) {
+    uint8_t raw = doc["battery_config_mode"].as<uint8_t>();
+    // Guard: only accept known enum values (Auto=0, AutoMargin=1, Manual=2).
+    if (raw <= 2)
+      c.battery_config_mode = static_cast<Config::BatteryConfigMode>(raw);
+  }
 
   return true;
 }
