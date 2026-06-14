@@ -3,6 +3,25 @@
 All notable changes to TopBand BMS Gateway are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **SAFETY-CRITICAL: notify debounce crash loop on mass undervoltage** (`fix/notify-debounce-crash-loop`).
+  A production gateway reboot-looped ~100 times during a real all-packs-undervoltage
+  event. Root cause: the 8-slot debounce pending table lacked deduplication for
+  per-cycle events (`CellImbalanceStart`, `BmsReportedAlarm`). With 3 packs in
+  undervoltage+imbalance, 7 slots filled on the first poll cycle, then 6 overflow
+  fires per subsequent cycle each attempted to spawn a 16 KB TLS task. DRAM pressure
+  from the TLS handshake caused `mqtt_task` to abort. Fixes:
+  - Deduplication: events with the same (type, pack) already pending are skipped.
+  - Table resized from 8 to 32 slots.
+  - Graceful overflow: drop with counter and rate-limited warning; no abort, no TLS
+    spawn on overflow.
+  - Panic-loop guard: NVS `panic_cnt` tracks consecutive panic/WDT reboots; after
+    3 consecutive panics, `notify::init()` disables all outbound TLS for that boot
+    and emits a CRITICAL alert. Safety/CAN broadcast are unaffected.
+
 ## [3.0.0] - 2026-06-04
 
 Ground-up rewrite of the firmware from a single-file Arduino sketch (6364 lines)
