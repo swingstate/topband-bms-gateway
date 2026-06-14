@@ -35,6 +35,18 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms);
 // AFTER processing all events for that cycle (same task, same thread).
 void flush_pending_alerts(uint32_t now_ms);
 
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+// Number of alerts dropped because the debounce table was full after deduplication.
+// Incremented under the pending-table spinlock; safe to read from any task.
+// A non-zero value means more than K_PENDING_CAP distinct (type, pack) pairs were
+// simultaneously pending — should not occur in normal operation.
+uint32_t dropped_count();
+
+// True if the panic-loop guard disabled outbound TLS for this boot.
+// Safety/control and the alert log are unaffected when degraded.
+bool is_degraded();
+
 // ── Test send ─────────────────────────────────────────────────────────────────
 
 enum class TestStatus : uint8_t { Idle, Running, Ok, Failed };
