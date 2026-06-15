@@ -29,14 +29,18 @@ static uint8_t* alloc_queue_storage(size_t bytes) {
 namespace bus {
 
 bool createQueues() {
-  // q_mqtt_publish: 64 × ~1160 bytes = ~74 KB — PSRAM to protect internal heap.
-  // Depth 64 is defense-in-depth: the staggered scheduler limits burst to ≤10
-  // per tick so overflow is eliminated under normal operation, but 64 gives
-  // margin during reconnect events. Per Finding 4 / Finding 2 mitigations.
-  uint8_t* mqtt_stor = alloc_queue_storage(64u * sizeof(MqttPublishRequest));
+  // q_mqtt_publish: sized to absorb the worst-case HA discovery burst without
+  // dropping any entities. At PerCell level with 16 packs the burst is:
+  //   14 cleanup tombstones + 20 system entities
+  //   + 16 × (11 plain-pack + 4 pack-entities + 15 cell) = 514 items.
+  // 520 rounds that up with a small margin (≈ 602 KB PSRAM; well within 8 MB).
+  // Steady-state per-tick posts (≤ ~40 items/tick) never fill this queue before
+  // MqttTask drains it at 50 ms cadence. Per Finding 4 / Finding 2 mitigations.
+  static constexpr uint16_t MQTT_PUB_QUEUE_DEPTH = 520u;
+  uint8_t* mqtt_stor = alloc_queue_storage(MQTT_PUB_QUEUE_DEPTH * sizeof(MqttPublishRequest));
   q_mqtt_publish = mqtt_stor
-      ? xQueueCreateStatic(64, sizeof(MqttPublishRequest), mqtt_stor, &s_mqtt_pub_sq)
-      : xQueueCreate(64, sizeof(MqttPublishRequest));
+      ? xQueueCreateStatic(MQTT_PUB_QUEUE_DEPTH, sizeof(MqttPublishRequest), mqtt_stor, &s_mqtt_pub_sq)
+      : xQueueCreate(MQTT_PUB_QUEUE_DEPTH, sizeof(MqttPublishRequest));
 
   // q_log: 32 × 112 bytes = ~3.5 KB — PSRAM.
   uint8_t* log_stor = alloc_queue_storage(32u * sizeof(LogLine));
