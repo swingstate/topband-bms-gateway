@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [3.0.0-preview.1] - 2026-06-15
+
+First public tagged release of the V3.0 rewrite. All V3.0 features from the
+`[3.0.0]` entry below are included. This entry documents incremental fixes and
+additions merged after the base V3.0 code-complete milestone.
+
 ### Fixed
 
 - **SAFETY-CRITICAL: notify debounce crash loop on mass undervoltage** (`fix/notify-debounce-crash-loop`).
@@ -21,6 +27,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   - Panic-loop guard: NVS `panic_cnt` tracks consecutive panic/WDT reboots; after
     3 consecutive panics, `notify::init()` disables all outbound TLS for that boot
     and emits a CRITICAL alert. Safety/CAN broadcast are unaffected.
+
+- **MQTT per-pack HA entities scaled uniformly by bms_count** (`fix/mqtt-entities-scale`).
+  All per-pack entity counts in HA discovery and MQTT publish paths were using the
+  wrong multiplier, causing entity counts to be off when more than one BMS pack was
+  configured. Fixed to scale uniformly by `bms_count` across all per-pack entities.
+
+### Added
+
+- **Battery config modes: Auto / Auto+Margin / Manual** (`iter/battery-config-modes`).
+  New charge/discharge limit configuration with explicit sanity caps. SYSPARAM
+  cache fix: last-received SYSPARAM values are held between polls so the UI never
+  shows stale zeros during a missed poll cycle.
 
 ## [3.0.0] - 2026-06-04
 
