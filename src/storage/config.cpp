@@ -124,6 +124,9 @@ static Config make_default() {
   c.notify_telegram_verified = false;
   c.notify_debounce_s      = 30;  // 30 s default: filters brief flaps
 
+  // v6 addition: Auto is the default for fresh installs (follows live pack data).
+  c.battery_config_mode    = Config::BatteryConfigMode::Auto;
+
   return c;
 }
 
@@ -530,6 +533,83 @@ struct Config_v4 {
 static_assert(sizeof(Config_v4) == 692,
     "Config_v4 size drifted from expected 692 B — check alignment against v4 NVS blobs");
 
+// ── Config_v5: schema version 5 layout (692 bytes) ───────────────────────────
+// Identical to the current Config minus battery_config_mode. Used as the source
+// blob for the v5→v6 migration. The only difference from Config_v4 is that
+// notify_debounce_s occupies the former tail padding (so no size change).
+struct Config_v5 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  // 1 byte implicit padding, then:
+  uint16_t                 notify_debounce_s;
+  // (no tail padding — 692 B total)
+};
+
+static_assert(sizeof(Config_v5) == 692,
+    "Config_v5 size drifted from expected 692 B — check alignment against v5 NVS blobs");
+
 }  // namespace
 
 // Config layout check (updated each schema version).
@@ -537,13 +617,102 @@ static_assert(sizeof(Config_v4) == 692,
 // v4 additions: char[32]+uint32+uint32+uint16+uint16+bool = 45 B payload; bool fills
 // existing 1-byte tail gap so net growth is 44 B → compiler pads to 692 B.
 // v5 addition: uint16_t notify_debounce_s fits in former 3-byte tail padding →
-// sizeof(Config) stays 692 B.
+// sizeof(Config_v5) = 692 B.
+// v6 addition: BatteryConfigMode (uint8_t) at end → 693 B raw; compiler pads to
+// 696 B (4-byte struct alignment, largest member is float).
 // This assert catches field additions or reorderings that silently change the NVS blob.
-static_assert(sizeof(Config) == 692,
-    "Config size drifted from expected 692 B — if intentional, bump schema version, "
+static_assert(sizeof(Config) == 696,
+    "Config size drifted from expected 696 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
+
+// ── v5 → v6 migration ────────────────────────────────────────────────────────
+// battery_config_mode is the only new field. Existing devices (already
+// configured) get Manual so their configured charge_amps/discharge_amps/cvl
+// values continue to drive limits unchanged. New installs use Auto (DEFAULT_CONFIG).
+static bool migrate_v5_to_v6(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v5)) return false;
+
+  Config_v5 v5;
+  memcpy(&v5, buf, sizeof(Config_v5));
+
+  // Start from DEFAULT_CONFIG (battery_config_mode = Auto as safe default
+  // for new fields); then overlay all v5 fields below.
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v5.board_preset;
+  out.pins                    = v5.pins;
+  out.rs485_enabled           = v5.rs485_enabled;
+  out.bms_count               = v5.bms_count;
+  out.force_cell_count        = v5.force_cell_count;
+  out.can_protocol            = v5.can_protocol;
+  out.can_enabled             = v5.can_enabled;
+  out.charge_amps_per_pack    = v5.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v5.discharge_amps_per_pack;
+  out.cvl_voltage             = v5.cvl_voltage;
+  out.safe_pack_volt          = v5.safe_pack_volt;
+  out.safe_cell_volt          = v5.safe_cell_volt;
+  out.safe_cell_drift         = v5.safe_cell_drift;
+  out.spike_volt_max          = v5.spike_volt_max;
+  out.spike_curr_max          = v5.spike_curr_max;
+  out.spike_soc_max           = v5.spike_soc_max;
+  out.charge_temp_min         = v5.charge_temp_min;
+  out.charge_temp_max         = v5.charge_temp_max;
+  out.discharge_temp_min      = v5.discharge_temp_min;
+  out.discharge_temp_max      = v5.discharge_temp_max;
+  out.temp_soft_zone          = v5.temp_soft_zone;
+  out.temp_mode               = v5.temp_mode;
+  out.soc_mode                = v5.soc_mode;
+  out.setup_mode              = v5.setup_mode;
+  out.auto_from_bms_applied   = v5.auto_from_bms_applied;
+  out.maint_charge_enabled    = v5.maint_charge_enabled;
+  out.maint_target_voltage    = v5.maint_target_voltage;
+  out.auto_balance_enabled    = v5.auto_balance_enabled;
+  out.auto_balance_last_ts    = v5.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v5.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v5.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v5.timezone_offset_h;
+  out.mqtt_enabled            = v5.mqtt_enabled;
+  memcpy(out.mqtt_host,       v5.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v5.mqtt_port;
+  memcpy(out.mqtt_user,       v5.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v5.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v5.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v5.mqtt_level;
+  out.mqtt_diag_enabled       = v5.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v5.ha_discovery_enabled;
+  out.mqtt_full_publish       = v5.mqtt_full_publish;
+  out.auth_enabled            = v5.auth_enabled;
+  memcpy(out.auth_user, v5.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v5.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v5.theme_id;
+  out.chart_series_a          = v5.chart_series_a;
+  out.chart_series_b          = v5.chart_series_b;
+  out.ui_poll_live_ms         = v5.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v5.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v5.ui_poll_alerts_ms;
+  out.last_reset_ts           = v5.last_reset_ts;
+  out.serial_debug_enabled    = v5.serial_debug_enabled;
+  out.spy_persist_default     = v5.spy_persist_default;
+  out.notify_telegram_enabled  = v5.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v5.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v5.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  memcpy(out.notify_sender_name,      v5.notify_sender_name,      sizeof(out.notify_sender_name));
+  out.notify_alert_flags          = v5.notify_alert_flags;
+  out.notify_telegram_last_ok_ts  = v5.notify_telegram_last_ok_ts;
+  out.notify_poll_interval_s      = v5.notify_poll_interval_s;
+  out.notify_cooldown_s           = v5.notify_cooldown_s;
+  out.notify_telegram_verified    = v5.notify_telegram_verified;
+  out.notify_debounce_s           = v5.notify_debounce_s;
+  // battery_config_mode: existing devices that had configured limits → Manual.
+  // This preserves their exact runtime behavior (config-based limits + sysparam
+  // cap in the safe direction). They can switch to Auto in Settings → Battery.
+  out.battery_config_mode = Config::BatteryConfigMode::Manual;
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
 
 // ── v4 → v5 migration ────────────────────────────────────────────────────────
 // notify_debounce_s occupies the former tail padding bytes (offset 690, size 2).
@@ -794,6 +963,12 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     return true;
   }
 
+  if (ver == 5) {
+    // Field-preserving v5 → v6. All v5 settings survive;
+    // battery_config_mode defaults to Manual (existing configured device).
+    return migrate_v5_to_v6(buf, len, out);
+  }
+
   if (ver == 4) {
     // Field-preserving v4 → v5. All v4 settings survive;
     // notify_debounce_s gets safe default (30 s) from DEFAULT_CONFIG.
@@ -846,8 +1021,10 @@ ValidationError validate(const Config& cfg, char* field_out, size_t field_buf) {
     return ValidationError::BmsCountOutOfRange;
   }
 
-  // Cell voltage plausibility [2.0, 4.5] V
-  if (cfg.safe_cell_volt < 2.0f || cfg.safe_cell_volt > 4.5f) {
+  // Cell voltage plausibility [2.0, 3.65] V — upper bound is the hard LiFePO4
+  // sanity cap (LIFEPO4_CELL_MAX_V). The gateway enforces this at runtime in
+  // all battery config modes; reject values above it at the API boundary too.
+  if (cfg.safe_cell_volt < 2.0f || cfg.safe_cell_volt > 3.65f) {
     set_field(field_out, field_buf, "safe_cell_volt");
     return ValidationError::CellVoltageOutOfRange;
   }

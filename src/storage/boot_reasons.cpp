@@ -8,19 +8,26 @@
 
 static const char* TAG = "boot_reasons";
 
-static constexpr const char* NVS_NS   = "boot_rsns";
-static constexpr const char* KEY_RING = "ring";
-static constexpr size_t      RING_SIZE = 5;
+static constexpr const char* NVS_NS       = "boot_rsns";
+static constexpr const char* KEY_RING     = "ring";
+static constexpr const char* KEY_PANIC    = "panic_cnt";
+static constexpr size_t      RING_SIZE    = 5;
 // Uptime threshold: a SW reset is "quick" (deliberate rapid-press) only when
 // the device hadn't been running long enough to be in normal operation.
 static constexpr uint32_t RAPID_THRESHOLD_MS  = 5000;
 // A SW reset that follows a long-running boot is a normal operation restart
 // (OTA apply, settings save). Clear the ring rather than accumulate.
 static constexpr uint32_t NORMAL_BOOT_MS = 30000;
+// Number of consecutive panic reboots before the crash-loop guard triggers.
+static constexpr uint8_t  CRASH_LOOP_THRESHOLD = 3;
 
 // In-RAM copy of the NVS ring. 0 = empty (never written).
 static uint32_t g_ring[RING_SIZE] = {};
 static bool g_loaded = false;
+
+// In-RAM panic counter.  Loaded once per boot in record_panic_boot().
+static uint8_t g_panic_cnt = 0;
+static bool    g_panic_loaded = false;
 
 static void load_ring() {
   if (g_loaded) return;
@@ -72,25 +79,36 @@ void record_this_boot() {
 }
 
 void mark_healthy() {
-  // Called by housekeeping once the device has been running stably for ≥ 30 s.
-  // Clears the rapid-reset ring so that legitimate SW restarts (OTA apply, settings
-  // save, self-test timeout) do not accumulate toward the 5x-wipe threshold across
-  // separate boot cycles.
+  // Called by housekeeping once the device has been running stably for >= 30 s.
+  // Clears both the SW-reset ring and the panic counter so that a successful boot
+  // resets the crash-loop guard for future reboots.
   //
   // Background: record_this_boot() always sees early-boot uptime (~100 ms) because
   // esp_timer resets on every hardware reset — there is no software-visible way to
   // observe how long the PREVIOUS boot ran.  The "clear on long-running boot" logic
   // must therefore run DURING the current boot, not at the next boot's record call.
   load_ring();
-  bool had_entries = false;
+  bool had_ring = false;
   for (size_t i = 0; i < RING_SIZE; i++) {
-    if (g_ring[i] != 0) { had_entries = true; break; }
+    if (g_ring[i] != 0) { had_ring = true; break; }
   }
-  if (had_entries) {
+  if (had_ring) {
     memset(g_ring, 0, sizeof(g_ring));
     g_loaded = true;
     save_ring();
-    ESP_LOGI(TAG, "mark_healthy: stable ≥30 s — rapid-reset ring cleared");
+    ESP_LOGI(TAG, "mark_healthy: stable — rapid-reset ring cleared");
+  }
+
+  // Clear panic counter if it was non-zero.
+  if (g_panic_loaded && g_panic_cnt > 0) {
+    g_panic_cnt = 0;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_u8(h, KEY_PANIC, 0);
+      nvs_commit(h);
+      nvs_close(h);
+    }
+    ESP_LOGI(TAG, "mark_healthy: panic counter cleared");
   }
 }
 
@@ -111,6 +129,52 @@ void clear() {
   g_loaded = true;
   save_ring();
   ESP_LOGI(TAG, "boot_reasons ring cleared");
+}
+
+void record_panic_boot() {
+  esp_reset_reason_t reason = esp_reset_reason();
+  bool is_panic = (reason == ESP_RST_PANIC   ||
+                   reason == ESP_RST_TASK_WDT ||
+                   reason == ESP_RST_INT_WDT);
+
+  // Load current counter from NVS on first call.
+  if (!g_panic_loaded) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+      nvs_get_u8(h, KEY_PANIC, &g_panic_cnt);
+      nvs_close(h);
+    }
+    g_panic_loaded = true;
+  }
+
+  if (is_panic) {
+    if (g_panic_cnt < 0xFFu) g_panic_cnt++;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_u8(h, KEY_PANIC, g_panic_cnt);
+      nvs_commit(h);
+      nvs_close(h);
+    }
+    ESP_LOGW(TAG, "record_panic_boot: panic reset #%u (threshold=%u)",
+             (unsigned)g_panic_cnt, (unsigned)CRASH_LOOP_THRESHOLD);
+  } else {
+    // Clean boot (power-on, OTA, SW restart) — reset the panic streak.
+    if (g_panic_cnt > 0) {
+      g_panic_cnt = 0;
+      nvs_handle_t h;
+      if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, KEY_PANIC, 0);
+        nvs_commit(h);
+        nvs_close(h);
+      }
+      ESP_LOGI(TAG, "record_panic_boot: clean boot — panic streak cleared");
+    }
+  }
+}
+
+bool is_crash_loop_suspected() {
+  // g_panic_cnt is populated by record_panic_boot() which must have been called first.
+  return g_panic_loaded && (g_panic_cnt >= CRASH_LOOP_THRESHOLD);
 }
 
 }  // namespace storage::boot_reasons

@@ -4,6 +4,7 @@
 #include "net/ntp.h"
 #include "net/wifi.h"
 #include "diag/alerts.h"
+#include "storage/boot_reasons.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,6 +45,13 @@ static const notify::INotifyProvider* find_provider(const char* id) {
 // Tasks release it before vTaskDelete.
 static SemaphoreHandle_t s_tls_sem = nullptr;
 
+// ── Degraded mode ─────────────────────────────────────────────────────────────
+// Set by notify::init() when the boot-loop guard detects repeated panic reboots.
+// In degraded mode all outbound TLS operations are suppressed; alert logging and
+// safety/control are unaffected.  This ensures the notify subsystem can never
+// sustain a reboot loop even if a provider-side bug re-emerges.
+static bool s_degraded = false;
+
 // ── Verified state ────────────────────────────────────────────────────────────
 static portMUX_TYPE  s_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool          s_verified     = false;
@@ -61,6 +69,18 @@ static uint32_t      s_last_type_ms[K_EVENT_COUNT] = {};// per-type cooldown
 namespace notify {
 
 void init() {
+  // If the panic-loop guard detected repeated early crashes, enter degraded mode:
+  // disable all outbound TLS operations for this boot.  Safety/control and the
+  // alert log are unaffected.  The UI surfaces this state via is_degraded().
+  if (storage::boot_reasons::is_crash_loop_suspected()) {
+    s_degraded = true;
+    ESP_LOGW(TAG, "init: panic-loop guard triggered — notify disabled for this boot");
+    diag::alerts::emit(diag::alerts::Severity::Critical, "notify",
+                       "Repeated crash-boot detected: notify disabled this boot "
+                       "(safety/CAN unaffected). Check Diagnostics for coredump.");
+    return;
+  }
+
   s_tls_sem = xSemaphoreCreateBinary();
   if (s_tls_sem) {
     xSemaphoreGive(s_tls_sem);  // initially available
@@ -112,6 +132,9 @@ static void send_task(void* arg) {
 namespace notify {
 
 void send(Severity severity, const char* title, const char* body) {
+  // Degraded mode: notify was disabled at init due to crash-loop detection.
+  if (s_degraded) return;
+
   // Serialize: only one TLS handshake at a time.
   if (!s_tls_sem || xSemaphoreTake(s_tls_sem, 0) != pdTRUE) {
     ESP_LOGD(TAG, "send: TLS busy — dropping message");
@@ -274,6 +297,13 @@ static void fire_alert_and_notify(const SafetyState::EventEntry& entry, uint32_t
 // ── A1: debounce pending table ────────────────────────────────────────────────
 // Tracks begin events waiting for the debounce window to expire.
 // If the matching clear arrives before the window expires, both are suppressed.
+//
+// Sizing: worst case is all 16 packs each contributing CellImbalanceStart +
+// BmsReportedAlarm simultaneously, plus a handful of system-level events.
+// 32 slots covers 16 packs × 2 event types + 4 system events with headroom.
+// Deduplication (same type + bms_id already pending) prevents per-cycle re-fires
+// from ever consuming new slots, so overflow is now only possible when genuinely
+// distinct (type, pack) pairs accumulate beyond the table capacity.
 struct PendingAlert {
   bool     active;
   SafetyState::SafetyEvent begin_type;  // the begin-edge event type
@@ -282,9 +312,15 @@ struct PendingAlert {
   uint32_t start_ms;
 };
 
-static constexpr size_t K_PENDING_CAP = 8;
+static constexpr size_t K_PENDING_CAP = 32;
 static PendingAlert       s_pending[K_PENDING_CAP];
 static portMUX_TYPE       s_pending_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Overflow drop counter — incremented inside s_pending_mux, read via
+// notify::dropped_count() from any task.
+static uint32_t s_dropped_count = 0;
+// Timestamp of last overflow warning (written from ControlTask only — no lock needed).
+static uint32_t s_last_overflow_warn_ms = 0;
 
 // Returns the begin event that a given clear event cancels, or None if not a clear.
 static SafetyState::SafetyEvent begin_for_clear(SafetyState::SafetyEvent ev) {
@@ -350,48 +386,93 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
       fire_alert_and_notify(entry, now_ms);
       return;
     }
-    // Debounce enabled: add to pending table.
+    // Debounce enabled: add to pending table unless a duplicate is already pending.
+    // Deduplication: per-cycle events (CellImbalanceStart, BmsReportedAlarm) fire
+    // every cycle while the condition is active.  Without this check those events
+    // would fill the table on the very first cycle and overflow on every subsequent
+    // cycle — the root cause of the June 2026 production crash loop.
     portENTER_CRITICAL(&s_pending_mux);
     int slot = -1;
+    bool dup = false;
     for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
-      if (!s_pending[i].active) { slot = i; break; }
+      if (s_pending[i].active &&
+          s_pending[i].begin_type == entry.type &&
+          s_pending[i].bms_id    == entry.bms_id) {
+        dup = true;  // same (type, pack) already pending — skip
+        break;
+      }
+      if (!s_pending[i].active && slot < 0) {
+        slot = i;
+      }
     }
-    if (slot >= 0) {
-      s_pending[slot].active     = true;
-      s_pending[slot].begin_type = entry.type;
-      s_pending[slot].bms_id     = entry.bms_id;
-      s_pending[slot].entry      = entry;
-      s_pending[slot].start_ms   = now_ms;
-    } else {
-      // Table full (8 simultaneous pending events) — fire immediately rather than drop.
-      ESP_LOGW(TAG, "debounce table full — firing event=%u immediately", ev_id);
+    bool dropped = false;
+    if (!dup) {
+      if (slot >= 0) {
+        s_pending[slot].active     = true;
+        s_pending[slot].begin_type = entry.type;
+        s_pending[slot].bms_id     = entry.bms_id;
+        s_pending[slot].entry      = entry;
+        s_pending[slot].start_ms   = now_ms;
+      } else {
+        // True overflow after dedup: a new distinct (type, pack) pair has nowhere
+        // to go.  Drop with counter — never abort, never crash the device.
+        ++s_dropped_count;
+        dropped = true;
+      }
     }
     portEXIT_CRITICAL(&s_pending_mux);
 
-    if (slot < 0) {
-      fire_alert_and_notify(entry, now_ms);
+    // Rate-limited warning outside the critical section.
+    if (dropped && (now_ms - s_last_overflow_warn_ms) >= 10000u) {
+      s_last_overflow_warn_ms = now_ms;
+      portENTER_CRITICAL(&s_pending_mux);
+      uint32_t cnt = s_dropped_count;
+      portEXIT_CRITICAL(&s_pending_mux);
+      ESP_LOGW(TAG, "debounce overflow: ev=%u dropped (total=%lu)",
+               ev_id, (unsigned long)cnt);
     }
     return;
   }
 
-  // Not a begin or clear (BmsReportedAlarm=15 has no clear — treated as begin).
+  // Neither a begin nor a clear — should not occur with current SafetyEvent enum;
+  // kept as a defensive fallback.
   if (debounce_ms == 0) {
     fire_alert_and_notify(entry, now_ms);
   } else {
     portENTER_CRITICAL(&s_pending_mux);
     int slot = -1;
+    bool dup = false;
     for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
-      if (!s_pending[i].active) { slot = i; break; }
+      if (s_pending[i].active &&
+          s_pending[i].begin_type == entry.type &&
+          s_pending[i].bms_id    == entry.bms_id) {
+        dup = true;
+        break;
+      }
+      if (!s_pending[i].active && slot < 0) slot = i;
     }
-    if (slot >= 0) {
-      s_pending[slot].active     = true;
-      s_pending[slot].begin_type = entry.type;
-      s_pending[slot].bms_id     = entry.bms_id;
-      s_pending[slot].entry      = entry;
-      s_pending[slot].start_ms   = now_ms;
+    bool dropped = false;
+    if (!dup) {
+      if (slot >= 0) {
+        s_pending[slot].active     = true;
+        s_pending[slot].begin_type = entry.type;
+        s_pending[slot].bms_id     = entry.bms_id;
+        s_pending[slot].entry      = entry;
+        s_pending[slot].start_ms   = now_ms;
+      } else {
+        ++s_dropped_count;
+        dropped = true;
+      }
     }
     portEXIT_CRITICAL(&s_pending_mux);
-    if (slot < 0) fire_alert_and_notify(entry, now_ms);
+    if (dropped && (now_ms - s_last_overflow_warn_ms) >= 10000u) {
+      s_last_overflow_warn_ms = now_ms;
+      portENTER_CRITICAL(&s_pending_mux);
+      uint32_t cnt = s_dropped_count;
+      portEXIT_CRITICAL(&s_pending_mux);
+      ESP_LOGW(TAG, "debounce overflow: ev=%u dropped (total=%lu)",
+               ev_id, (unsigned long)cnt);
+    }
   }
 }
 
@@ -544,6 +625,17 @@ void mark_telegram_verified() {
   if (!app::update_and_save_config(cfg)) {
     ESP_LOGW(TAG, "mark_telegram_verified: NVS persist failed");
   }
+}
+
+uint32_t dropped_count() {
+  portENTER_CRITICAL(&s_pending_mux);
+  uint32_t c = s_dropped_count;
+  portEXIT_CRITICAL(&s_pending_mux);
+  return c;
+}
+
+bool is_degraded() {
+  return s_degraded;
 }
 
 void reset_telegram_verified() {

@@ -14,7 +14,11 @@
 //           Struct grows from 644 B to 692 B. Explicit Config_v3 copy migration.
 // v4 → v5: added notify_debounce_s (uint16_t) — placed in the former 3-byte tail
 //           padding so sizeof(Config) stays 692 B. Default 30 s; 0 = disabled.
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 5;
+// v5 → v6: added battery_config_mode (uint8_t enum) at end of struct.
+//           sizeof(Config) grows 692 → 696 B (4-byte alignment padding).
+//           Migration: existing devices get Manual (preserves current behavior);
+//           fresh installs (DEFAULT_CONFIG) get Auto.
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 6;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -172,7 +176,28 @@ struct Config {
   // logged and sent. 0 = disabled (immediate). Applies ONLY to the alert
   // log + notifications — the safety control loop is always edge-immediate.
   uint16_t notify_debounce_s;
-  // (former 3-byte tail pad now consumed: sizeof(Config) still 692 B)
+  // (former 3-byte tail pad consumed: sizeof(Config_v5) = 692 B)
+
+  // ── Battery configuration mode (v6, appended at end) ────────────────────────
+  // Controls how CCL/DCL/CVL and protection thresholds are derived.
+  //   Auto       — follows live pack SYSPARAM (0x47) incl. temperature-dependent
+  //                DCL, broadcasts to inverter immediately. Default for new devices.
+  //   AutoMargin — same live-follow as Auto but with per-quantity safety insets:
+  //                10% on currents (CCL/DCL) and CVL, 50 mV on cell voltage cap,
+  //                3 °C on temperature windows.
+  //   Manual     — user controls values; pack SYSPARAM used as a safety cap in
+  //                the safe direction only. For BMS that don't report params.
+  //
+  // Hard LiFePO4 sanity caps apply in ALL modes (cell max <= 3.65 V/cell).
+  // Caps constrain only the unsafe direction; safe reductions (cold-DCL) always
+  // pass through. See safety/runSafety.cpp for the cap constants.
+  enum class BatteryConfigMode : uint8_t {
+    Auto       = 0,
+    AutoMargin = 1,
+    Manual     = 2,
+  };
+  BatteryConfigMode battery_config_mode;
+  // 3 bytes implicit tail padding → sizeof(Config) = 696 B
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

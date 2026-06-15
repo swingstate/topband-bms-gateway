@@ -931,11 +931,15 @@ function renderBmsDetailContent(packId, d) {
     </div>`;
   }).join('');
 
-  // Sysparam section
+  // Sysparam section — persists once received; "not yet polled" only before first 0x47.
   const sp = d.sysparam || {};
-  let sysparamHtml = '<p style="font-size:13px;color:var(--text-muted)">Not yet polled (round-robin, up to 5 min)</p>';
+  let sysparamHtml;
   if (sp.valid) {
+    const ageStr = (sp.age_s > 0)
+      ? ` <span style="font-size:11px;color:var(--text-muted)">(updated ${sp.age_s}s ago)</span>`
+      : '';
     sysparamHtml = `
+      <div style="margin-bottom:4px;font-size:12px;color:var(--text-muted)">From pack 0x47${ageStr}</div>
       <div class="diag-kv-grid">
         ${kvRow('Cell OVP', fmt(sp.cell_high_v, 3) + ' V')}
         ${kvRow('Cell UVP', fmt(sp.cell_low_v, 3) + ' V')}
@@ -947,6 +951,8 @@ function renderBmsDetailContent(packId, d) {
         ${kvRow('Max charge A', fmt(sp.charge_max_a, 1) + ' A')}
         ${kvRow('Max discharge A', fmt(sp.discharge_max_a, 1) + ' A')}
       </div>`;
+  } else {
+    sysparamHtml = '<p style="font-size:13px;color:var(--text-muted)">Not yet polled (round-robin, up to 5 min after boot)</p>';
   }
 
   // RS485 stats section
@@ -1029,7 +1035,7 @@ const SETTINGS_SECTIONS = [
   { id: 'time',    label: 'Time',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
-    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg>' },
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' },
   { id: 'notifications', label: 'Notify',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' },
   { id: 'account', label: 'Account',
@@ -1314,15 +1320,41 @@ async function saveHardwareSection() {
 
 function renderSettingsBattery() {
   const c = g_config;
+  const mode = c.battery_config_mode !== undefined ? c.battery_config_mode : 2; // default Manual
+  const isAuto = mode === 0 || mode === 1;
+  const roAttr = isAuto ? ' readonly style="background:var(--input-bg,#f4f4f4);color:var(--text-muted);cursor:not-allowed"' : '';
+
+  const modeInfo = [
+    { label: 'Auto',             desc: 'Follows live pack SYSPARAM (0x47) limits including temperature-dependent DCL. Values are pack-derived and broadcast to the inverter immediately. Hard sanity cap: cell max ≤ 3.65 V.' },
+    { label: 'Auto + Margin', desc: 'Same live-follow as Auto with per-quantity safety insets: CCL/DCL 10% inward, CVL 5% inward, cell voltage cap 50 mV inward (effective ceiling 3.60 V/cell), temperature window 3 °C inward on each bound.' },
+    { label: 'Manual',           desc: 'You control the values. Pack SYSPARAM is used as a safe-direction cap only. For BMS variants that don’t report all parameters.' },
+  ];
+
   return `
     <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">Battery Config Mode</div>
+        <div class="proto-options" id="cfg-batt-mode-options">
+          ${modeInfo.map((m, i) => `
+            <label class="proto-option">
+              <input type="radio" name="batt_mode_radio" value="${i}" ${mode === i ? 'checked' : ''}
+                     onchange="updateBatteryModeUI(${i})">
+              <span class="proto-name">${m.label}</span>
+            </label>`).join('')}
+        </div>
+        <div id="cfg-batt-mode-desc" style="margin-top:8px;font-size:13px;color:var(--text-muted)">
+          ${modeInfo[mode] ? modeInfo[mode].desc : ''}
+        </div>
+        ${isAuto ? `<div style="margin-top:8px;font-size:12px;color:var(--brand-coral)">Current limit fields are read-only in Auto modes &mdash; values are derived from pack 0x47 data.</div>` : ''}
+      </div>
+
       <div class="settings-section">
         <div class="settings-section-title">Battery Packs</div>
         <div class="form-row">
           <div class="form-group">
             <label>BMS Pack Count</label>
             <input type="number" id="cfg-bms_count" value="${c.bms_count}" min="1" max="16">
-            <div class="help">Number of TopBand packs (1–16)</div>
+            <div class="help">Number of TopBand packs (1&ndash;16)</div>
           </div>
           <div class="form-group">
             <label>Force Cell Count</label>
@@ -1333,13 +1365,13 @@ function renderSettingsBattery() {
         <div class="form-row">
           <div class="form-group">
             <label>Charge Amps per Pack</label>
-            <input type="number" id="cfg-charge_amps_per_pack" value="${c.charge_amps_per_pack}" step="0.1">
-            <div class="help">Max charge current per pack (A)</div>
+            <input type="number" id="cfg-charge_amps_per_pack" value="${c.charge_amps_per_pack}" step="0.1"${roAttr}>
+            <div class="help">${isAuto ? 'Pack-derived in Auto modes' : 'Max charge current per pack (A)'}</div>
           </div>
           <div class="form-group">
             <label>Discharge Amps per Pack</label>
-            <input type="number" id="cfg-discharge_amps_per_pack" value="${c.discharge_amps_per_pack}" step="0.1">
-            <div class="help">Max discharge current per pack (A)</div>
+            <input type="number" id="cfg-discharge_amps_per_pack" value="${c.discharge_amps_per_pack}" step="0.1"${roAttr}>
+            <div class="help">${isAuto ? 'Pack-derived in Auto modes' : 'Max discharge current per pack (A)'}</div>
           </div>
         </div>
       </div>
@@ -1349,20 +1381,20 @@ function renderSettingsBattery() {
         <div class="form-row">
           <div class="form-group">
             <label>CVL (Charge Voltage Limit)</label>
-            <input type="number" id="cfg-cvl_voltage" value="${c.cvl_voltage}" step="0.01">
-            <div class="help">Max pack charge voltage (V)</div>
+            <input type="number" id="cfg-cvl_voltage" value="${c.cvl_voltage}" step="0.01"${roAttr}>
+            <div class="help">${isAuto ? 'Pack-derived in Auto modes' : 'Max pack charge voltage (V)'}</div>
           </div>
           <div class="form-group">
             <label>Safe Pack Voltage</label>
-            <input type="number" id="cfg-safe_pack_volt" value="${c.safe_pack_volt}" step="0.01">
-            <div class="help">Under-voltage alarm threshold (V)</div>
+            <input type="number" id="cfg-safe_pack_volt" value="${c.safe_pack_volt}" step="0.01"${roAttr}>
+            <div class="help">${isAuto ? 'Pack-derived in Auto modes' : 'Overvolt alarm threshold (V)'}</div>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label>Safe Cell Voltage</label>
-            <input type="number" id="cfg-safe_cell_volt" value="${c.safe_cell_volt}" step="0.001">
-            <div class="help">Cell OVP threshold (V)</div>
+            <input type="number" id="cfg-safe_cell_volt" value="${c.safe_cell_volt}" step="0.001"${roAttr}>
+            <div class="help">${isAuto ? 'Pack-derived; hard cap ≤ 3.65 V always' : 'Cell OVP threshold (V, max 3.65 V)'}</div>
           </div>
           <div class="form-group">
             <label>Max Cell Drift</label>
@@ -1376,27 +1408,28 @@ function renderSettingsBattery() {
         <div class="settings-section-title">Temperature Limits</div>
         <div class="form-row">
           <div class="form-group">
-            <label>Charge Temp Min (°C)</label>
-            <input type="number" id="cfg-charge_temp_min" value="${c.charge_temp_min}" step="0.5">
+            <label>Charge Temp Min (&deg;C)</label>
+            <input type="number" id="cfg-charge_temp_min" value="${c.charge_temp_min}" step="0.5"${roAttr}>
           </div>
           <div class="form-group">
-            <label>Charge Temp Max (°C)</label>
-            <input type="number" id="cfg-charge_temp_max" value="${c.charge_temp_max}" step="0.5">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Discharge Temp Min (°C)</label>
-            <input type="number" id="cfg-discharge_temp_min" value="${c.discharge_temp_min}" step="0.5">
-          </div>
-          <div class="form-group">
-            <label>Discharge Temp Max (°C)</label>
-            <input type="number" id="cfg-discharge_temp_max" value="${c.discharge_temp_max}" step="0.5">
+            <label>Charge Temp Max (&deg;C)</label>
+            <input type="number" id="cfg-charge_temp_max" value="${c.charge_temp_max}" step="0.5"${roAttr}>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>Soft Zone Width (°C)</label>
+            <label>Discharge Temp Min (&deg;C)</label>
+            <input type="number" id="cfg-discharge_temp_min" value="${c.discharge_temp_min}" step="0.5"${roAttr}>
+          </div>
+          <div class="form-group">
+            <label>Discharge Temp Max (&deg;C)</label>
+            <input type="number" id="cfg-discharge_temp_max" value="${c.discharge_temp_max}" step="0.5"${roAttr}>
+          </div>
+        </div>
+        ${isAuto ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">In Auto modes temperature limits come from pack 0x47 (most conservative across packs). Auto+Margin adds a 3 °C safety inset on each bound.</div>` : ''}
+        <div class="form-row">
+          <div class="form-group">
+            <label>Soft Zone Width (&deg;C)</label>
             <input type="number" id="cfg-temp_soft_zone" value="${c.temp_soft_zone}" step="0.5">
             <div class="help">Hysteresis band for throttle steps</div>
           </div>
@@ -2103,6 +2136,31 @@ function renderSettingsSystem() {
           <div id="restore-status" class="feedback-msg" style="margin-top:8px"></div>
         </div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">About</div>
+        <p style="font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:14px">
+          Bridges up to 16 TopBand LiFePO4 BMS packs to a solar inverter via CAN bus
+          (Victron, Pylontech, or SMA). Aggregates cell voltages, temperatures, and alarms,
+          applies safety limits, and controls charge/discharge in real time.
+          Publishes live data via MQTT with Home Assistant auto-discovery.
+        </p>
+        <div class="diag-kv-grid" style="margin-bottom:12px">
+          ${kvRow('Version', h ? escHtml(h.version || '—') : '—')}
+          ${kvRow('UI Version', h ? escHtml(h.ui_version || '—') : '—')}
+          ${kvRow('Build', h ? escHtml(h.build || '—') : '—')}
+          ${kvRow('License', 'MIT')}
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">With thanks to:</p>
+        <ul style="font-size:12px;color:var(--text-muted);line-height:1.8;padding-left:1.2em;margin:0 0 6px">
+          <li><a href="https://github.com/linedot/topband-bms" target="_blank" rel="noopener noreferrer">linedot/topband-bms</a> — TopBand RS485 protocol reverse-engineering</li>
+          <li><a href="https://github.com/atomi23/Topband-BMS-to-CAN" target="_blank" rel="noopener noreferrer">atomi23/Topband-BMS-to-CAN</a> — original BMS-to-CAN concept</li>
+        </ul>
+        <div style="font-size:12px;color:var(--text-muted)">
+          <a href="https://github.com/swingstate/topband-bms-gateway" target="_blank" rel="noopener noreferrer">
+            github.com/swingstate/topband-bms-gateway
+          </a>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -2164,15 +2222,68 @@ async function saveSectionFields(fields, feedbackId, overrides) {
   }
 }
 
+// Called when the battery config mode radio changes — updates helper text and
+// readonly state of pack-derived fields without a full page reload.
+function updateBatteryModeUI(newMode) {
+  const modeDescs = [
+    'Follows live pack SYSPARAM (0x47) limits including temperature-dependent DCL. Values are pack-derived and broadcast to the inverter immediately. Hard sanity cap: cell max ≤ 3.65 V.',
+    'Same live-follow as Auto with per-quantity safety insets: CCL/DCL 10% inward, CVL 5% inward, cell voltage cap 50 mV inward (effective ceiling 3.60 V/cell), temperature window 3 °C inward on each bound.',
+    'You control the values. Pack SYSPARAM is used as a safe-direction cap only. For BMS variants that don’t report all parameters.',
+  ];
+  const descEl = document.getElementById('cfg-batt-mode-desc');
+  if (descEl) descEl.textContent = modeDescs[newMode] || '';
+  const isAuto = newMode === 0 || newMode === 1;
+  const autoFields = ['cfg-charge_amps_per_pack','cfg-discharge_amps_per_pack',
+                      'cfg-cvl_voltage','cfg-safe_pack_volt','cfg-safe_cell_volt',
+                      'cfg-charge_temp_min','cfg-charge_temp_max',
+                      'cfg-discharge_temp_min','cfg-discharge_temp_max'];
+  autoFields.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (isAuto) {
+      el.setAttribute('readonly', '');
+      el.style.background = 'var(--input-bg,#f4f4f4)';
+      el.style.color = 'var(--text-muted)';
+      el.style.cursor = 'not-allowed';
+    } else {
+      el.removeAttribute('readonly');
+      el.style.background = '';
+      el.style.color = '';
+      el.style.cursor = '';
+    }
+  });
+}
+
 function saveBatterySection() {
   const protoChecked = document.querySelector('input[name="can_protocol_radio"]:checked');
   const protoVal = protoChecked ? Number(protoChecked.value) : null;
+  const modeChecked = document.querySelector('input[name="batt_mode_radio"]:checked');
+  const modeVal = modeChecked ? Number(modeChecked.value) : null;
 
   let overrides = {};
   if (protoVal === -1) {
     overrides = { can_enabled: false };
   } else if (protoVal !== null && protoVal >= 0) {
     overrides = { can_enabled: true, can_protocol: protoVal };
+  }
+  if (modeVal !== null && modeVal >= 0 && modeVal <= 2) {
+    overrides.battery_config_mode = modeVal;
+  }
+
+  // In Auto/AutoMargin, pack-derived fields are readonly — read the current
+  // g_config values so they round-trip unchanged rather than sending whatever
+  // the disabled input contains.
+  const isAuto = modeVal === 0 || modeVal === 1;
+  if (isAuto) {
+    overrides.charge_amps_per_pack    = g_config.charge_amps_per_pack;
+    overrides.discharge_amps_per_pack = g_config.discharge_amps_per_pack;
+    overrides.cvl_voltage             = g_config.cvl_voltage;
+    overrides.safe_pack_volt          = g_config.safe_pack_volt;
+    overrides.safe_cell_volt          = g_config.safe_cell_volt;
+    overrides.charge_temp_min         = g_config.charge_temp_min;
+    overrides.charge_temp_max         = g_config.charge_temp_max;
+    overrides.discharge_temp_min      = g_config.discharge_temp_min;
+    overrides.discharge_temp_max      = g_config.discharge_temp_max;
   }
 
   saveSectionFields([
@@ -3105,36 +3216,7 @@ function renderDiagData(d) {
       </div>
     </details>
 
-    <div class="diag-section">
-      <h3>About</h3>
-      <p style="font-size:13px;margin-bottom:12px">
-        TopBand BMS Gateway V3.0 is a ground-up rewrite that builds on the work of
-        the projects below. With thanks to their authors:
-      </p>
-      <ul style="font-size:13px;line-height:1.8;padding-left:1.2em;margin:0 0 14px">
-        <li>Protocol reverse-engineering:
-          <a href="https://github.com/linedot/topband-bms"
-             target="_blank" rel="noopener noreferrer">linedot/topband-bms</a></li>
-        <li>Base framework:
-          <a href="https://github.com/atomi23/Topband-BMS-to-CAN"
-             target="_blank" rel="noopener noreferrer">atomi23/Topband-BMS-to-CAN</a>
-          V1.25</li>
-        <li>Captive portal:
-          <a href="https://github.com/tzapu/WiFiManager"
-             target="_blank" rel="noopener noreferrer">tzapu/WiFiManager</a></li>
-      </ul>
-      <div class="diag-kv-grid">
-        ${kvRow('Version', sys.fw || '—')}
-        ${kvRow('Build', sys.build || '—')}
-        ${kvRow('License', 'MIT')}
-      </div>
-      <div style="font-size:12px;color:var(--text-muted);margin-top:10px">
-        <a href="https://github.com/swingstate/topband-bms-gateway"
-           target="_blank" rel="noopener noreferrer">
-          github.com/swingstate/topband-bms-gateway
-        </a>
-      </div>
-    </div>`;
+    `;
 
   // Restore log open/closed state (innerHTML replacement resets <details> to closed).
   const details = document.getElementById('diag-log-details');

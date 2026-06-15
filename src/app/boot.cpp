@@ -116,6 +116,9 @@ void run_boot() {
   // ── Step 1a: Record this boot (NVS must be ready first) ──────────────────
   // Called before Config load so we capture the raw early uptime.
   storage::boot_reasons::record_this_boot();
+  // Panic-loop guard: must run before notify::init() so the crash-loop flag
+  // is ready when notify::init() calls is_crash_loop_suspected().
+  storage::boot_reasons::record_panic_boot();
 
   // ── Step 2: Config ───────────────────────────────────────────────────────
   bool loaded = storage::loadConfig(g_config);

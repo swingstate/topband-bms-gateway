@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef FW_VERSION
-#  define FW_VERSION "3.0.0-beta"
+#  define FW_VERSION "3.0.0"
 #endif
 
 // GIT_SHA is injected by tools/git_sha_gen.py into include/git_sha.h before
@@ -17,7 +17,7 @@
 #endif
 
 // Composite version string shown in health endpoint and boot log.
-// Example: "3.0.0-dev (a750b8d)" or "3.0.0-dev (a750b8d-dirty)"
+// Example: "3.0.0 (a750b8d)" or "3.0.0 (a750b8d-dirty)"
 #define FW_VERSION_FULL FW_VERSION " (" GIT_SHA ")"
 
 #define BUILD_DATE __DATE__
