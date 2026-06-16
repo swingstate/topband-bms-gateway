@@ -1,0 +1,16 @@
+{
+  "bms_count": 4,
+  "charge_amps_per_pack": 30.0,
+  "discharge_amps_per_pack": 30.0,
+  "cvl_voltage": 53.5,
+  "safe_pack_volt": 56.25,
+  "safe_cell_volt": 3.55,
+  "safe_cell_drift": 0.02,
+  "charge_temp_min": 5.0,
+  "charge_temp_max": 50.0,
+  "discharge_temp_min": -20.0,
+  "discharge_temp_max": 60.0,
+  "temp_mode": "Hottest",
+  "maint_charge_enabled": false,
+  "maint_target_voltage": 52.0
+}

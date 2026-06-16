@@ -1,0 +1,26 @@
+{
+  "case": "case_03_discharge_4packs",
+  "alarm_flags": 0,
+  "frames": [
+    {
+      "id": "0x351",
+      "data_hex": "1702B004B0040000"
+    },
+    {
+      "id": "0x355",
+      "data_hex": "2D006400A00F0000"
+    },
+    {
+      "id": "0x356",
+      "data_hex": "921370FEFA000000"
+    },
+    {
+      "id": "0x35A",
+      "data_hex": "0000000000000000"
+    },
+    {
+      "id": "0x35E",
+      "data_hex": "544F5042414E4420"
+    }
+  ]
+}

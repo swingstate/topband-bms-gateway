@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="auth-enabled" content="{{AUTH_ENABLED}}">
+  <title>TopBand BMS Gateway — Sign In</title>
+  <style>
+    :root {
+      --brand-cream:     #F5F1DE;
+      --brand-aubergine: #2E0B45;
+      --brand-teal:      #76D2D9;
+      --brand-coral:     #E25548;
+      --color-success:   #4FA77B;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page-bg:      #2E0B45;
+        --card-bg:      #3D1858;
+        --text-primary: #F5F1DE;
+        --text-muted:   #8C7BA0;
+        --border:       #4F2870;
+        --input-bg:     #2E0B45;
+        --input-border: #4F2870;
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --page-bg:      #FAF8F0;
+        --card-bg:      #F5F1DE;
+        --text-primary: #2E0B45;
+        --text-muted:   #8A7E69;
+        --border:       #D4CDB9;
+        --input-bg:     #FAF8F0;
+        --input-border: #D4CDB9;
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      background: var(--page-bg);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 36px 32px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 4px 24px rgba(46, 11, 69, 0.12);
+    }
+
+    .wordmark {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--brand-aubergine);
+      margin-bottom: 6px;
+    }
+    @media (prefers-color-scheme: dark) {
+      .wordmark { color: var(--brand-cream); }
+    }
+
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 24px; }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .input-wrap {
+      position: relative;
+      margin-bottom: 16px;
+    }
+    input[type="password"], input[type="text"] {
+      width: 100%;
+      padding: 10px 40px 10px 12px;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 7px;
+      color: var(--text-primary);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="password"]:focus, input[type="text"]:focus {
+      border-color: var(--brand-teal);
+    }
+    .show-toggle {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      cursor: pointer;
+      opacity: 0.45;
+      background: none;
+      border: none;
+      color: var(--text-primary);
+      font-size: 14px;
+      padding: 2px;
+    }
+    .show-toggle:hover { opacity: 0.8; }
+
+    .btn-primary {
+      width: 100%;
+      padding: 11px;
+      background: var(--brand-aubergine);
+      color: var(--brand-cream);
+      border: none;
+      border-radius: 7px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: opacity 0.15s;
+    }
+    .btn-primary:hover   { opacity: 0.88; }
+    .btn-primary:disabled{ opacity: 0.5; cursor: not-allowed; }
+
+    /* Shake animation on wrong password */
+    @keyframes shake {
+      0%,100%{transform:translateX(0)}
+      20%    {transform:translateX(-6px)}
+      40%    {transform:translateX(6px)}
+      60%    {transform:translateX(-4px)}
+      80%    {transform:translateX(4px)}
+    }
+    .shake { animation: shake 0.35s ease-out; }
+
+    .error-msg {
+      margin-top: 12px;
+      padding: 8px 12px;
+      background: rgba(226, 85, 72, 0.12);
+      border: 1px solid rgba(226, 85, 72, 0.3);
+      border-radius: 6px;
+      color: var(--brand-coral);
+      font-size: 13px;
+      display: none;
+    }
+    .error-msg.visible { display: block; }
+
+    .match-error {
+      font-size: 12px;
+      color: var(--brand-coral);
+      margin-top: -10px;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .match-error.visible { display: block; }
+
+    .hint {
+      margin-top: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 480px) {
+      .card { padding: 28px 18px; }
+    }
+  </style>
+</head>
+<body>
+<div class="card" id="card">
+  <!-- Filled by JS based on auth-enabled meta tag -->
+</div>
+
+<script>
+'use strict';
+const AUTH_ENABLED = document.querySelector('meta[name="auth-enabled"]')?.content === 'true';
+
+function togglePw(btnId, inputId) {
+  const inp = document.getElementById(inputId);
+  const btn = document.getElementById(btnId);
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    btn.textContent = 'Hide';
+  } else {
+    inp.type = 'password';
+    btn.textContent = 'Show';
+  }
+}
+
+function shakeCard() {
+  const card = document.getElementById('card');
+  card.classList.remove('shake');
+  void card.offsetWidth;  // reflow to restart animation
+  card.classList.add('shake');
+}
+
+// ── Sign-in form (auth_enabled = true) ────────────────────────────────────
+function renderSignIn() {
+  document.getElementById('card').innerHTML = `
+    <div class="wordmark">TopBand BMS Gateway</div>
+    <h1>Sign in</h1>
+    <p class="subtitle">Enter your admin password to continue.</p>
+    <label for="pw">Password</label>
+    <div class="input-wrap">
+      <input type="password" id="pw" autocomplete="current-password" autofocus>
+      <button type="button" class="show-toggle" id="show-pw"
+              onclick="togglePw('show-pw','pw')">Show</button>
+    </div>
+    <button class="btn-primary" id="btn-login" onclick="doLogin()">Sign in</button>
+    <div class="error-msg" id="err-msg">Incorrect password</div>
+    <p class="hint">Forgot your password? Power-cycle the gateway 5&times; rapidly to reset.</p>
+  `;
+  document.getElementById('pw').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+}
+
+async function doLogin() {
+  const pw = document.getElementById('pw').value;
+  const btn = document.getElementById('btn-login');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw})
+    });
+    if (r.ok) {
+      const d = await r.json();
+      // Store CSRF token in sessionStorage for use by app.js.
+      if (d.csrf) sessionStorage.setItem('csrf', d.csrf);
+      // Redirect to dashboard (or original URL if query param provided).
+      const params = new URLSearchParams(window.location.search);
+      window.location.href = params.get('next') || '/';
+    } else {
+      shakeCard();
+      document.getElementById('err-msg').classList.add('visible');
+      btn.disabled = false;
+      document.getElementById('pw').select();
+    }
+  } catch (e) {
+    document.getElementById('err-msg').textContent = 'Network error: ' + e.message;
+    document.getElementById('err-msg').classList.add('visible');
+    btn.disabled = false;
+  }
+}
+
+// ── First-time setup form (auth_enabled = false) ───────────────────────────
+function renderSetPassword() {
+  document.getElementById('card').innerHTML = `
+    <div class="wordmark">TopBand BMS Gateway</div>
+    <h1>Set admin password</h1>
+    <p class="subtitle">Choose a password to secure your gateway.</p>
+    <label for="pw1">New password</label>
+    <div class="input-wrap">
+      <input type="password" id="pw1" autocomplete="new-password" autofocus>
+      <button type="button" class="show-toggle" id="show-pw1"
+              onclick="togglePw('show-pw1','pw1')">Show</button>
+    </div>
+    <label for="pw2">Confirm password</label>
+    <div class="input-wrap">
+      <input type="password" id="pw2" autocomplete="new-password">
+      <button type="button" class="show-toggle" id="show-pw2"
+              onclick="togglePw('show-pw2','pw2')">Show</button>
+    </div>
+    <div class="match-error" id="match-err">Passwords do not match</div>
+    <button class="btn-primary" id="btn-save" onclick="doSetPassword()">Save &amp; Continue</button>
+    <div class="error-msg" id="err-msg"></div>
+  `;
+  document.getElementById('pw2').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doSetPassword();
+  });
+}
+
+async function doSetPassword() {
+  const pw1 = document.getElementById('pw1').value;
+  const pw2 = document.getElementById('pw2').value;
+  const matchErr = document.getElementById('match-err');
+  const errMsg   = document.getElementById('err-msg');
+  const btn      = document.getElementById('btn-save');
+
+  matchErr.classList.remove('visible');
+  errMsg.classList.remove('visible');
+
+  if (pw1.length === 0) {
+    errMsg.textContent = 'Password must not be empty.';
+    errMsg.classList.add('visible');
+    shakeCard();
+    return;
+  }
+  if (pw1 !== pw2) {
+    matchErr.classList.add('visible');
+    shakeCard();
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/auth/set_password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({current: '', new: pw1})
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d.csrf) sessionStorage.setItem('csrf', d.csrf);
+      window.location.href = '/';
+    } else {
+      const d = await r.json().catch(() => ({}));
+      errMsg.textContent = d.error || 'Save failed.';
+      errMsg.classList.add('visible');
+      btn.disabled = false;
+    }
+  } catch (e) {
+    errMsg.textContent = 'Network error: ' + e.message;
+    errMsg.classList.add('visible');
+    btn.disabled = false;
+  }
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+if (AUTH_ENABLED) {
+  renderSignIn();
+} else {
+  renderSetPassword();
+}
+</script>
+</body>
+</html>

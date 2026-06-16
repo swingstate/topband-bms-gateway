@@ -1,0 +1,88 @@
+# IDF component registration for standalone `idf.py build`.
+# PlatformIO (`pio run`) ignores this file and uses its own __pio_env mechanism.
+#
+# Component names are per IDF 5.5.x. If building against IDF 5.3.x, component
+# names are identical for the ones listed here.
+
+idf_component_register(
+  SRCS
+    "main.cpp"
+    "app/boot.cpp"
+    "app/smoke_reader.cpp"
+    "app/history_task.cpp"
+    "app/self_test.cpp"
+    "storage/config.cpp"
+    "storage/nvs_store.cpp"
+    "storage/lfs_store.cpp"
+    "storage/ui_provisioner.cpp"
+    "storage/boot_reasons.cpp"
+    "storage/history_store.cpp"
+    "storage/energy_store.cpp"
+    "storage/alerts_store.cpp"
+    "diag/log_ring.cpp"
+    "diag/alerts.cpp"
+    "bus/queues.cpp"
+    "bus/snapshot_bus.cpp"
+    "bms/protocol.cpp"
+    "bms/snapshot.cpp"
+    "bms/poller.cpp"
+    "bms/energy_integrator.cpp"
+    "bms/runtime_estimator.cpp"
+    "safety/filters.cpp"
+    "safety/runSafety.cpp"
+    "can/victron.cpp"
+    "can/pylontech.cpp"
+    "can/sma.cpp"
+    "can/tx.cpp"
+    "can/busoff.cpp"
+    "net/wifi.cpp"
+    "net/captdns.cpp"
+    "net/ntp.cpp"
+    "web/server.cpp"
+    "web/auth.cpp"
+    "web/captive.cpp"
+    "web/config_json.cpp"
+    "web/handlers_live.cpp"
+    "web/handlers_config.cpp"
+    "web/handlers_actions.cpp"
+    "web/handlers_history.cpp"
+    "web/handlers_diag.cpp"
+    "web/handlers_alerts.cpp"
+    "web/handlers_ota.cpp"
+    "web/handlers_notify.cpp"
+    "web/handlers_static.cpp"
+    "net/http_post.cpp"
+    "notify/notify.cpp"
+    "notify/telegram.cpp"
+    "mqtt/topics.cpp"
+    "mqtt/payloads.cpp"
+    "mqtt/publisher.cpp"
+    "mqtt/ha_discovery.cpp"
+    "app/housekeeping.cpp"
+    "third_party/microtar/microtar.c"
+  EMBED_TXTFILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../web/littlefs_ui.tar"
+  INCLUDE_DIRS
+    "."
+    "../include"
+  REQUIRES
+    log
+    nvs_flash
+    freertos
+    esp_timer
+    esp_system
+    heap
+    driver
+    esp_hw_support
+    esp_wifi
+    esp_netif
+    esp_event
+    esp_http_server
+    esp_littlefs
+    esp_rom
+    mbedtls
+    esp-tls
+    esp_http_client
+    mqtt
+    app_update
+)

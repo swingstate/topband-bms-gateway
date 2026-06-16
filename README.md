@@ -1,5 +1,7 @@
 # TopBand BMS Gateway
 
+> **V3.0 is in active development.** The currently shipping firmware is V2.67.2. See `CHANGELOG.md` for release history.
+
 ESP32/ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to either Victron, Pylontech, or SMA inverters via CAN bus, or to Homeassistant (or other systems) via MQTT. Includes a web dashboard, MQTT publishing, and Home Assistant auto-discovery.
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.

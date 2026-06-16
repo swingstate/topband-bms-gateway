@@ -1,0 +1,115 @@
+# TopBand BMS Gateway V3.0 — sdkconfig overrides for ESP-IDF v5.3
+# Applied by IDF build system before menuconfig; do not edit generated sdkconfig.
+
+# ── PSRAM: ESP32-S3 OPI (Octal) PSRAM, 80 MHz ────────────────────────────────
+# The snapshot bus places BmsSystemSnapshot double-buffers in PSRAM.
+# Octal mode required for adequate bandwidth on read-heavy Core 1 consumers.
+#
+# USE_MALLOC (not CAPS_ALLOC): plain malloc() routes allocations > 16 KB to
+# PSRAM automatically via CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384. This
+# prevents internal-heap fragmentation OOM in the static file handlers, which
+# malloc up to 32 KB for HTML template buffers. Allocations <= 16 KB (4 KB
+# stream chunks, ArduinoJson pools, MQTT outbox entries) stay in internal SRAM,
+# preserving lwIP zero-copy TCP path correctness and WiFi DMA accessibility.
+# lwIP/WiFi stacks are unaffected: they use heap_caps_malloc(MALLOC_CAP_DMA |
+# MALLOC_CAP_INTERNAL) explicitly and never touch the MALLOC_ALWAYSINTERNAL path.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# EXT_RAM_BSS_ATTR: enables the .ext_ram.bss linker section so variables
+# decorated with EXT_RAM_BSS_ATTR are placed in PSRAM instead of DRAM BSS.
+# Required for the ~114 KB history ring buffers moved in iter/ram-optimization.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# ── Main task stack ───────────────────────────────────────────────────────────
+# Default 3584 B is too small when esp-littlefs rename-over-existing triggers
+# lfs_remove internally, which can overflow the stack during UI provisioning.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# ── FreeRTOS ──────────────────────────────────────────────────────────────────
+# 1000 Hz tick so vTaskDelay(pdMS_TO_TICKS(1)) gives 1 ms resolution.
+CONFIG_FREERTOS_HZ=1000
+# Trace facility: enables uxTaskGetSystemState() used by the /api/diag tasks[]
+# table. TCB overhead: ~8 B per task. Stats-formatting + core-ID expose xCoreID
+# in TaskStatus_t so the table shows per-task core affinity.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+
+# ── Task watchdog ─────────────────────────────────────────────────────────────
+# 60 s timeout. A WDT trip means a task is blocked — that is a bug, not a
+# recoverable event. Panic on WDT so we get a coredump for post-mortem.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# ── Core dump ─────────────────────────────────────────────────────────────────
+# Write panic coredump to the dedicated 64 KB flash partition. Readable via
+# espcoredump.py or GET /api/diag/coredump.bin.
+CONFIG_ESP_COREDUMP_ENABLE=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_BIN=y
+CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+
+# ── TWAI (CAN) driver ─────────────────────────────────────────────────────────
+# IRAM placement for lower ISR latency on the CAN TX hot path.
+CONFIG_TWAI_ISR_IN_IRAM=y
+
+# ── HTTP server ───────────────────────────────────────────────────────────────
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_MAX_RESP_HDR_LEN=1024
+
+# ── LittleFS (joltwallet/littlefs managed component) ─────────────────────────
+# These keys are only active once the component is added (Phase F).
+# Harmless here if the component is absent.
+CONFIG_LITTLEFS_MAX_PARTITIONS=4
+CONFIG_LITTLEFS_OBJ_NAME_LEN=64
+CONFIG_LITTLEFS_PAGE_SIZE=256
+CONFIG_LITTLEFS_READ_SIZE=128
+CONFIG_LITTLEFS_WRITE_SIZE=128
+
+# ── Flash size ────────────────────────────────────────────────────────────────
+# Must match the physical flash on the Waveshare ESP32-S3 (16 MB).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ── MbedTLS certificate bundle (for outbound TLS / Telegram HTTPS) ───────────
+# Validates outbound HTTPS against common CA roots (DigiCert, Let's Encrypt,
+# etc.) without shipping per-service CAs that expire and need maintenance.
+# api.telegram.org uses DigiCert roots included in the full bundle.
+# Without this, esp_http_client TLS handshake returns MBEDTLS certificate errors.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# ── MbedTLS dynamic buffer + asymmetric content lengths ─────────────────────
+# Default mbedTLS allocates two fixed 16 KB SSL I/O buffers per connection
+# (32 KB DRAM total).  Under MQTT load the largest contiguous DRAM block may
+# be smaller than this, causing the TLS handshake to fail deep inside mbedTLS
+# with a cryptic allocator error (observed on production device, 3 packs,
+# PerCell + HA discovery load).
+#
+# Dynamic buffer: buffers start at the minimum size needed for the current
+# flight and grow only as needed, dramatically reducing the peak DRAM spike
+# during handshake.  For a Telegram sendMessage POST (tiny body, small JSON
+# response), the peak never exceeds a few KB.
+#
+# Asymmetric content: outbound TLS messages to api.telegram.org are tiny
+# (< 512 B POST body).  A 4 KB out-buffer is ample; leaves more DRAM for
+# lwIP and MQTT.  In-buffer stays at 16 KB default for incoming responses.
+#
+# NOTE: after editing sdkconfig.defaults, regenerate the active sdkconfig:
+#   rm sdkconfig.esp32s3 && pio run -e esp32s3 -t clean && pio run -e esp32s3
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

@@ -1,5 +1,10 @@
+> **V2.67 reference — superseded.** This document describes the V2.67 MQTT
+> schema (JSON blob topics, `mq_level` 0/1/2). For V3.0 see
+> [mqtt.md](mqtt.md) which covers the plain-text per-entity topic model,
+> five publish levels, HA sub-device discovery, and the full topic table.
+
 <details>
-<summary><b>MQTT Topics Reference</b> (click to expand)</summary>
+<summary><b>MQTT Topics Reference (V2.67 — historical)</b> (click to expand)</summary>
 
 All topics are published by the gateway. Base topic is configurable in the MQTT tab (default `Topband/BMS`). Placeholders: `{base}` = configured base topic, `{uid}` = device UID (e.g. `tb_79944c`), `{n}` = BMS index (0-15).
 

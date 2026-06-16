@@ -1,0 +1,34 @@
+{
+  "cycle_id": 54,
+  "produced_ms": 162000,
+  "cvl_volts": 53.5,
+  "ccl_amps": 0.0,
+  "dcl_amps": 120.0,
+  "pack_voltage_avg": 50.1,
+  "pack_current_total": 0.0,
+  "soc_avg": 50.0,
+  "soh_avg": 100.0,
+  "temp_avg": 2.0,
+  "capacity_total_ah": 400.0,
+  "capacity_remain_ah": 400.0,
+  "factor_charge": 0.0,
+  "factor_discharge": 1.0,
+  "alarm_flags": 8,
+  "sys_message": "INFO: TEMP CHARGE STOP",
+  "packs_online": 4,
+  "packs_configured": 4,
+  "event_count": 2,
+  "events": [
+    {
+      "type": "TempChargeStop",
+      "bms_id": 255,
+      "alarm_bits": 0
+    },
+    {
+      "type": "TempChargeStop",
+      "bms_id": 255,
+      "alarm_bits": 0
+    }
+  ],
+  "events_overflowed": false
+}
