@@ -253,7 +253,7 @@
       uptime_s:     UPTIME_BASE + g_tick * 2,
       free_heap_b:  142336,
       free_psram_b: 6291456,
-      wifi: { connected: true, rssi: -58, ssid: 'Skynet', ip: '192.168.1.42' },
+      wifi: { connected: true, rssi: -58, ssid: 'HomeNetwork', ip: '192.168.1.42' },
       mqtt: { enabled: true, state: 'connected' },
       ntp_synced:   true,
       now_ts_s:     NOW_EPOCH + g_tick * 2,
@@ -398,7 +398,7 @@
   function makeWifiStatus() {
     return {
       connected:       true,
-      ssid:            'Skynet',
+      ssid:            'HomeNetwork',
       rssi:            -58,
       ip:              '192.168.1.42',
       gateway:         '192.168.1.1',
@@ -410,7 +410,7 @@
   }
 
   var DEMO_WIFI_SCAN = [
-    { ssid: 'Skynet',          rssi: -58, secure: true  },
+    { ssid: 'HomeNetwork',     rssi: -58, secure: true  },
     { ssid: 'FRITZ!Box 7590',  rssi: -71, secure: true  },
     { ssid: 'IoT-Network',     rssi: -74, secure: true  },
     { ssid: 'GuestNet',        rssi: -82, secure: false },
@@ -492,7 +492,7 @@
       log_ring: [
         '[    0.000] I boot: TopBand BMS Gateway v3.0.0-preview.1 starting',
         '[    0.012] I storage: NVS config loaded, schema v6',
-        '[    0.034] I wifi: connecting to SSID "Skynet"',
+        '[    0.034] I wifi: connecting to SSID "HomeNetwork"',
         '[    1.203] I wifi: connected — IP 192.168.1.42, GW 192.168.1.1',
         '[    1.245] I ntp: sync OK — offset +0.002 s',
         '[    1.301] I mqtt: connecting to 192.168.1.100:1883 as "homeassistant"',
