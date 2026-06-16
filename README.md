@@ -283,7 +283,7 @@ MIT License. See [LICENSE](LICENSE) file for details.
 
 ## Credits
 
-- Protocol reverse-engineering: [linedot/topbands-bms](https://github.com/linedot/topbands-bms)
+- Protocol reverse-engineering: [linedot/topband-bms](https://github.com/linedot/topband-bms)
 - Original groundwork: [atomi23/Topband-BMS-to-CAN](https://github.com/atomi23/Topband-BMS-to-CAN)
 - Earlier firmware lineage used [tzapu/WiFiManager](https://github.com/tzapu/WiFiManager) for captive portal; V3.0 uses a custom implementation
 
