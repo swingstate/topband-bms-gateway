@@ -16,8 +16,7 @@ Compatible with TopBand-based batteries including EET, Power Queen, and others u
 
 ## Screenshots
 
-![Dashboard Overview](docs/screenshot-dashboard.jpeg)
-
+<img width="1304" height="708" alt="Bildschirmfoto 2026-06-16 um 21 21 45" src="https://github.com/user-attachments/assets/d942b5d8-be0a-47f2-b2e5-de5fa2430516" />
 Dashboard with live SOC, power, voltage, cell balance bars, and history charts. Glassmorphism UI with light and dark mode.
 
 A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it directly in any browser to preview the dashboard with synthetic data (no hardware needed). Useful for UI previews.
@@ -30,7 +29,7 @@ A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it direc
 - **Energy tracking** rolling today / 7-day / monthly counters
 - **MQTT publishing** with Home Assistant auto-discovery, per-pack and per-cell topics
 - **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis
-- **CAN output** Victron, Pylontech, or SMA protocol — selectable at runtime, no recompile needed
+- **CAN output** Victron, Pylontech, or SMA protocol — selectable at runtime
 - **Battery config modes** Auto (from BMS parameters), Auto+Margin, or Manual
 - **OTA firmware updates** with 5-minute self-test and automatic rollback on failure
 - **Telegram notifications** for safety alerts — configurable debounce to prevent alert floods
