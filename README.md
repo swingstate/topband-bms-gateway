@@ -19,7 +19,9 @@ Compatible with TopBand-based batteries including EET, Power Queen, and others u
 <img width="1304" height="708" alt="Bildschirmfoto 2026-06-16 um 21 21 45" src="https://github.com/user-attachments/assets/d942b5d8-be0a-47f2-b2e5-de5fa2430516" />
 Dashboard with live SOC, power, voltage, cell balance bars, and history charts. Glassmorphism UI with light and dark mode.
 
-A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it directly in any browser to preview the dashboard with synthetic data (no hardware needed). Useful for UI previews.
+## Demo
+
+The UI can be previewed here: https://swingstate.github.io/topband-bms-gateway/demo/
 
 ## Features
 
@@ -245,7 +247,7 @@ Factory reset and password reset are done via the web UI: Settings → Factory R
 
 ### UI Preview
 
-`docs/dashboard-demo.html` is a standalone HTML page that renders the full dashboard with synthetic data for a 75% charged battery. Open it directly in any browser (no server, no dependencies). Use for screenshots, documentation, or demoing the UI without hardware.
+`[docs/dashboard-demo.html](https://swingstate.github.io/topband-bms-gateway/demo/)` is a standalone HTML page that renders the full dashboard with synthetic data for a 75% charged battery. Open it directly in any browser (no server, no dependencies). Use for screenshots, documentation, or demoing the UI without hardware.
 
 ### Testing
 
