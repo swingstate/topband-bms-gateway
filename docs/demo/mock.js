@@ -10,6 +10,11 @@
 (function () {
   'use strict';
 
+  /* ── Default to light theme on first visit ───────────────────────────────── */
+  if (!localStorage.getItem('tbms_theme')) {
+    localStorage.setItem('tbms_theme', 'light');
+  }
+
   /* ── Epoch anchor (used for timestamps + chart x-axis) ──────────────────── */
   const NOW_EPOCH = Math.floor(Date.now() / 1000);
   const UPTIME_BASE = 3 * 86400 + 2 * 3600 + 1800; // 3d 2h 30m
@@ -658,6 +663,30 @@
   // Patch functions that bypass fetch (XHR-based OTA, location.href backup,
   // the restart/wifi overlay that fires unconditionally after POST).
   document.addEventListener('DOMContentLoaded', function () {
+
+    // Override updateLiveUI: app.js checks window.location.pathname === '/'
+    // which fails when opened via file:// or a Pages subpath. Use DOM-element
+    // presence instead so updates work regardless of URL structure.
+    window.updateLiveUI = function () {
+      if (typeof updateStatusBar   === 'function') updateStatusBar();
+      if (typeof updateAuthBanner  === 'function') updateAuthBanner();
+      if (document.getElementById('metrics-grid')) {
+        if (typeof updateDashboardCards === 'function') updateDashboardCards();
+        if (typeof updatePackCards      === 'function') updatePackCards();
+      } else if (document.getElementById('battery-overview-grid')) {
+        if (typeof updateBatteryOverviewCards === 'function') updateBatteryOverviewCards();
+      }
+    };
+
+    // Force an immediate dashboard render after the first fetch resolves.
+    // setTimeout(0) pushes this past the microtask queue so g_live is already set.
+    setTimeout(function () {
+      if (document.getElementById('metrics-grid')) {
+        if (typeof updateDashboardCards === 'function') updateDashboardCards();
+        if (typeof updatePackCards      === 'function') updatePackCards();
+      }
+    }, 0);
+
     // confirmRestart calls showPageOverlay unconditionally after POST
     window.confirmRestart = function () {
       if (!confirm('Restart the gateway?\n\n(Demo mode — no action will be taken)')) return;
