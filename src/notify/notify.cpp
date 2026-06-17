@@ -678,3 +678,95 @@ TelegramStatus telegram_status() {
 }
 
 }  // namespace notify
+
+// ── Dev TLS burst trigger ─────────────────────────────────────────────────────
+// Compiled only when BLE_SPIKE_DEV_BURST=1 (set in platformio.ini for spike builds).
+//
+// Purpose: reproduce the V3.0 DRAM-fragmentation failure mode — not total heap
+// exhaustion, but the largest *contiguous* block dropping below what a 16 KB TLS
+// task stack requires.  Fires N sequential notify::send() calls via the REAL TLS
+// path so the DRAM watermark in the Diag panel captures the true worst-case dip.
+//
+// Safety properties:
+// - Only started via explicit POST /api/diag/tls-burst (auth-protected, dev endpoint).
+// - Runs in its own low-priority task; cannot preempt or block the ControlTask.
+// - Does not bypass the TLS serialization semaphore; each send() waits for the
+//   previous one to complete, exactly as production traffic would.
+// - send() drops silently when TLS is degraded (crash-loop guard), so burst is
+//   automatically inert on a degraded boot.
+// - NEVER touches the safety/CAN path. All activity is in the notify layer.
+#if BLE_SPIKE_DEV_BURST
+#include "esp_heap_caps.h"
+
+static volatile bool s_burst_active = false;
+static volatile int  s_burst_fired  = 0;
+
+struct BurstTaskArgs { int n; };
+
+static void burst_task(void* arg) {
+  auto* a = static_cast<BurstTaskArgs*>(arg);
+  int n = a->n;
+  free(a);
+
+  ESP_LOGI(TAG, "[dev-burst] start n=%d -- WiFi+BLE+TLS coexistence stress", n);
+
+  for (int i = 0; i < n; i++) {
+    // Wait for the previous TLS slot to free (max 30 s per slot).
+    for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    // Log DRAM contiguous block just before the next handshake attempt.
+    uint32_t blk = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] %d/%d: dram_contiguous_before=%lu B",
+             i + 1, n, (unsigned long)blk);
+
+    // Reuse the real notify path — task stack + TLS handshake happen inside send().
+    notify::send(notify::Severity::Warning, "BLE-burst-dev",
+                 "[dev-burst-test] TLS coexistence spike trigger -- disregard");
+    s_burst_fired++;
+
+    // Small yield so send() can take the semaphore before we poll is_tls_busy() again.
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
+  // Wait for the last handshake to complete, then log the post-burst contiguous block.
+  for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  uint32_t blk_post = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  ESP_LOGI(TAG, "[dev-burst] done: n=%d total_fired=%d dram_contiguous_after=%lu B",
+           n, (int)s_burst_fired, (unsigned long)blk_post);
+
+  s_burst_active = false;
+  vTaskDelete(nullptr);
+}
+
+namespace notify {
+
+bool dev_tls_burst_start(int n) {
+  if (n <= 0 || n > 10) return false;
+  if (s_burst_active) return false;
+  s_burst_active = true;
+
+  auto* a = static_cast<BurstTaskArgs*>(malloc(sizeof(BurstTaskArgs)));
+  if (!a) { s_burst_active = false; return false; }
+  a->n = n;
+
+  // Priority 1: below HTTP handlers (4) and notify_send tasks (2) so the burst
+  // never starves the normal notification path or the web server.
+  BaseType_t ok = xTaskCreate(burst_task, "tls_burst_dev", 4096, a, 1, nullptr);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "[dev-burst] xTaskCreate failed");
+    s_burst_active = false;
+    free(a);
+    return false;
+  }
+  return true;
+}
+
+bool dev_tls_burst_active() { return s_burst_active; }
+int  dev_tls_burst_fired()  { return s_burst_fired;  }
+
+}  // namespace notify
+
+#endif  // BLE_SPIKE_DEV_BURST

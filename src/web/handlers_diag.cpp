@@ -25,8 +25,15 @@
 #include "freertos/task.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 static const char* TAG = "web_diag";
+
+// Low-water mark for the largest free contiguous DRAM block since boot.
+// Updated on every /api/diag poll. UINT32_MAX sentinel means "not yet sampled".
+// The V3.0 production crash was caused by this value falling below ~16 KB under
+// parallel TLS tasks, not by total heap exhaustion — so this is the TRUE GATE.
+static uint32_t s_dram_largest_min = UINT32_MAX;
 
 // ── HStream (shared pattern from handlers_history.cpp) ───────────────────────
 
@@ -135,6 +142,12 @@ esp_err_t handle_diag(httpd_req_t* req) {
   uint32_t dram_largest     = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+  // Update contiguous-block low-water mark. This is the TRUE gate for this device:
+  // the V3.0 crash was caused by fragmentation (largest block < ~16 KB), not total
+  // heap exhaustion. Gate criterion: dram_largest_min_ever >= 40 KB = PASS.
+  if (dram_largest < s_dram_largest_min) s_dram_largest_min = dram_largest;
+  uint32_t dram_largest_min_ever = (s_dram_largest_min == UINT32_MAX) ? 0u : s_dram_largest_min;
 
   hs_str(s, "{");
 
@@ -285,6 +298,22 @@ esp_err_t handle_diag(httpd_req_t* req) {
     hs_str(s, "\"ble_active\":"); hs_bool(s, ble_on);
     hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
     hs_str(s, ",\"tls_in_progress\":"); hs_bool(s, tls_busy);
+
+    // Contiguous DRAM block tracking — the TRUE fragmentation gate.
+    // dram_largest_min_ever >= 40 KB = PASS; 16-40 KB = thin pass (treat as FAIL).
+    hs_str(s, ",\"dram_largest_block_now\":"); hs_uint(s, dram_largest);
+    hs_str(s, ",\"dram_largest_block_min_ever\":"); hs_uint(s, dram_largest_min_ever);
+
+    // Dev TLS burst trigger state (only meaningful when BLE_SPIKE_DEV_BURST=1).
+#if BLE_SPIKE_DEV_BURST
+    hs_str(s, ",\"burst_enabled\":true");
+    hs_str(s, ",\"burst_active\":"); hs_bool(s, notify::dev_tls_burst_active());
+    hs_str(s, ",\"burst_fired\":"); hs_uint(s, (uint32_t)notify::dev_tls_burst_fired());
+#else
+    hs_str(s, ",\"burst_enabled\":false");
+    hs_str(s, ",\"burst_active\":false");
+    hs_str(s, ",\"burst_fired\":0");
+#endif
 
     // BMS total current (for side-by-side comparison with shunt current).
     {
@@ -442,5 +471,40 @@ esp_err_t handle_diag_coredump(httpd_req_t* req) {
   httpd_resp_send_chunk(req, nullptr, 0);
   return ESP_OK;
 }
+
+// ── Dev TLS burst handler — POST /api/diag/tls-burst?n=<1..10> ───────────────
+// Only compiled and registered when BLE_SPIKE_DEV_BURST=1.
+// Starts the burst coordinator task in notify.cpp; returns immediately.
+// Returns 409 if a burst is already in flight.
+#if BLE_SPIKE_DEV_BURST
+esp_err_t handle_diag_tls_burst(httpd_req_t* req) {
+  httpd_resp_set_type(req, "application/json");
+
+  if (notify::dev_tls_burst_active()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "{\"error\":\"burst already active\"}");
+  }
+
+  // Parse n= query param; default 4.
+  char qs[32] = {};
+  int n = 4;
+  if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) == ESP_OK) {
+    char n_str[8] = {};
+    if (httpd_query_key_value(qs, "n", n_str, sizeof(n_str)) == ESP_OK) {
+      int parsed = atoi(n_str);
+      if (parsed >= 1 && parsed <= 10) n = parsed;
+    }
+  }
+
+  if (!notify::dev_tls_burst_start(n)) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"burst start failed\"}");
+  }
+
+  char resp[64];
+  snprintf(resp, sizeof(resp), "{\"ok\":true,\"n\":%d}", n);
+  return httpd_resp_sendstr(req, resp);
+}
+#endif  // BLE_SPIKE_DEV_BURST
 
 }  // namespace web

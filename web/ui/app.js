@@ -3197,18 +3197,58 @@ function renderDiagData(d) {
       if (!ble) return '';
       const mppt  = ble.mppt  || {};
       const shunt = ble.shunt || {};
+      const sys   = d.system  || {};
       const fmtAge = s => (s < 0 ? '—' : s + ' s ago');
       const fmtF   = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
+      const fmtB   = v => (v == null || v === 0) ? '— (not sampled yet)' : Number(v).toLocaleString() + ' B';
+
+      // Gate color for contiguous block low-water mark.
+      // >= 40 KB: PASS (green). 16-40 KB: thin pass = FAIL (orange). < 16 KB: HARD FAIL (red).
+      const GATE_PASS = 40 * 1024;
+      const GATE_HARD = 16 * 1024;
+      const minBlk = ble.dram_largest_block_min_ever || 0;
+      const gateColor = minBlk === 0 ? 'inherit'
+                      : minBlk >= GATE_PASS ? 'var(--success,#2e7d32)'
+                      : minBlk >= GATE_HARD ? '#e65100'
+                      : 'var(--danger,#c62828)';
+      const gateLabel = minBlk === 0 ? '— (poll to sample)'
+                      : minBlk >= GATE_PASS
+                        ? Number(minBlk).toLocaleString() + ' B  --  PASS (>= 40 KB)'
+                        : minBlk >= GATE_HARD
+                          ? Number(minBlk).toLocaleString() + ' B  --  THIN PASS = FAIL (16-40 KB)'
+                          : Number(minBlk).toLocaleString() + ' B  --  HARD FAIL (< 16 KB)';
+
+      const tlsLabel = ble.burst_active
+        ? 'YES — burst active'
+        : ble.tls_in_progress ? 'YES' : 'no';
+
       return `<div class="diag-section" style="border-left:3px solid var(--accent,#0078d4)">
-      <h3>BLE Spike Monitor <span style="font-size:11px;font-weight:normal;color:var(--text-muted)">[dev — Phase A spike]</span></h3>
+      <h3>BLE Spike Monitor <span style="font-size:11px;font-weight:normal;color:var(--text-muted)">[dev — Phase A + gate-hardening]</span></h3>
+
       <div class="diag-kv-grid">
         ${kvRow('BLE active', ble.ble_active ? 'YES' : 'no')}
         ${kvRow('BLE stack', ble.stack || '—')}
-        ${kvRow('TLS in progress', ble.tls_in_progress ? 'YES (correlate heap dip)' : 'no')}
-        ${kvRow('DRAM free now', (d.system && d.system.dram_free ? d.system.dram_free.toLocaleString() + ' B' : '—'))}
-        ${kvRow('DRAM min ever', (d.system && d.system.dram_min ? d.system.dram_min.toLocaleString() + ' B (GATE)' : '—'))}
-        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
+        ${kvRow('TLS in progress', tlsLabel)}
+        ${kvRow('DRAM free now', fmtB(sys.dram_free))}
+        ${kvRow('DRAM min ever (free)', fmtB(sys.dram_min))}
+        ${kvRow('Largest contiguous now', fmtB(ble.dram_largest_block_now))}
       </div>
+      <div class="diag-kv-grid" style="margin-top:4px">
+        <div class="diag-kv"><span><strong>Largest contiguous, min ever (TRUE GATE)</strong></span><span style="font-weight:700;color:${gateColor}">${escHtml(gateLabel)}</span></div>
+        <div class="diag-kv" style="grid-column:1/-1;font-size:11px;color:var(--text-muted)">Gate: >= 40 KB = PASS &nbsp;|&nbsp; 16-40 KB = thin pass (treat as FAIL) &nbsp;|&nbsp; &lt; 16 KB = HARD FAIL</div>
+      </div>
+
+      ${ble.burst_enabled ? `<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-secondary" onclick="devTlsBurst(4)"
+                ${ble.burst_active ? 'disabled' : ''}>
+          ${ble.burst_active ? 'Burst running...' : 'Fire TLS burst (n=4)'}
+        </button>
+        <span style="font-size:11px;color:var(--text-muted)">Fires 4 sequential TLS handshakes. Watch "largest contiguous, min ever" drop. Sends real Telegram messages if configured.</span>
+        ${ble.burst_fired > 0 ? `<span style="font-size:11px">Total burst sends this boot: ${ble.burst_fired}</span>` : ''}
+      </div>` : ''}
+
+      <div style="margin-top:8px">${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}</div>
+
       ${mppt.enabled ? `<div style="margin-top:8px"><strong>MPPT</strong>
       <div class="diag-kv-grid">
         ${kvRow('Last adv', fmtAge(mppt.last_seen_s))}
@@ -3314,6 +3354,28 @@ document.addEventListener('click', e => {
   e.preventDefault();
   navigate(a.getAttribute('href'));
 });
+
+/* ── Dev TLS burst trigger (V3.1 Phase A gate-hardening) ───────────────────── */
+// Fires N sequential TLS handshakes via POST /api/diag/tls-burst?n=N.
+// Only functional when BLE_SPIKE_DEV_BURST=1 (endpoint not registered otherwise).
+async function devTlsBurst(n) {
+  try {
+    const r = await apiFetch('/api/diag/tls-burst?n=' + n, { method: 'POST' });
+    if (!r) return;
+    if (r.status === 409) {
+      alert('Burst already active — wait for it to finish.');
+      return;
+    }
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      alert('Burst start failed: ' + body);
+    }
+    // Success: burst is running. The Diag panel auto-refreshes every 5s and shows
+    // burst_active=true and the updated contiguous-block low-water mark.
+  } catch (e) {
+    alert('Burst request failed: ' + e);
+  }
+}
 
 /* ── Logout ─────────────────────────────────────────────────────────────────── */
 async function doLogout() {

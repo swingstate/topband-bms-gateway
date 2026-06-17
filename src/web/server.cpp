@@ -119,6 +119,11 @@ bool start_httpd(const Config& /*cfg*/) {
   // ── Diag and alerts endpoints (Phase H3a) ─────────────────────────────────
   reg_auth(g_server, "/api/diag",              HTTP_GET, handle_diag);
   reg_auth(g_server, "/api/diag/coredump.bin", HTTP_GET, handle_diag_coredump);
+#if BLE_SPIKE_DEV_BURST
+  // Dev-only TLS burst trigger for V3.1 Phase A gate-hardening.
+  // Remove with BLE_SPIKE_DEV_BURST flag when Phase A hardware verification is done.
+  reg_auth(g_server, "/api/diag/tls-burst",    HTTP_POST, handle_diag_tls_burst);
+#endif
   reg_auth(g_server, "/api/alerts",            HTTP_GET, handle_alerts_get);
   reg_auth(g_server, "/api/alerts",  HTTP_DELETE, handle_alerts_delete);
 
