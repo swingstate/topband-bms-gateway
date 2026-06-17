@@ -247,10 +247,6 @@ Factory reset and password reset are done via the web UI: Settings → Factory R
 
 ## Development
 
-### UI Preview
-
-`[docs/dashboard-demo.html](https://swingstate.github.io/topband-bms-gateway/demo/)` is a standalone HTML page that renders the full dashboard with synthetic data for a 75% charged battery. Open it directly in any browser (no server, no dependencies). Use for screenshots, documentation, or demoing the UI without hardware.
-
 ### Testing
 
 A Python BMS simulator is available separately for testing on Raspberry Pi. It emulates TopBand RS485 responses and decodes Victron CAN frames. Scenarios: `normal`, `cold`, `hot`, `charge`, `low`.
