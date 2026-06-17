@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef FW_VERSION
-#  define FW_VERSION "3.0.0-preview.1"
+#  define FW_VERSION "3.1.0-dev.1"
 #endif
 
 // GIT_SHA is injected by tools/git_sha_gen.py into include/git_sha.h before

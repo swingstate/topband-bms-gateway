@@ -3192,6 +3192,44 @@ function renderDiagData(d) {
     </div>
 
     ${(function() {
+      // ── V3.1 BLE spike monitor (dev tooling — removed/folded in Phase C) ───
+      const ble = d.ble_spike;
+      if (!ble) return '';
+      const mppt  = ble.mppt  || {};
+      const shunt = ble.shunt || {};
+      const fmtAge = s => (s < 0 ? '—' : s + ' s ago');
+      const fmtF   = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
+      return `<div class="diag-section" style="border-left:3px solid var(--accent,#0078d4)">
+      <h3>BLE Spike Monitor <span style="font-size:11px;font-weight:normal;color:var(--text-muted)">[dev — Phase A spike]</span></h3>
+      <div class="diag-kv-grid">
+        ${kvRow('BLE active', ble.ble_active ? 'YES' : 'no')}
+        ${kvRow('BLE stack', ble.stack || '—')}
+        ${kvRow('TLS in progress', ble.tls_in_progress ? 'YES (correlate heap dip)' : 'no')}
+        ${kvRow('DRAM free now', (d.system && d.system.dram_free ? d.system.dram_free.toLocaleString() + ' B' : '—'))}
+        ${kvRow('DRAM min ever', (d.system && d.system.dram_min ? d.system.dram_min.toLocaleString() + ' B (GATE)' : '—'))}
+        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
+      </div>
+      ${mppt.enabled ? `<div style="margin-top:8px"><strong>MPPT</strong>
+      <div class="diag-kv-grid">
+        ${kvRow('Last adv', fmtAge(mppt.last_seen_s))}
+        ${kvRow('PV power', fmtF(mppt.pv_power_w, 0) + ' W')}
+        ${kvRow('PV voltage', fmtF(mppt.pv_voltage_v, 2) + ' V')}
+        ${kvRow('PV current', fmtF(mppt.pv_current_a, 2) + ' A')}
+        ${kvRow('Batt voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
+        ${kvRow('Batt current', fmtF(mppt.batt_current_a, 2) + ' A')}
+      </div></div>` : '<div style="margin-top:6px;color:var(--text-muted);font-size:12px">MPPT disabled</div>'}
+      ${shunt.enabled ? `<div style="margin-top:8px"><strong>Shunt vs BMS current (core win)</strong>
+      <div class="diag-kv-grid">
+        ${kvRow('Last adv', fmtAge(shunt.last_seen_s))}
+        ${kvRow('Shunt current', fmtF(shunt.current_a, 3) + ' A')}
+        ${kvRow('BMS current', fmtF(ble.bms_current_a, 3) + ' A')}
+        ${kvRow('Shunt voltage', fmtF(shunt.voltage_v, 2) + ' V')}
+        ${kvRow('Shunt SOC', fmtF(shunt.soc_pct, 1) + ' %')}
+      </div></div>` : '<div style="margin-top:6px;color:var(--text-muted);font-size:12px">Shunt disabled</div>'}
+    </div>`;
+    })()}
+
+    ${(function() {
       const cd = d.coredump || {};
       if (!cd.present) return '';
       return `<div class="diag-section">

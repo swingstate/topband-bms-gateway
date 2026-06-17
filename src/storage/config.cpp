@@ -127,6 +127,12 @@ static Config make_default() {
   // v6 addition: Auto is the default for fresh installs (follows live pack data).
   c.battery_config_mode    = Config::BatteryConfigMode::Auto;
 
+  // v7 additions: BLE sources default to disabled/empty.
+  // SAFETY: with both flags false, NimBLE is never initialized.
+  c.ble_shunt_enabled = false;
+  c.ble_mppt_enabled  = false;
+  // ble_shunt_mac, ble_mppt_mac, ble_shunt_key, ble_mppt_key: empty (zero-init from Config{})
+
   return c;
 }
 
@@ -610,6 +616,165 @@ struct Config_v5 {
 static_assert(sizeof(Config_v5) == 692,
     "Config_v5 size drifted from expected 692 B — check alignment against v5 NVS blobs");
 
+// ── Config_v6: schema version 6 layout (696 bytes) ───────────────────────────
+// Identical to Config before the BLE source fields were appended (v7).
+// Needed to safely memcpy a v6 NVS blob for migration.
+struct Config_v6 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  uint16_t                 notify_debounce_s;
+  Config::BatteryConfigMode battery_config_mode;
+  // 3 bytes implicit tail padding → 696 B
+};
+
+static_assert(sizeof(Config_v6) == 696,
+    "Config_v6 size drifted from expected 696 B — check alignment against v6 NVS blobs");
+
+// ── v6 → v7 migration ────────────────────────────────────────────────────────
+// BLE source fields are the only additions. All default to disabled/empty so
+// system behaviour is byte-for-byte identical to V3.0 after migration.
+static bool migrate_v6_to_v7(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v6)) return false;
+
+  Config_v6 v6;
+  memcpy(&v6, buf, sizeof(Config_v6));
+
+  // Start from DEFAULT_CONFIG so all v7 BLE fields get safe defaults.
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v6.board_preset;
+  out.pins                    = v6.pins;
+  out.rs485_enabled           = v6.rs485_enabled;
+  out.bms_count               = v6.bms_count;
+  out.force_cell_count        = v6.force_cell_count;
+  out.can_protocol            = v6.can_protocol;
+  out.can_enabled             = v6.can_enabled;
+  out.charge_amps_per_pack    = v6.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v6.discharge_amps_per_pack;
+  out.cvl_voltage             = v6.cvl_voltage;
+  out.safe_pack_volt          = v6.safe_pack_volt;
+  out.safe_cell_volt          = v6.safe_cell_volt;
+  out.safe_cell_drift         = v6.safe_cell_drift;
+  out.spike_volt_max          = v6.spike_volt_max;
+  out.spike_curr_max          = v6.spike_curr_max;
+  out.spike_soc_max           = v6.spike_soc_max;
+  out.charge_temp_min         = v6.charge_temp_min;
+  out.charge_temp_max         = v6.charge_temp_max;
+  out.discharge_temp_min      = v6.discharge_temp_min;
+  out.discharge_temp_max      = v6.discharge_temp_max;
+  out.temp_soft_zone          = v6.temp_soft_zone;
+  out.temp_mode               = v6.temp_mode;
+  out.soc_mode                = v6.soc_mode;
+  out.setup_mode              = v6.setup_mode;
+  out.auto_from_bms_applied   = v6.auto_from_bms_applied;
+  out.maint_charge_enabled    = v6.maint_charge_enabled;
+  out.maint_target_voltage    = v6.maint_target_voltage;
+  out.auto_balance_enabled    = v6.auto_balance_enabled;
+  out.auto_balance_last_ts    = v6.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v6.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v6.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v6.timezone_offset_h;
+  out.mqtt_enabled            = v6.mqtt_enabled;
+  memcpy(out.mqtt_host,       v6.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v6.mqtt_port;
+  memcpy(out.mqtt_user,       v6.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v6.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v6.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v6.mqtt_level;
+  out.mqtt_diag_enabled       = v6.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v6.ha_discovery_enabled;
+  out.mqtt_full_publish       = v6.mqtt_full_publish;
+  out.auth_enabled            = v6.auth_enabled;
+  memcpy(out.auth_user, v6.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v6.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v6.theme_id;
+  out.chart_series_a          = v6.chart_series_a;
+  out.chart_series_b          = v6.chart_series_b;
+  out.ui_poll_live_ms         = v6.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v6.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v6.ui_poll_alerts_ms;
+  out.last_reset_ts           = v6.last_reset_ts;
+  out.serial_debug_enabled    = v6.serial_debug_enabled;
+  out.spy_persist_default     = v6.spy_persist_default;
+  out.notify_telegram_enabled  = v6.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v6.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v6.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  memcpy(out.notify_sender_name,      v6.notify_sender_name,      sizeof(out.notify_sender_name));
+  out.notify_alert_flags          = v6.notify_alert_flags;
+  out.notify_telegram_last_ok_ts  = v6.notify_telegram_last_ok_ts;
+  out.notify_poll_interval_s      = v6.notify_poll_interval_s;
+  out.notify_cooldown_s           = v6.notify_cooldown_s;
+  out.notify_telegram_verified    = v6.notify_telegram_verified;
+  out.notify_debounce_s           = v6.notify_debounce_s;
+  out.battery_config_mode         = v6.battery_config_mode;
+  // BLE fields: stay at DEFAULT_CONFIG values (both disabled, empty strings).
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
+
 }  // namespace
 
 // Config layout check (updated each schema version).
@@ -620,9 +785,11 @@ static_assert(sizeof(Config_v5) == 692,
 // sizeof(Config_v5) = 692 B.
 // v6 addition: BatteryConfigMode (uint8_t) at end → 693 B raw; compiler pads to
 // 696 B (4-byte struct alignment, largest member is float).
+// v7 additions: 2×bool + 2×char[18] + 2×char[33] = 104 B appended at end.
+//   696 B (v6) - 3 B tail pad + 104 B new fields = 797 B raw; pads to 800 B.
 // This assert catches field additions or reorderings that silently change the NVS blob.
-static_assert(sizeof(Config) == 696,
-    "Config size drifted from expected 696 B — if intentional, bump schema version, "
+static_assert(sizeof(Config) == 800,
+    "Config size drifted from expected 800 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
@@ -961,6 +1128,10 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     if (len < sizeof(Config)) return false;
     memcpy(&out, buf, sizeof(Config));
     return true;
+  }
+
+  if (ver == 6) {
+    return migrate_v6_to_v7(buf, len, out);
   }
 
   if (ver == 5) {

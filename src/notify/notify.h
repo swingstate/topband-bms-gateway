@@ -47,6 +47,10 @@ uint32_t dropped_count();
 // Safety/control and the alert log are unaffected when degraded.
 bool is_degraded();
 
+// True if a TLS handshake is currently in progress (semaphore held by send/test task).
+// Used by the BLE spike Diag panel to correlate heap dips with TLS pressure points.
+bool is_tls_busy();
+
 // ── Test send ─────────────────────────────────────────────────────────────────
 
 enum class TestStatus : uint8_t { Idle, Running, Ok, Failed };

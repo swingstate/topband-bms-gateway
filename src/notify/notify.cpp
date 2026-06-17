@@ -638,6 +638,18 @@ bool is_degraded() {
   return s_degraded;
 }
 
+bool is_tls_busy() {
+  if (!s_tls_sem) return false;
+  // Non-destructive check: try to take with zero timeout.
+  // If we get it → it was free → give it back immediately → not busy.
+  // If we can't get it → something else holds it → busy.
+  if (xSemaphoreTake(s_tls_sem, 0) == pdTRUE) {
+    xSemaphoreGive(s_tls_sem);
+    return false;
+  }
+  return true;
+}
+
 void reset_telegram_verified() {
   portENTER_CRITICAL(&s_status_mux);
   bool was_verified = s_verified;

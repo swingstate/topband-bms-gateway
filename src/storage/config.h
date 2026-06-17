@@ -18,7 +18,10 @@
 //           sizeof(Config) grows 692 → 696 B (4-byte alignment padding).
 //           Migration: existing devices get Manual (preserves current behavior);
 //           fresh installs (DEFAULT_CONFIG) get Auto.
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 6;
+// v6 → v7: added BLE source config fields (V3.1 Victron BLE spike).
+//           sizeof(Config) grows 696 → 800 B.
+//           Migration: all BLE fields default to disabled/empty (safe default-off).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 7;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -197,7 +200,23 @@ struct Config {
     Manual     = 2,
   };
   BatteryConfigMode battery_config_mode;
-  // 3 bytes implicit tail padding → sizeof(Config) = 696 B
+
+  // ── BLE source config (v7, V3.1 Victron BLE spike) ──────────────────────────
+  // ble_shunt_enabled / ble_mppt_enabled default false.
+  // SAFETY INVARIANT: NimBLE stack is NEVER initialized when both are false.
+  // System behaviour with both false is byte-for-byte identical to V3.0.
+  //
+  // ble_*_key: advertisement decryption keys from VictronConnect app.
+  // SECRETS — excluded from backup export, never logged in plaintext,
+  // leave-blank-to-keep in UI (same pattern as notify_telegram_token).
+  // Format: 32 hex chars = 16 key bytes, e.g. "aabbccddaabbccddaabbccddaabbccdd".
+  bool ble_shunt_enabled;
+  bool ble_mppt_enabled;
+  char ble_shunt_mac[18];    // SmartShunt BLE MAC "AA:BB:CC:DD:EE:FF"
+  char ble_mppt_mac[18];     // MPPT BLE MAC
+  char ble_shunt_key[33];    // SmartShunt adv decryption key (32 hex chars) — SECRET
+  char ble_mppt_key[33];     // MPPT adv decryption key (32 hex chars) — SECRET
+  // 3 bytes implicit tail padding → sizeof(Config) = 800 B
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

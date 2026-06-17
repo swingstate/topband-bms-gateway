@@ -26,6 +26,8 @@
 #include "mqtt/publisher.h"
 #include "mqtt/ha_discovery.h"
 #include "notify/notify.h"
+#include "sources/registry.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -149,6 +151,12 @@ void run_boot() {
 
   // ── Step 3a: Notify module (TLS semaphore + persisted verified state) ─────
   notify::init();
+
+  // ── Step 3b: Source registry (BmsSource / ShuntSource / MpptSource / Aggregator)
+  // Must run before any task that calls sources::aggregator()->reading().
+  // Default-off invariant: with both BLE flags false this is a ~100 B BSS init,
+  // no heap allocation, and identical runtime behaviour to V3.0.
+  sources::init_registry(g_config);
 
   // ── Step 4: Snapshot bus (PSRAM double-buffer) ───────────────────────────
   {
@@ -288,6 +296,23 @@ void run_boot() {
     ESP_LOGE(TAG, "ControlTask creation failed");
   } else {
     ESP_LOGI(TAG, "ControlTask created on Core 0 (bms_count=%u)", g_config.bms_count);
+  }
+
+  // ── Step 10.5: BLE scanner (V3.1 spike — after ControlTask is running) ──────
+  // SAFETY: BLE init NEVER runs before the BMS/CAN path is live. A BLE failure
+  // here cannot prevent safety/control from operating. Control path is unconditional.
+  // SAFETY: BLE stack is only started when at least one BLE source flag is set.
+  // With both flags false, this block is not entered and NimBLE is never initialized.
+  if (g_config.ble_shunt_enabled || g_config.ble_mppt_enabled) {
+    bool ble_ok = sources::ble_scanner::start(g_config,
+                                              sources::shunt_source(),
+                                              sources::mppt_source());
+    if (ble_ok) {
+      ESP_LOGI(TAG, "BLE scanner started — shunt=%d mppt=%d",
+               (int)g_config.ble_shunt_enabled, (int)g_config.ble_mppt_enabled);
+    } else {
+      ESP_LOGW(TAG, "BLE scanner start failed — continuing without BLE (non-fatal)");
+    }
   }
 
   // ── Step 11: Smoke reader (Phase C validation — Core 1) ──────────────────

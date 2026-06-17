@@ -82,6 +82,14 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["notify_debounce_s"]        = c.notify_debounce_s;
   // v6 addition (non-secret, included in export/import)
   doc["battery_config_mode"]      = (uint8_t)c.battery_config_mode;
+
+  // v7 BLE source config — keys are SECRETS (redacted, same as mqtt_pass_obf pattern)
+  doc["ble_shunt_enabled"] = c.ble_shunt_enabled;
+  doc["ble_mppt_enabled"]  = c.ble_mppt_enabled;
+  doc["ble_shunt_mac"]     = c.ble_shunt_mac;
+  doc["ble_mppt_mac"]      = c.ble_mppt_mac;
+  doc["ble_shunt_key"]     = "";   // always redacted — leave blank to keep existing key
+  doc["ble_mppt_key"]      = "";   // always redacted
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -251,6 +259,23 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     // Guard: only accept known enum values (Auto=0, AutoMargin=1, Manual=2).
     if (raw <= 2)
       c.battery_config_mode = static_cast<Config::BatteryConfigMode>(raw);
+  }
+
+  // v7 BLE source config
+  if (doc["ble_shunt_enabled"].is<bool>())
+    c.ble_shunt_enabled = doc["ble_shunt_enabled"];
+  if (doc["ble_mppt_enabled"].is<bool>())
+    c.ble_mppt_enabled = doc["ble_mppt_enabled"];
+  copy_str(doc["ble_shunt_mac"], c.ble_shunt_mac);
+  copy_str(doc["ble_mppt_mac"],  c.ble_mppt_mac);
+  // Keys: leave-blank-to-keep — never echoed, only written when non-empty.
+  if (doc["ble_shunt_key"].is<const char*>()) {
+    const char* k = doc["ble_shunt_key"].as<const char*>();
+    if (k && k[0] != '\0') snprintf(c.ble_shunt_key, sizeof(c.ble_shunt_key), "%s", k);
+  }
+  if (doc["ble_mppt_key"].is<const char*>()) {
+    const char* k = doc["ble_mppt_key"].as<const char*>();
+    if (k && k[0] != '\0') snprintf(c.ble_mppt_key, sizeof(c.ble_mppt_key), "%s", k);
   }
 
   return true;

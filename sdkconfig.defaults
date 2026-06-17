@@ -113,3 +113,30 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # ── Logging ───────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ── Bluetooth / NimBLE (V3.1 BLE spike) ──────────────────────────────────────
+# NimBLE host stack chosen over Bluedroid: ~80 KB heap vs ~170 KB — the difference
+# is load-bearing for the WiFi+BLE+TLS coexistence gate.
+#
+# SAFETY: enabling BT here compiles the controller + host into flash.
+# The controller heap (~80 KB) is only allocated at runtime when
+# sources::ble_scanner::start() is called, which requires ble_shunt_enabled
+# or ble_mppt_enabled = true in Config.  System behaviour with both flags false
+# is byte-for-byte identical to V3.0 (no BLE controller init, no heap cost).
+#
+# Build requirement: rm sdkconfig.esp32s3 && pio run after adding these lines.
+# The generated sdkconfig.esp32s3 is .gitignored; CI does a fresh build from
+# sdkconfig.defaults and gets BT enabled automatically.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+# Observer-only: no GATT services, no connections — scan-only BLE.
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# Maximum connections: 0 — we never connect, only observe advertisements.
+# Some IDF versions require minimum 1; use 1 as safe minimum.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Use internal SRAM for NimBLE buffers (BT controller cannot use PSRAM).
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y

@@ -12,6 +12,9 @@
 #include "diag/log_ring.h"
 #include "app/version.h"
 #include "app/boot.h"
+#include "notify/notify.h"
+#include "sources/registry.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -268,6 +271,84 @@ esp_err_t handle_diag(httpd_req_t* req) {
 #endif
   }
   hs_str(s, "}");
+
+  // ── ble_spike — V3.1 coexistence gate metrics ────────────────────────────
+  // DEV/SPIKE TOOLING — to be removed or folded into the real dashboard in Phase C.
+  // This section is the primary verification surface for the owner during the ≥30 min
+  // coexistence stress test. The pass/fail gate is min_dram_ever (already in system{})
+  // combined with zero WiFi/MQTT/WDT events while BLE scans.
+  {
+    bool ble_on   = sources::ble_scanner::is_active();
+    bool tls_busy = notify::is_tls_busy();
+
+    hs_str(s, ",\"ble_spike\":{");
+    hs_str(s, "\"ble_active\":"); hs_bool(s, ble_on);
+    hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
+    hs_str(s, ",\"tls_in_progress\":"); hs_bool(s, tls_busy);
+
+    // BMS total current (for side-by-side comparison with shunt current).
+    {
+      BmsSystemSnapshot snap{};
+      float bms_total_current = 0.0f;
+      if (bus::snapshot_bus::read(snap)) {
+        for (uint8_t i = 0; i < snap.pack_count_configured && i < 16; ++i) {
+          if (snap.pack[i].online) bms_total_current += snap.pack[i].pack_current;
+        }
+      }
+      hs_str(s, ",\"bms_current_a\":");
+      { char t[16]; snprintf(t, sizeof(t), "%.3f", bms_total_current); hs_str(s, t); }
+    }
+
+    // MPPT BLE decode state.
+    {
+      sources::MpptSource* mppt = sources::mppt_source();
+      bool mppt_enabled = mppt && mppt->enabled();
+      hs_str(s, ",\"mppt\":{");
+      hs_str(s, "\"enabled\":"); hs_bool(s, mppt_enabled);
+      if (mppt_enabled) {
+        sources::MpptSource::DiagSnap d = mppt->diag_snap();
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
+        hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
+        hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        hs_str(s, ",\"pv_power_w\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.1f",d.pv_power_w);   hs_str(s,t); }
+        hs_str(s, ",\"pv_voltage_v\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v); hs_str(s,t); }
+        hs_str(s, ",\"pv_current_a\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a); hs_str(s,t); }
+        hs_str(s, ",\"batt_voltage_v\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_voltage_v); hs_str(s,t); }
+        hs_str(s, ",\"batt_current_a\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_current_a); hs_str(s,t); }
+      }
+      hs_str(s, "}");
+    }
+
+    // Shunt BLE decode state.
+    {
+      sources::ShuntSource* shunt = sources::shunt_source();
+      bool shunt_enabled = shunt && shunt->enabled();
+      hs_str(s, ",\"shunt\":{");
+      hs_str(s, "\"enabled\":"); hs_bool(s, shunt_enabled);
+      if (shunt_enabled) {
+        sources::ShuntSource::DiagSnap d = shunt->diag_snap();
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
+        hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
+        hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        hs_str(s, ",\"current_a\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.3f",d.current_a); hs_str(s,t); }
+        hs_str(s, ",\"voltage_v\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.voltage_v); hs_str(s,t); }
+        hs_str(s, ",\"soc_pct\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.1f",d.soc_pct);   hs_str(s,t); }
+      }
+      hs_str(s, "}");
+    }
+
+    hs_str(s, "}");
+  }
 
   // ── tasks (FreeRTOS stack HWM) ────────────────────────────────────────────
   // Requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y and

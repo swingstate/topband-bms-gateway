@@ -54,6 +54,12 @@ idf_component_register(
     "net/http_post.cpp"
     "notify/notify.cpp"
     "notify/telegram.cpp"
+    "sources/registry.cpp"
+    "sources/bms_source.cpp"
+    "sources/shunt_source.cpp"
+    "sources/mppt_source.cpp"
+    "sources/aggregator.cpp"
+    "sources/ble_scanner.cpp"
     "mqtt/topics.cpp"
     "mqtt/payloads.cpp"
     "mqtt/publisher.cpp"
@@ -85,4 +91,6 @@ idf_component_register(
     esp_http_client
     mqtt
     app_update
+    bt
+    nimble
 )
