@@ -16,7 +16,7 @@ Compatible with TopBand-based batteries including EET, Power Queen, and others u
 
 ## Screenshots
 
-![Dashboard](docs/screenshot-dashboard.png)
+![Dashboard](docs/Screenshot-Dashboard.png)
 Dashboard with live SOC, power, voltage, cell balance bars, and history charts. Glassmorphism UI with light and dark mode.
 
 ## Demo
