@@ -10,6 +10,8 @@ Compatible with TopBand-based batteries including EET, Power Queen, and others u
 
 > **V3.0 is a ground-up rewrite** of the single-file V2 Arduino sketch. The firmware is now a modular ESP-IDF codebase running natively on ESP32-S3. First install from V2 requires a USB reflash with the factory image; OTA updates work normally between V3.x releases.
 
+> **📥 Latest preview release: [v3.0.0-preview.1](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.0.0-preview.1)** — firmware & flashing instructions. *(Pre-release; thus not shown as "Latest" on the repo page.)*
+
 ## Architecture
 
 ![Architechture Overview](docs/bms_gateway_architecture.svg)
