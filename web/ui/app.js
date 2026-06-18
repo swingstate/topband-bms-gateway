@@ -1036,6 +1036,8 @@ const SETTINGS_SECTIONS = [
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' },
+  { id: 'ble',     label: 'BLE',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5"/></svg>' },
   { id: 'notifications', label: 'Notify',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' },
   { id: 'account', label: 'Account',
@@ -1098,6 +1100,7 @@ function renderSettingsSection(id) {
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
     case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
+    case 'ble':           content.innerHTML = renderSettingsBle();           break;
     case 'notifications': content.innerHTML = renderSettingsNotifications(); loadNotifyData(); break;
     case 'account':       content.innerHTML = renderSettingsAccount();       break;
     case 'system':   content.innerHTML = renderSettingsSystem();   break;
@@ -2354,6 +2357,122 @@ async function saveMqttSection() {
       g_config = data;
       if (passEl) passEl.value = '';
       if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+    } else {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── BLE Sources section ────────────────────────────────────────────────────── */
+
+function renderSettingsBle() {
+  const c = g_config;
+  return `
+    <div class="settings-page">
+
+      <div class="settings-section" style="border-left:3px solid var(--accent,#3b82f6);background:rgba(59,130,246,.07);padding:12px 16px;border-radius:4px;margin-bottom:16px">
+        <strong>Restart required after saving.</strong>
+        The NimBLE stack is initialized once at boot; changes only take effect after a reboot.<br>
+        Keys come from <strong>VictronConnect</strong> &rarr; device &rarr; share icon &rarr; <em>Encryption key</em>.
+      </div>
+
+      <!-- ── SmartShunt ────────────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">SmartShunt (battery monitor)</div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source</label>
+        </div>
+        <div class="form-group">
+          <label>BLE MAC Address</label>
+          <input type="text" id="cfg-ble_shunt_mac" value="${escHtml(c.ble_shunt_mac || '')}"
+                 placeholder="AA:BB:CC:DD:EE:FF" maxlength="17" style="font-family:monospace;text-transform:uppercase">
+        </div>
+        <div class="form-group">
+          <label>Encryption Key (32 hex chars)</label>
+          <div class="pw-wrap">
+            <input type="password" id="cfg-ble_shunt_key" autocomplete="new-password"
+                   placeholder="Leave blank to keep current" style="font-family:monospace">
+            <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_shunt_key')" title="Show/hide">${EYE_SVG}</button>
+          </div>
+          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+        </div>
+      </div>
+
+      <!-- ── Smart Solar MPPT ──────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Smart Solar MPPT</div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-ble_mppt_enabled" ${c.ble_mppt_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-ble_mppt_enabled" style="margin:0">Enable MPPT BLE source</label>
+        </div>
+        <div class="form-group">
+          <label>BLE MAC Address</label>
+          <input type="text" id="cfg-ble_mppt_mac" value="${escHtml(c.ble_mppt_mac || '')}"
+                 placeholder="AA:BB:CC:DD:EE:FF" maxlength="17" style="font-family:monospace;text-transform:uppercase">
+        </div>
+        <div class="form-group">
+          <label>Encryption Key (32 hex chars)</label>
+          <div class="pw-wrap">
+            <input type="password" id="cfg-ble_mppt_key" autocomplete="new-password"
+                   placeholder="Leave blank to keep current" style="font-family:monospace">
+            <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_mppt_key')" title="Show/hide">${EYE_SVG}</button>
+          </div>
+          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+        </div>
+      </div>
+
+      <div id="ble-feedback" class="feedback-msg"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveBleSectionSettings()">Save</button>
+      </div>
+    </div>
+  `;
+}
+
+async function saveBleSectionSettings() {
+  const msg = document.getElementById('ble-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash = '';
+
+  const fields = [
+    ['cfg-ble_shunt_enabled', 'ble_shunt_enabled', 'bool'],
+    ['cfg-ble_mppt_enabled',  'ble_mppt_enabled',  'bool'],
+    ['cfg-ble_shunt_mac',     'ble_shunt_mac',     'str'],
+    ['cfg-ble_mppt_mac',      'ble_mppt_mac',      'str'],
+  ];
+  fields.forEach(([id, key, type]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (type === 'str')  cfg[key] = el.value;
+    if (type === 'bool') cfg[key] = el.checked;
+  });
+
+  // Keys are write-only: blank = keep existing, non-blank = update.
+  ['ble_shunt_key', 'ble_mppt_key'].forEach(key => {
+    const el = document.getElementById('cfg-' + key);
+    cfg[key] = (el && el.value.length > 0) ? el.value : '';
+  });
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      ['cfg-ble_shunt_key', 'cfg-ble_mppt_key'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved. Reboot to apply BLE changes.'; }
     } else {
       if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
     }
