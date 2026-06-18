@@ -148,3 +148,29 @@ CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # Use internal SRAM for NimBLE buffers (BT controller cannot use PSRAM).
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y
+#
+# ── NimBLE buffer trimming: observer-only minimum ─────────────────────────────
+# Default NimBLE buffer counts are sized for a central/peripheral with many
+# connections. An observer only receives HCI LE advertising events (~46 bytes
+# for legacy advertising); it never sends ACL data frames (requires a connection)
+# and never needs large MSYS2 blocks for GATT/ATT PDUs.
+#
+# ACL buffers: carry L2CAP/ATT/SMP payloads for connected peers. With zero
+# connections these are unused. Reduce from 24×255 to 4×64 B.
+# Saving: (24×255) - (4×64) = 5864 B ≈ 5.7 KB internal SRAM.
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=4
+CONFIG_BT_NIMBLE_ACL_BUF_SIZE=64
+#
+# MSYS1 pool: small HCI event / advertising report blocks (256 B each).
+# Victron advertises ~1 Hz; a depth of 6 is more than enough for any burst.
+# Reduce from 12 to 6. Saving: 6×256 = 1536 B ≈ 1.5 KB internal SRAM.
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=6
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=6
+#
+# MSYS2 pool: large HCI event blocks (320 B each). Used for GATT notifications
+# and large ATT PDUs — neither occurs in observer mode. Reduce from 24 to 8.
+# Saving: 16×320 = 5120 B ≈ 5.0 KB internal SRAM.
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+#
+# Combined estimated saving from C: ~12.3 KB internal SRAM, reducing NimBLE
+# fragmentation footprint and increasing largest contiguous block.
