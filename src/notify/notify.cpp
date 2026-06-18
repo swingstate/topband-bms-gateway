@@ -718,34 +718,65 @@ static void burst_task(void* arg) {
   int n = a->n;
   free(a);
 
-  ESP_LOGI(TAG, "[dev-burst] start n=%d -- WiFi+BLE+TLS coexistence stress", n);
+  // 4-point per-handshake diagnosis:
+  //   [1-before]     : largest free contiguous DRAM block immediately before handshake starts
+  //   [2-peak]       : minimum seen while TLS is in progress (mbedTLS stack + heap at worst)
+  //   [3-after_free] : block immediately after send_task releases TLS semaphore and exits
+  //   [4-settled]    : block after 500 ms settle (gives allocator time to coalesce freed memory)
+  //
+  // Verdict key:
+  //   delta_vs_before near 0 across all 4 handshakes → transient fragmentation only
+  //   delta_vs_before monotonically negative          → memory leak (real bug)
+  ESP_LOGI(TAG, "[dev-burst] start n=%d -- 4-point diagnosis: before|peak|after_free|settled", n);
+
+  uint32_t baseline = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  ESP_LOGI(TAG, "[dev-burst] DRAM baseline (idle, before HS 1): %lu B", (unsigned long)baseline);
 
   for (int i = 0; i < n; i++) {
-    // Wait for the previous TLS slot to free (max 30 s per slot).
+    // Wait for TLS slot to be free from the previous handshake (max 30 s, 50 ms ticks).
     for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
       vTaskDelay(pdMS_TO_TICKS(50));
     }
-    // Log DRAM contiguous block just before the next handshake attempt.
-    uint32_t blk = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "[dev-burst] %d/%d: dram_contiguous_before=%lu B",
-             i + 1, n, (unsigned long)blk);
 
-    // Reuse the real notify path — task stack + TLS handshake happen inside send().
+    // [1] Before: sample immediately before firing the handshake.
+    uint32_t blk_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [1-before]      %lu B", i + 1, n, (unsigned long)blk_before);
+
     notify::send(notify::Severity::Warning, "BLE-burst-dev",
-                 "[dev-burst-test] TLS coexistence spike trigger -- disregard");
+                 "[dev-burst-test] TLS coexistence diagnosis -- disregard");
     s_burst_fired = s_burst_fired + 1;
 
-    // Small yield so send() can take the semaphore before we poll is_tls_busy() again.
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Yield 50 ms so send_task takes the TLS semaphore before we start polling.
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // [2] Peak (during): poll while TLS handshake is in progress; record minimum.
+    uint32_t blk_peak = UINT32_MAX;
+    for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
+      uint32_t blk = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+      if (blk < blk_peak) blk_peak = blk;
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    // Fast-path: handshake already done before first poll tick.
+    if (blk_peak == UINT32_MAX) blk_peak = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [2-peak]        %lu B", i + 1, n, (unsigned long)blk_peak);
+
+    // [3] After free: sample immediately after TLS context is destroyed and semaphore released.
+    uint32_t blk_after_free = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [3-after_free]  %lu B", i + 1, n, (unsigned long)blk_after_free);
+
+    // [4] Settled: give the allocator 500 ms to coalesce freed blocks.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    uint32_t blk_settled = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    int32_t  delta        = (int32_t)blk_settled - (int32_t)blk_before;
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [4-settled]     %lu B  (delta_vs_before=%+ld)",
+             i + 1, n, (unsigned long)blk_settled, (long)delta);
   }
 
-  // Wait for the last handshake to complete, then log the post-burst contiguous block.
-  for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-  }
-  uint32_t blk_post = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-  ESP_LOGI(TAG, "[dev-burst] done: n=%d total_fired=%d dram_contiguous_after=%lu B",
-           n, (int)s_burst_fired, (unsigned long)blk_post);
+  uint32_t blk_final   = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  int32_t  delta_total = (int32_t)blk_final - (int32_t)baseline;
+  ESP_LOGI(TAG, "[dev-burst] VERDICT: n=%d fired=%d  dram_final=%lu B  delta_vs_baseline=%+ld B",
+           n, (int)s_burst_fired, (unsigned long)blk_final, (long)delta_total);
+  ESP_LOGI(TAG, "[dev-burst] VERDICT: delta near 0 -> transient fragmentation; negative -> LEAK");
 
   s_burst_active = false;
   vTaskDelete(nullptr);
