@@ -1,6 +1,7 @@
 #include "config.h"
 #include <array>
 #include <cstring>
+#include <cstdio>
 
 // ── CRC-32/IEEE lookup table (constexpr, computed at compile time) ────────────
 // Polynomial: 0xEDB88320 (reflected form). No IDF dependency; host-portable.
@@ -1173,6 +1174,82 @@ uint32_t crc32(const uint8_t* data, size_t len) {
     crc = (crc >> 8) ^ k_crc_table[(crc ^ data[i]) & 0xFFu];
   }
   return ~crc;
+}
+
+// ── mac_normalize ─────────────────────────────────────────────────────────────
+
+static int mac_hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+bool mac_normalize(const char* in,
+                   char out_canonical[18],
+                   uint8_t* out_bytes,
+                   char* err_msg, size_t err_len) {
+  static const char* HINT = "MAC must be 6 hex bytes, e.g. e3:8d:48:c8:52:b4 (colons optional)";
+
+  out_canonical[0] = '\0';
+  if (out_bytes) memset(out_bytes, 0, 6);
+
+  if (!in || in[0] == '\0') return true;  // empty = not configured
+
+  // Strip surrounding whitespace.
+  while (*in == ' ' || *in == '\t') in++;
+  const char* end = in + strlen(in);
+  while (end > in && (end[-1] == ' ' || end[-1] == '\t')) end--;
+  size_t n = (size_t)(end - in);
+
+  if (n == 0) return true;  // whitespace-only
+
+  char hex12[13] = {};  // 12 hex chars extracted from any format
+
+  if (n == 17) {
+    // Colon or hyphen separated: "XX:XX:XX:XX:XX:XX" or "XX-XX-XX-XX-XX-XX"
+    char sep = in[2];
+    if (sep != ':' && sep != '-') {
+      if (err_msg) snprintf(err_msg, err_len, "%s", HINT);
+      return false;
+    }
+    for (int i = 0; i < 6; i++) {
+      if (i > 0 && (size_t)(i * 3 - 1) < n && in[i * 3 - 1] != sep) {
+        if (err_msg) snprintf(err_msg, err_len, "%s", HINT);
+        return false;
+      }
+      hex12[i * 2]     = in[i * 3];
+      hex12[i * 2 + 1] = in[i * 3 + 1];
+    }
+  } else if (n == 12) {
+    // Bare 12 hex chars.
+    memcpy(hex12, in, 12);
+  } else {
+    if (err_msg) snprintf(err_msg, err_len, "%s", HINT);
+    return false;
+  }
+
+  // Validate hex and parse bytes.
+  uint8_t bytes[6] = {};
+  for (int i = 0; i < 6; i++) {
+    int hi = mac_hex_nibble(hex12[i * 2]);
+    int lo = mac_hex_nibble(hex12[i * 2 + 1]);
+    if (hi < 0 || lo < 0) {
+      if (err_msg) snprintf(err_msg, err_len, "%s", HINT);
+      return false;
+    }
+    bytes[i] = (uint8_t)((hi << 4) | lo);
+  }
+
+  // All-zero is a sentinel for "not configured" — treat as empty.
+  bool all_zero = true;
+  for (int i = 0; i < 6; i++) if (bytes[i]) { all_zero = false; break; }
+  if (all_zero) return true;
+
+  snprintf(out_canonical, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
+           bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+  if (out_bytes) memcpy(out_bytes, bytes, 6);
+  return true;
 }
 
 // ── validate ──────────────────────────────────────────────────────────────────

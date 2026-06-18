@@ -2388,7 +2388,8 @@ function renderSettingsBle() {
         <div class="form-group">
           <label>BLE MAC Address</label>
           <input type="text" id="cfg-ble_shunt_mac" value="${escHtml(c.ble_shunt_mac || '')}"
-                 placeholder="AA:BB:CC:DD:EE:FF" maxlength="17" style="font-family:monospace;text-transform:uppercase">
+                 placeholder="e3:8d:48:c8:52:b4 or e38d48c852b4" maxlength="17" style="font-family:monospace">
+          <div class="help">Colons, hyphens, or no separators — all accepted.</div>
         </div>
         <div class="form-group">
           <label>Encryption Key (32 hex chars)</label>
@@ -2411,7 +2412,8 @@ function renderSettingsBle() {
         <div class="form-group">
           <label>BLE MAC Address</label>
           <input type="text" id="cfg-ble_mppt_mac" value="${escHtml(c.ble_mppt_mac || '')}"
-                 placeholder="AA:BB:CC:DD:EE:FF" maxlength="17" style="font-family:monospace;text-transform:uppercase">
+                 placeholder="e3:8d:48:c8:52:b4 or e38d48c852b4" maxlength="17" style="font-family:monospace">
+          <div class="help">Colons, hyphens, or no separators — all accepted.</div>
         </div>
         <div class="form-group">
           <label>Encryption Key (32 hex chars)</label>
@@ -2430,6 +2432,16 @@ function renderSettingsBle() {
       </div>
     </div>
   `;
+}
+
+// Normalize a raw MAC input to canonical "xx:xx:xx:xx:xx:xx" (lowercase, colons).
+// Accepts colons, hyphens, or bare 12 hex chars.  Returns '' for empty/whitespace.
+// Returns null for anything that cannot be a valid 6-byte MAC.
+function normalizeMacInput(raw) {
+  if (!raw || raw.trim() === '') return '';
+  const bare = raw.trim().toLowerCase().replace(/[:\-]/g, '');
+  if (!/^[0-9a-f]{12}$/.test(bare)) return null;
+  return bare.match(/.{2}/g).join(':');
 }
 
 async function saveBleSectionSettings() {
@@ -2451,6 +2463,26 @@ async function saveBleSectionSettings() {
     if (type === 'str')  cfg[key] = el.value;
     if (type === 'bool') cfg[key] = el.checked;
   });
+
+  // Normalize and client-side validate MAC fields before the POST.
+  // The server also validates, but inline JS feedback is immediate.
+  const macFields = [
+    ['cfg-ble_shunt_mac', 'ble_shunt_mac', 'SmartShunt MAC'],
+    ['cfg-ble_mppt_mac',  'ble_mppt_mac',  'MPPT MAC'],
+  ];
+  for (const [id, key, label] of macFields) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const normalized = normalizeMacInput(el.value);
+    if (normalized === null) {
+      if (msg) {
+        msg.className = 'feedback-msg err';
+        msg.textContent = `${label}: must be 6 hex bytes, e.g. e3:8d:48:c8:52:b4 — colons and hyphens optional`;
+      }
+      return;
+    }
+    cfg[key] = normalized;   // send canonical form; server also normalizes
+  }
 
   // Keys are write-only: blank = keep existing, non-blank = update.
   ['ble_shunt_key', 'ble_mppt_key'].forEach(key => {

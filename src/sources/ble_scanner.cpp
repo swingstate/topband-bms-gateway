@@ -117,18 +117,8 @@ static bool parse_hex_key(const char* hex, uint8_t* out) {
   return true;
 }
 
-// Parse "AA:BB:CC:DD:EE:FF" into 6-byte MAC. Returns false on bad format.
-static bool parse_mac(const char* mac_str, uint8_t* out) {
-  if (!mac_str || strlen(mac_str) < 17) return false;
-  for (int i = 0; i < 6; i++) {
-    int hi = hex_nibble(mac_str[i * 3]);
-    int lo = hex_nibble(mac_str[i * 3 + 1]);
-    if (hi < 0 || lo < 0) return false;
-    out[i] = (uint8_t)((hi << 4) | lo);
-    if (i < 5 && mac_str[i * 3 + 2] != ':') return false;
-  }
-  return true;
-}
+// MAC parsing delegates to storage::mac_normalize which accepts colon, hyphen,
+// or bare 12-hex-char input and is the single source of truth for this logic.
 
 // AES-128-CTR decrypt using mbedTLS.
 // nonce_counter = { iv_byte, 0,0,0,0,0,0,0, 0,0,0,0,0,0,0,1 }
@@ -362,19 +352,28 @@ bool start(const Config& cfg, ShuntSource* shunt, MpptSource* mppt) {
   s_mppt_enabled  = cfg.ble_mppt_enabled;
 
   // Parse MAC addresses and keys. Log parse errors but never log key values.
+  // storage::mac_normalize accepts any of: "AA:BB:CC:DD:EE:FF", "AA-BB-CC-DD-EE-FF",
+  // "aabbccddeeff" (bare 12 hex chars) — forgiving on load in case an old
+  // non-canonical NVS value is present before the config save path normalized it.
   if (s_shunt_enabled) {
-    s_shunt_mac_valid = parse_mac(cfg.ble_shunt_mac, s_shunt_mac);
+    char canonical[18];
+    s_shunt_mac_valid = (cfg.ble_shunt_mac[0] != '\0') &&
+                        storage::mac_normalize(cfg.ble_shunt_mac, canonical, s_shunt_mac, nullptr, 0) &&
+                        (canonical[0] != '\0');
     s_shunt_key_valid = parse_hex_key(cfg.ble_shunt_key, s_shunt_key);
     if (!s_shunt_mac_valid)
-      ESP_LOGW(TAG, "shunt: invalid MAC \"%s\" — shunt decode disabled", cfg.ble_shunt_mac);
+      ESP_LOGW(TAG, "shunt: MAC not configured or invalid — shunt decode disabled");
     if (!s_shunt_key_valid)
       ESP_LOGW(TAG, "shunt: invalid key (check 32-char hex) — shunt decode disabled");
   }
   if (s_mppt_enabled) {
-    s_mppt_mac_valid = parse_mac(cfg.ble_mppt_mac, s_mppt_mac);
+    char canonical[18];
+    s_mppt_mac_valid = (cfg.ble_mppt_mac[0] != '\0') &&
+                       storage::mac_normalize(cfg.ble_mppt_mac, canonical, s_mppt_mac, nullptr, 0) &&
+                       (canonical[0] != '\0');
     s_mppt_key_valid = parse_hex_key(cfg.ble_mppt_key, s_mppt_key);
     if (!s_mppt_mac_valid)
-      ESP_LOGW(TAG, "mppt: invalid MAC \"%s\" — mppt decode disabled", cfg.ble_mppt_mac);
+      ESP_LOGW(TAG, "mppt: MAC not configured or invalid — mppt decode disabled");
     if (!s_mppt_key_valid)
       ESP_LOGW(TAG, "mppt: invalid key (check 32-char hex) — mppt decode disabled");
   }

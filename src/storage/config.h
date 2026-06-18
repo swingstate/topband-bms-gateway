@@ -237,6 +237,24 @@ enum class ValidationError : uint8_t {
 };
 
 namespace storage {
+  // Normalize a BLE MAC address from any accepted input form to canonical lowercase
+  // colon-separated "xx:xx:xx:xx:xx:xx" stored in out_canonical[18].
+  //
+  // Accepted input forms (case-insensitive, surrounding whitespace tolerated):
+  //   "E3:8D:48:C8:52:B4"  colon-separated
+  //   "e3-8d-48-c8-52-b4"  hyphen-separated
+  //   "e38d48c852b4"        bare 12 hex chars (no separators)
+  //
+  // Special cases:
+  //   empty string or all-zero MAC → out_canonical[0] = '\0', returns true (= not configured)
+  //   if out_bytes is non-null, 6 parsed byte values are written on success
+  //
+  // Returns false for anything else; writes a UI-facing error string to err_msg if provided.
+  bool mac_normalize(const char* in,
+                     char out_canonical[18],
+                     uint8_t* out_bytes,
+                     char* err_msg, size_t err_len);
+
   // Serializes cfg into buf (deterministic byte layout; schema_version at offset 0).
   // Returns false if buf_size < sizeof(Config).
   bool serialize(const Config& cfg, uint8_t* buf, size_t buf_size, size_t& out_len);
