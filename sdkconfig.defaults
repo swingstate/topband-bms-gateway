@@ -172,5 +172,32 @@ CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=6
 # Saving: 16×320 = 5120 B ≈ 5.0 KB internal SRAM.
 CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
 #
+# ── NimBLE host → Core 1 (coexistence fix, dev.5) ────────────────────────────
+# Root cause (dev.4): BT controller, NimBLE host, WiFi task, lwIP, BMS poller,
+# and httpd all ran on Core 0.  When BLE scanned, the NimBLE host task and BT
+# controller interrupts starved the httpd task (prio 4) and made the WebGUI
+# unbrowsable (Mechanism B — CPU starvation, not just RF time-slicing).
+#
+# Fix: move the NimBLE host task to Core 1.  The BT controller stays on Core 0
+# alongside the WiFi task — this is the IDF-sanctioned layout for SW coexistence
+# (controller + WiFi share one core for the RF arbiter; host lives on the other).
+#
+# Core 1 budget after this change:
+#   NimBLE host    prio NIMBLE_HOST_TASK_PRIO  (event-driven, quiet when no scan)
+#   MQTT publisher prio 3
+#   history task   prio 1
+# No collision with safety-critical tasks (all on Core 0 or lower prio).
+#
+# Do NOT also set CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1 (Fix 4) — that would
+# move WiFi away from the RF arbiter and put it into Core 1 alongside NimBLE,
+# recreating the collision this fix is solving.
+#
+# MANDATORY: always rebuild sdkconfig after changing this file:
+#   rm sdkconfig.esp32s3 && pio run
+# Without the clean, the old sdkconfig silently overrides this value and the
+# task stays on Core 0 despite the code comment saying Core 1.
+CONFIG_BT_NIMBLE_PINNED_TO_CORE=1
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
+#
 # Combined estimated saving from C: ~12.3 KB internal SRAM, reducing NimBLE
 # fragmentation footprint and increasing largest contiguous block.

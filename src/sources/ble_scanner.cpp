@@ -271,15 +271,29 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
 // ── Scan start helper ─────────────────────────────────────────────────────────
 static void start_scan() {
   struct ble_gap_disc_params disc_params = {};
-  disc_params.passive          = 1;   // no SCAN_REQ (observer-only)
-  disc_params.filter_duplicates = 0;  // want every beacon for freshness
-  // Scan interval 2 s, window 200 ms → 10% duty cycle. Balances freshness vs
-  // radio coexistence with WiFi (both use the 2.4 GHz band).
-  disc_params.itvl   = 3200;  // 2000 ms / 0.625 ms
-  disc_params.window =  320;  //  200 ms / 0.625 ms
+  disc_params.passive = 1;  // no SCAN_REQ (observer-only)
 
-  // Log effective duty cycle at runtime for coexistence analysis.
-  // itvl and window are in 0.625 ms units.
+  // Fix 2 (dev.5): enable controller-side duplicate filter.
+  // With filter_duplicates=0 the controller reported every advertisement from
+  // every nearby BLE device to the NimBLE host task, flooding Core 0 with HCI
+  // events even when those devices were not Victron. With filter_duplicates=1
+  // the controller's 100-entry dedup cache (BT_CTRL_SCAN_DUPL_CACHE_SIZE=100)
+  // reports each MAC once per scan period. Victron devices advertise at ~1 Hz,
+  // well within the 2 s scan interval, so freshness is unaffected.
+  // Caveat: BT_CTRL_DUPL_SCAN_CACHE_REFRESH_PERIOD=0 means the cache never
+  // auto-expires. This is fine for Victron (static MACs, no privacy rotation).
+  disc_params.filter_duplicates = 1;
+
+  // Fix 3 (dev.5): reduce scan window 200 ms → 50 ms (duty 10% → 2.5%).
+  // Victron beacons repeat multiple times per 2 s interval (typically every
+  // 250-500 ms), so every scan period captures a fresh reading at 50 ms window.
+  // Benefit: RF starvation windows shrink 4x; NimBLE host CPU load per scan
+  // cycle also reduces (fewer advertisement report events per window).
+  disc_params.itvl   = 3200;  // 2000 ms / 0.625 ms (unchanged)
+  disc_params.window =   80;  //   50 ms / 0.625 ms  (was 320 / 200 ms)
+
+  // Log effective parameters at runtime. Verify these in serial log to confirm
+  // the clean build applied the changes correctly.
   uint32_t itvl_ms   = disc_params.itvl   * 625 / 1000;
   uint32_t window_ms = disc_params.window * 625 / 1000;
   ESP_LOGI(TAG, "scan params: interval=%lu ms  window=%lu ms  duty=%.1f%%  filter_dup=%d",
@@ -297,7 +311,18 @@ static void start_scan() {
 // ── NimBLE host task ──────────────────────────────────────────────────────────
 static void nimble_host_task(void* param) {
   (void)param;
-  ESP_LOGI(TAG, "NimBLE host task started");
+  // Read the actual hardware core at task entry. This is the ground-truth check
+  // that CONFIG_BT_NIMBLE_PINNED_TO_CORE=1 in sdkconfig.defaults actually took
+  // effect after a clean build. If this logs "Core 0" the build was not clean —
+  // rm sdkconfig.esp32s3 && pio run is required.
+  int actual_core = (int)xPortGetCoreID();
+  if (actual_core != 1) {
+    ESP_LOGW(TAG, "NimBLE host task on Core %d — expected Core 1. "
+                  "Did you rm sdkconfig.esp32s3 && pio run?", actual_core);
+  } else {
+    ESP_LOGI(TAG, "NimBLE host task on Core %d (correct — coexistence fix applied)",
+             actual_core);
+  }
   nimble_port_run();         // blocks until nimble_port_stop() is called
   nimble_port_freertos_deinit();
 }
