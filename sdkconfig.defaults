@@ -5,21 +5,29 @@
 # The snapshot bus places BmsSystemSnapshot double-buffers in PSRAM.
 # Octal mode required for adequate bandwidth on read-heavy Core 1 consumers.
 #
-# USE_MALLOC (not CAPS_ALLOC): plain malloc() routes allocations > 16 KB to
-# PSRAM automatically via CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384. This
-# prevents internal-heap fragmentation OOM in the static file handlers, which
-# malloc up to 32 KB for HTML template buffers. Allocations <= 16 KB (4 KB
-# stream chunks, ArduinoJson pools, MQTT outbox entries) stay in internal SRAM,
-# preserving lwIP zero-copy TCP path correctness and WiFi DMA accessibility.
-# lwIP/WiFi stacks are unaffected: they use heap_caps_malloc(MALLOC_CAP_DMA |
-# MALLOC_CAP_INTERNAL) explicitly and never touch the MALLOC_ALWAYSINTERNAL path.
+# USE_MALLOC (not CAPS_ALLOC): plain malloc() routes allocations > threshold to
+# PSRAM automatically via CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL. This prevents
+# internal-heap fragmentation OOM in the static file handlers (malloc up to
+# 32 KB for HTML template buffers) and keeps the TLS IN buffer (16 KB) in PSRAM
+# so the mbedTLS handshake does not compete with NimBLE mempools for contiguous
+# internal SRAM. Allocations <= 8 KB (4 KB stream chunks, ArduinoJson pools,
+# MQTT outbox entries) stay in fast internal SRAM. lwIP/WiFi stacks are
+# unaffected: they use heap_caps_malloc(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)
+# explicitly and never touch the MALLOC_ALWAYSINTERNAL path. NimBLE uses
+# MALLOC_CAP_INTERNAL explicitly (BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL) so it is
+# also immune to this threshold.
+#
+# Threshold lowered from 16384 to 8192 in V3.1: the TLS IN buffer is exactly
+# 16384 bytes and the > comparison means it stayed in DRAM at the old value,
+# competing with NimBLE mempools and causing the 31.7 KB contiguous-block gate
+# failure. At 8192, the 16 KB IN buffer routes to PSRAM.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=8192
 # EXT_RAM_BSS_ATTR: enables the .ext_ram.bss linker section so variables
 # decorated with EXT_RAM_BSS_ATTR are placed in PSRAM instead of DRAM BSS.
 # Required for the ~114 KB history ring buffers moved in iter/ram-optimization.
