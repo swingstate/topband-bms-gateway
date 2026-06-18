@@ -85,6 +85,9 @@ static bool    s_shunt_mac_valid = false;
 static bool    s_mppt_mac_valid  = false;
 static bool    s_shunt_enabled   = false;
 static bool    s_mppt_enabled    = false;
+// Set by pause_scan(); cleared by resume_scan(). Prevents a spurious
+// restart in resume_scan() if pause_scan() was never actually called.
+static bool    s_scan_paused     = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -370,6 +373,35 @@ const char* stack_name() {
   return "nimble";
 #else
   return "none";
+#endif
+}
+
+void pause_scan() {
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+  if (!s_active) return;
+  int rc = ble_gap_disc_cancel();
+  if (rc != 0) {
+    // rc != 0 is harmless: either the scan had already stopped (BLE_HS_EALREADY)
+    // or NimBLE is mid-reset. Either way, the handshake proceeds safely.
+    ESP_LOGD(TAG, "pause_scan: disc_cancel rc=%d (harmless)", rc);
+  }
+  s_scan_paused = true;
+  ESP_LOGD(TAG, "BLE scan paused for TLS handshake");
+#endif
+}
+
+void resume_scan() {
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+  if (!s_scan_paused) return;
+  s_scan_paused = false;
+  if (!s_active) {
+    // NimBLE reset while TLS was running. on_sync() will restart the scan
+    // automatically when the stack re-syncs. No action needed here.
+    ESP_LOGD(TAG, "resume_scan: NimBLE reset during TLS pause — scan resumes on re-sync");
+    return;
+  }
+  start_scan();
+  ESP_LOGD(TAG, "BLE scan resumed after TLS handshake");
 #endif
 }
 

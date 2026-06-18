@@ -37,4 +37,16 @@ bool is_active();
 // Returns "nimble", "bluedroid", or "none".
 const char* stack_name();
 
+// Pause the BLE passive scan for the duration of a TLS handshake so NimBLE
+// buffers and TLS buffers never need large contiguous DRAM simultaneously.
+// No-op if BLE was never started (ble_shunt_enabled and ble_mppt_enabled both
+// false). Always call resume_scan() after, even on error paths — never let
+// a TLS failure leave the scan permanently stopped.
+void pause_scan();
+
+// Restart the passive scan after a TLS handshake completes.
+// No-op if BLE was never started, or if NimBLE reset during the pause
+// (the on_sync callback will restart scanning automatically in that case).
+void resume_scan();
+
 }  // namespace sources::ble_scanner

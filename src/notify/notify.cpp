@@ -5,6 +5,7 @@
 #include "net/wifi.h"
 #include "diag/alerts.h"
 #include "storage/boot_reasons.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -112,6 +113,11 @@ struct SendTaskArgs {
 static void send_task(void* arg) {
   auto* a = static_cast<SendTaskArgs*>(arg);
 
+  // Pause BLE scan for the duration of the TLS handshake so NimBLE mempools
+  // and mbedTLS buffers never compete for contiguous internal SRAM at once.
+  // No-op when BLE is off (default); always resumed below before vTaskDelete.
+  sources::ble_scanner::pause_scan();
+
   for (size_t i = 0; i < k_provider_count; ++i) {
     const notify::INotifyProvider* p = k_providers[i];
     if (!p->is_enabled(a->cfg)) continue;
@@ -122,6 +128,8 @@ static void send_task(void* arg) {
       ESP_LOGW(TAG, "notify::send [%s] failed: %s", p->id(), err);
     }
   }
+
+  sources::ble_scanner::resume_scan();
 
   // Release TLS slot so the next queued send or test can proceed.
   if (s_tls_sem) xSemaphoreGive(s_tls_sem);
@@ -528,7 +536,9 @@ static void test_task(void* arg) {
   msg.body     = "Notification test from Settings. Your gateway can reach this service.";
 
   char err[128] = {};
+  sources::ble_scanner::pause_scan();
   bool ok = a->provider->send(msg, a->cfg, err, sizeof(err));
+  sources::ble_scanner::resume_scan();
 
   if (ok) {
     set_test_result(notify::TestStatus::Ok,
