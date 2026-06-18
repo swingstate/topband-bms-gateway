@@ -31,8 +31,8 @@ static const char* TAG = "web_diag";
 
 // Low-water mark for the largest free contiguous DRAM block since boot.
 // Updated on every /api/diag poll. UINT32_MAX sentinel means "not yet sampled".
-// The V3.0 production crash was caused by this value falling below ~16 KB under
-// parallel TLS tasks, not by total heap exhaustion — so this is the TRUE GATE.
+// DIAGNOSTIC INSTRUMENT ONLY — this value is never used as a runtime gate.
+// Separation is intentional: a stale watermark must never block a live send.
 static uint32_t s_dram_largest_min = UINT32_MAX;
 
 // ── HStream (shared pattern from handlers_history.cpp) ───────────────────────
@@ -143,9 +143,9 @@ esp_err_t handle_diag(httpd_req_t* req) {
   uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 
-  // Update contiguous-block low-water mark. This is the TRUE gate for this device:
-  // the V3.0 crash was caused by fragmentation (largest block < ~16 KB), not total
-  // heap exhaustion. Gate criterion: dram_largest_min_ever >= 40 KB = PASS.
+  // Update contiguous-block low-water mark. Diagnostic only — displayed in ble_spike{}
+  // below so the owner can see the worst-case fragmentation seen since boot.
+  // Not a runtime gate: the runtime allows TLS to try regardless of this value.
   if (dram_largest < s_dram_largest_min) s_dram_largest_min = dram_largest;
   uint32_t dram_largest_min_ever = (s_dram_largest_min == UINT32_MAX) ? 0u : s_dram_largest_min;
 
@@ -299,8 +299,8 @@ esp_err_t handle_diag(httpd_req_t* req) {
     hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
     hs_str(s, ",\"tls_in_progress\":"); hs_bool(s, tls_busy);
 
-    // Contiguous DRAM block tracking — the TRUE fragmentation gate.
-    // dram_largest_min_ever >= 40 KB = PASS; 16-40 KB = thin pass (treat as FAIL).
+    // Contiguous DRAM block tracking — diagnostic only, not a runtime gate.
+    // Values below ~20 KB indicate fragmentation that may impede a TLS handshake.
     hs_str(s, ",\"dram_largest_block_now\":"); hs_uint(s, dram_largest);
     hs_str(s, ",\"dram_largest_block_min_ever\":"); hs_uint(s, dram_largest_min_ever);
 

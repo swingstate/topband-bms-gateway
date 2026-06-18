@@ -3,8 +3,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -66,40 +64,22 @@ HttpPostResult https_post(const char*        url,
     return result;
   }
 
-  // ── DRAM guard — check before any TLS allocation ──────────────────────────
-  // Without CONFIG_MBEDTLS_DYNAMIC_BUFFER, mbedTLS allocates two fixed ~17 KB
-  // I/O buffers (34 KB total) from DRAM.  Under MQTT load (PerCell + HA
-  // discovery), lwIP + MQTT internals fragment DRAM; the largest contiguous
-  // block can temporarily drop below the mbedTLS minimum.  We check before
-  // esp_tls_init() (which itself allocates) and retry once after 3 s to absorb
-  // transient fragmentation from the MQTT publish cycle.
-  static constexpr uint32_t TLS_DRAM_MIN_BYTES = 40960;  // 40 KB
-
+  // ── DRAM observability — log state before TLS allocation ─────────────────
+  // No hard gate here: mbedTLS makes separate malloc() calls for its two
+  // ~16 KB I/O buffers (not one contiguous 34 KB allocation), so the largest
+  // free contiguous block is a poor predictor of handshake success.  Under
+  // MQTT load the largest block can dip to 30-35 KB while total DRAM free is
+  // well above 100 KB; handshakes succeed in that condition.  A threshold-based
+  // gate cannot be set accurately without measuring every allocator variation
+  // and would suppress safety notifications exactly when memory is momentarily
+  // tight — the worst possible time to stay silent.
+  // True OOM is already handled: esp_tls_init() returns NULL → "esp_tls_init
+  // OOM" path below; handshake failure returns −1 → handled after conn_ret.
   {
     uint32_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     uint32_t dram_free    = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "TLS pre-check: host=%s DRAM free=%u largest=%u",
+    ESP_LOGI(TAG, "TLS attempt: host=%s DRAM free=%u largest=%u",
              host, (unsigned)dram_free, (unsigned)dram_largest);
-
-    if (dram_largest < TLS_DRAM_MIN_BYTES) {
-      // Give the system one MQTT cycle to release transient buffers, then retry.
-      ESP_LOGW(TAG, "TLS DRAM low (%u B < %u B) — waiting 3 s for MQTT cycle",
-               (unsigned)dram_largest, (unsigned)TLS_DRAM_MIN_BYTES);
-      vTaskDelay(pdMS_TO_TICKS(3000));
-
-      dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-      dram_free    = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-      ESP_LOGI(TAG, "TLS retry-check: DRAM free=%u largest=%u",
-               (unsigned)dram_free, (unsigned)dram_largest);
-
-      if (dram_largest < TLS_DRAM_MIN_BYTES) {
-        snprintf(result.error, sizeof(result.error),
-                 "DRAM too low for TLS: largest=%u B, need %u B",
-                 (unsigned)dram_largest, (unsigned)TLS_DRAM_MIN_BYTES);
-        ESP_LOGW(TAG, "TLS connect aborted: %s", result.error);
-        return result;
-      }
-    }
   }
 
   // ── TLS connect ────────────────────────────────────────────────────────────
