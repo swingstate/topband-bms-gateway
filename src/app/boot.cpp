@@ -303,7 +303,10 @@ void run_boot() {
   // here cannot prevent safety/control from operating. Control path is unconditional.
   // SAFETY: BLE stack is only started when at least one BLE source flag is set.
   // With both flags false, this block is not entered and NimBLE is never initialized.
-  if (g_config.ble_shunt_enabled || g_config.ble_mppt_enabled) {
+  // STA gate: BLE must not run in AP/captive-portal mode. The captive portal's
+  // WiFi scan issues probe requests that compete with NimBLE for the 2.4 GHz
+  // radio; the probe responses are dropped and the scan returns empty results.
+  if (sta_connected && (g_config.ble_shunt_enabled || g_config.ble_mppt_enabled)) {
     bool ble_ok = sources::ble_scanner::start(g_config,
                                               sources::shunt_source(),
                                               sources::mppt_source());
