@@ -17,9 +17,22 @@
 
 static const char* TAG = "web_live";
 
+// Coexistence diagnostic: track /api/live handler wall-clock latency.
+// Updated on every request; never locked (benign last-write-wins for diagnostics).
+// Visible at /api/diag ble_spike.handler_last_ms and handler_max_ms.
+// A single request taking >200 ms (one BLE scan window) while BLE is active
+// confirms CPU starvation of the httpd task on Core 0.
+static volatile uint32_t s_handler_last_ms = 0;
+static volatile uint32_t s_handler_max_ms  = 0;
+
 namespace web {
 
+uint32_t live_handler_last_ms() { return s_handler_last_ms; }
+uint32_t live_handler_max_ms()  { return s_handler_max_ms; }
+
 esp_err_t handle_live(httpd_req_t* req) {
+  const int64_t t_entry_us = esp_timer_get_time();
+
   BmsSystemSnapshot snap = {};
   bool has_snap = bus::snapshot_bus::read(snap);
 
@@ -158,6 +171,17 @@ esp_err_t handle_live(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)n);
   free(buf);
+
+  {
+    uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - t_entry_us) / 1000LL);
+    s_handler_last_ms = elapsed_ms;
+    if (elapsed_ms > s_handler_max_ms) s_handler_max_ms = elapsed_ms;
+    if (elapsed_ms > 200) {
+      // >200 ms = more than one full BLE scan window. Confirms CPU starvation
+      // when BLE is active. DIAGNOSTIC ONLY — no corrective action taken here.
+      ESP_LOGW(TAG, "/api/live latency %lu ms (BLE active starvation indicator)", (unsigned long)elapsed_ms);
+    }
+  }
 
   if (ret != ESP_OK) {
     ESP_LOGD(TAG, "client disconnected during /api/live send");

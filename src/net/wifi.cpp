@@ -22,12 +22,17 @@ static constexpr EventBits_t BIT_CONNECTED = BIT0;
 static constexpr EventBits_t BIT_FAILED    = BIT1;
 static constexpr EventBits_t BIT_SCAN_DONE = BIT2;
 
-static net::wifi::Mode g_mode        = net::wifi::Mode::Off;
-static bool            g_connected   = false;
-static int             g_retry       = 0;
-static constexpr int   MAX_RETRY     = 5;
-static int64_t         g_connect_us  = 0;          // esp_timer_get_time() at connect
-static char            g_hostname[32] = {};
+static net::wifi::Mode g_mode           = net::wifi::Mode::Off;
+static bool            g_connected      = false;
+static int             g_retry          = 0;
+static constexpr int   MAX_RETRY        = 5;
+static int64_t         g_connect_us     = 0;       // esp_timer_get_time() at connect
+static char            g_hostname[32]   = {};
+// Coexistence diagnostic: counts every STA disconnection since boot.
+// Incremented on WIFI_EVENT_STA_DISCONNECTED regardless of reason.
+// Visible at /api/diag ble_spike.wifi_disconnects so the owner can compare
+// BLE-on vs BLE-off sessions.
+static uint32_t        g_disconnect_count = 0;
 
 static esp_netif_t* g_sta_netif = nullptr;
 static esp_netif_t* g_ap_netif  = nullptr;
@@ -39,6 +44,7 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    g_disconnect_count++;
     bool was_connected = g_connected;
     g_connected = false;
     if (g_mode == net::wifi::Mode::StaConnecting && g_retry < MAX_RETRY) {
@@ -417,5 +423,7 @@ uint32_t connected_for_s() {
   int64_t diff = (now - g_connect_us) / 1000000LL;
   return (diff > 0) ? (uint32_t)diff : 0;
 }
+
+uint32_t get_disconnect_count() { return g_disconnect_count; }
 
 }  // namespace net::wifi

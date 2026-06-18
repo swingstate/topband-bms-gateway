@@ -71,6 +71,12 @@ namespace {
 static bool s_active = false;
 static sources::ShuntSource* s_shunt = nullptr;
 static sources::MpptSource*  s_mppt  = nullptr;
+// Coexistence diagnostic: total GAP_EVENT_DISC events received (all devices,
+// not just Victron). Counts every advertisement report that passes from the
+// controller through VHCI to the NimBLE host task on Core 0. With
+// filter_duplicates=0 and a dense BLE environment this can be hundreds per
+// 200 ms scan window, revealing Core 0 CPU load from the NimBLE host task.
+static uint32_t s_gap_event_count = 0;
 
 // Key bytes decoded from Config hex strings at startup.
 static uint8_t s_shunt_key[16] = {};
@@ -232,6 +238,7 @@ static bool mac_matches(const uint8_t* ble_addr, const uint8_t* target_mac) {
 static int gap_event_cb(struct ble_gap_event* event, void* arg) {
   (void)arg;
   if (event->type != BLE_GAP_EVENT_DISC) return 0;
+  s_gap_event_count++;  // count every advertisement, not just Victron
 
   const struct ble_gap_disc_desc& disc = event->disc;
   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
@@ -270,6 +277,15 @@ static void start_scan() {
   // radio coexistence with WiFi (both use the 2.4 GHz band).
   disc_params.itvl   = 3200;  // 2000 ms / 0.625 ms
   disc_params.window =  320;  //  200 ms / 0.625 ms
+
+  // Log effective duty cycle at runtime for coexistence analysis.
+  // itvl and window are in 0.625 ms units.
+  uint32_t itvl_ms   = disc_params.itvl   * 625 / 1000;
+  uint32_t window_ms = disc_params.window * 625 / 1000;
+  ESP_LOGI(TAG, "scan params: interval=%lu ms  window=%lu ms  duty=%.1f%%  filter_dup=%d",
+           (unsigned long)itvl_ms, (unsigned long)window_ms,
+           100.0f * (float)window_ms / (float)itvl_ms,
+           disc_params.filter_duplicates);
 
   int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &disc_params,
                         gap_event_cb, nullptr);
@@ -402,6 +418,14 @@ void resume_scan() {
   }
   start_scan();
   ESP_LOGD(TAG, "BLE scan resumed after TLS handshake");
+#endif
+}
+
+uint32_t gap_event_count() {
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+  return s_gap_event_count;
+#else
+  return 0;
 #endif
 }
 

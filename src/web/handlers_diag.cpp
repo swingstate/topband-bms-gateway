@@ -1,9 +1,11 @@
 #include "handlers_diag.h"
+#include "handlers_live.h"
 #include "bms/poller.h"
 #include "can/tx.h"
 #include "bus/snapshot_bus.h"
 #include "mqtt/publisher.h"
 #include "net/ntp.h"
+#include "net/wifi.h"
 #include "storage/lfs_store.h"
 #include "storage/energy_store.h"
 #include "storage/history_store.h"
@@ -298,6 +300,22 @@ esp_err_t handle_diag(httpd_req_t* req) {
     hs_str(s, "\"ble_active\":"); hs_bool(s, ble_on);
     hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
     hs_str(s, ",\"tls_in_progress\":"); hs_bool(s, tls_busy);
+
+    // Coexistence diagnostic metrics (all read-only, Phase A instrumentation).
+    // wifi_disconnects: every STA disconnect since boot. Compare BLE-on vs BLE-off
+    //   sessions — an elevated count with BLE active confirms radio starvation
+    //   pushing the WiFi link out of association.
+    // handler_last_ms / handler_max_ms: /api/live wall-clock latency. A single
+    //   request >200 ms (one BLE scan window) confirms httpd task starvation on
+    //   Core 0.
+    // ble_gap_events: total BLE_GAP_EVENT_DISC events received. With
+    //   filter_duplicates=0, this is ALL nearby BLE advertisements, not only
+    //   Victron. High rate = dense BLE environment amplifying Core 0 NimBLE host
+    //   task CPU load even during otherwise-quiet 1800 ms inter-scan gaps.
+    hs_str(s, ",\"wifi_disconnects\":"); hs_uint(s, net::wifi::get_disconnect_count());
+    hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
+    hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
+    hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());
 
     // Contiguous DRAM block tracking — diagnostic only, not a runtime gate.
     // Values below ~20 KB indicate fragmentation that may impede a TLS handshake.

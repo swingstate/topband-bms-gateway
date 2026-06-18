@@ -49,4 +49,11 @@ void pause_scan();
 // (the on_sync callback will restart scanning automatically in that case).
 void resume_scan();
 
+// Coexistence diagnostic: total BLE_GAP_EVENT_DISC events received since boot.
+// Counts every advertisement from every nearby BLE device (not only Victron)
+// because filter_duplicates=0 passes all of them through VHCI to the NimBLE
+// host task on Core 0. High counts with short BLE session time = dense BLE
+// environment amplifying Core 0 CPU contention.
+uint32_t gap_event_count();
+
 }  // namespace sources::ble_scanner

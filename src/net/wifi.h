@@ -111,6 +111,10 @@ IpInfo get_ip_info();
 // Seconds since STA connected; 0 if not connected.
 uint32_t connected_for_s();
 
+// Count of STA disconnection events since boot (coexistence diagnostic).
+// Rises monotonically; visible in /api/diag ble_spike.wifi_disconnects.
+uint32_t get_disconnect_count();
+
 // Expose the AP netif for captdns to query the gateway IP.
 esp_netif_t* get_ap_netif();
 
