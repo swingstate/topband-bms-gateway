@@ -1,6 +1,7 @@
 #pragma once
 #include "source.h"
 #include "storage/config.h"
+#include "freertos/FreeRTOS.h"
 #include <cstdint>
 
 // ── ShuntSource ────────────────────────────────────────────────────────────────

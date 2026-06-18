@@ -69,8 +69,8 @@ namespace {
 
 // ── Module state ─────────────────────────────────────────────────────────────
 static bool s_active = false;
-static ShuntSource* s_shunt = nullptr;
-static MpptSource*  s_mppt  = nullptr;
+static sources::ShuntSource* s_shunt = nullptr;
+static sources::MpptSource*  s_mppt  = nullptr;
 
 // Key bytes decoded from Config hex strings at startup.
 static uint8_t s_shunt_key[16] = {};
@@ -286,8 +286,7 @@ static void nimble_host_task(void* param) {
 // ── NimBLE on-sync callback (called when host and controller are synced) ─────
 static void on_sync() {
   ESP_LOGI(TAG, "NimBLE synced — starting passive scan");
-  // Set a random address to satisfy the BLE spec even in observer mode.
-  ble_hs_id_initing_rand_addr();
+  // Observer-only: using BLE_OWN_ADDR_PUBLIC so no random address needed.
   start_scan();
   s_active = true;
 }

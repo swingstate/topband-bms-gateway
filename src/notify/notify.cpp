@@ -723,7 +723,7 @@ static void burst_task(void* arg) {
     // Reuse the real notify path — task stack + TLS handshake happen inside send().
     notify::send(notify::Severity::Warning, "BLE-burst-dev",
                  "[dev-burst-test] TLS coexistence spike trigger -- disregard");
-    s_burst_fired++;
+    s_burst_fired = s_burst_fired + 1;
 
     // Small yield so send() can take the semaphore before we poll is_tls_busy() again.
     vTaskDelay(pdMS_TO_TICKS(100));

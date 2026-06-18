@@ -92,5 +92,4 @@ idf_component_register(
     mqtt
     app_update
     bt
-    nimble
 )
