@@ -117,6 +117,14 @@ esp_err_t handle_config_post(httpd_req_t* req) {
       }
       snprintf(new_cfg.ble_mppt_mac, sizeof(new_cfg.ble_mppt_mac), "%s", normalized);
     }
+    // wifi_bssid: optional BSSID pin. Empty = auto-select (valid); non-empty must parse.
+    if (new_cfg.wifi_bssid[0] != '\0') {
+      if (!storage::mac_normalize(new_cfg.wifi_bssid, normalized, nullptr, mac_err, sizeof(mac_err))) {
+        ESP_LOGW(TAG, "config POST: wifi_bssid rejected: %s", mac_err);
+        return send_json_error(req, 400, mac_err);
+      }
+      snprintf(new_cfg.wifi_bssid, sizeof(new_cfg.wifi_bssid), "%s", normalized);
+    }
   }
 
   // Validate.

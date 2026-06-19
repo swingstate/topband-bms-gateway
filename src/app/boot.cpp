@@ -226,7 +226,9 @@ void run_boot() {
       enter_captive_portal();
       // Fall through to Step 9 (ControlTask) — BMS polling still runs.
     } else {
-      sta_connected = net::wifi::start_sta(30000);
+      sta_connected = net::wifi::start_sta(30000,
+                                               g_config.wifi_bssid[0] ? g_config.wifi_bssid : nullptr,
+                                               g_config.wifi_rssi_threshold);
       if (!sta_connected) {
         ESP_LOGW(TAG, "STA connect failed — falling back to captive portal");
         enter_captive_portal();

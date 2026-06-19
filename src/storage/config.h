@@ -21,7 +21,11 @@
 // v6 → v7: added BLE source config fields (V3.1 Victron BLE spike).
 //           sizeof(Config) grows 696 → 800 B.
 //           Migration: all BLE fields default to disabled/empty (safe default-off).
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 7;
+// v7 → v8: added wifi_bssid (optional BSSID pin) and wifi_rssi_threshold.
+//           sizeof(Config) grows 800 → 816 B.
+//           Migration: wifi_bssid = '' (auto-select), wifi_rssi_threshold = -127 (no floor,
+//           preserves existing behaviour for all existing sites).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 8;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -216,7 +220,27 @@ struct Config {
   char ble_mppt_mac[18];     // MPPT BLE MAC
   char ble_shunt_key[33];    // SmartShunt adv decryption key (32 hex chars) — SECRET
   char ble_mppt_key[33];     // MPPT adv decryption key (32 hex chars) — SECRET
-  // 3 bytes implicit tail padding → sizeof(Config) = 800 B
+  // (3 bytes former v7 tail padding consumed by v8 fields below)
+
+  // ── WiFi AP selection (v8) ───────────────────────────────────────────────────
+  // Fixes sticky-client behaviour in multi-AP (mesh) environments.
+  // The STA is configured with WIFI_ALL_CHANNEL_SCAN + WIFI_CONNECT_AP_BY_SIGNAL
+  // at every boot, regardless of these fields, so signal-based selection is always
+  // active even without a pin.
+  //
+  // wifi_bssid: optional BSSID pin ("xx:xx:xx:xx:xx:xx", lowercase colon form).
+  //   Empty = auto-select the strongest AP of the configured SSID (default).
+  //   Non-empty = prefer that exact AP; falls back to auto-select after
+  //   WIFI_BSSID_PIN_MAX_RETRY failures so connectivity is never permanently lost.
+  //   Normalised via mac_normalize on config POST (same as BLE MACs).
+  //
+  // wifi_rssi_threshold: minimum RSSI (dBm) an AP must have to be selected.
+  //   -127 = disabled (accept any signal strength; ESP-IDF default).
+  //   Recommended range: -80 to -65. Too high risks no connection on weak-signal
+  //   sites; too low keeps the sticky-AP problem if a very weak AP matches first.
+  char  wifi_bssid[18];          // canonical "xx:xx:xx:xx:xx:xx" or empty
+  int8_t wifi_rssi_threshold;    // dBm floor; -127 = no floor
+  // sizeof(Config) = 816 B (no new tail padding: 797 + 19 = 816, divisible by 4)
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

@@ -313,6 +313,13 @@ esp_err_t handle_diag(httpd_req_t* req) {
     //   Victron. High rate = dense BLE environment amplifying Core 0 NimBLE host
     //   task CPU load even during otherwise-quiet 1800 ms inter-scan gaps.
     hs_str(s, ",\"wifi_disconnects\":"); hs_uint(s, net::wifi::get_disconnect_count());
+    // Associated BSSID + RSSI — directly visible to operator so sticky-client diagnosis
+    // no longer requires a separate tool. Comparing bssid across sessions reveals which
+    // AP the ESP actually attached to.
+    { std::string bssid = net::wifi::get_bssid();
+      hs_str(s, ",\"wifi_bssid\":"); hs_json_str(s, bssid.empty() ? "" : bssid.c_str()); }
+    hs_str(s, ",\"wifi_rssi\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)net::wifi::get_rssi()); hs_str(s,t); }
+    hs_str(s, ",\"wifi_bssid_pin_active\":"); hs_bool(s, net::wifi::is_bssid_pin_active());
     hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
     hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
     hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());

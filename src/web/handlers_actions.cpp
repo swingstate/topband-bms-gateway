@@ -86,8 +86,10 @@ esp_err_t handle_health(httpd_req_t* req) {
   mqtt["publish_drops"] = mqtt::publisher::get_publish_drops();
 
   JsonObject wifi_o = doc["wifi"].to<JsonObject>();
-  wifi_o["connected"] = net::wifi::is_connected();
-  wifi_o["rssi"]      = (int)net::wifi::get_rssi();
+  wifi_o["connected"]        = net::wifi::is_connected();
+  wifi_o["rssi"]             = (int)net::wifi::get_rssi();
+  wifi_o["bssid"]            = net::wifi::get_bssid();
+  wifi_o["bssid_pin_active"] = net::wifi::is_bssid_pin_active();
 
   // NTP status — used by Settings → Time section.
   doc["now_ts_s"]   = net::ntp::now_unix_s();
@@ -273,15 +275,17 @@ esp_err_t handle_wifi_status_get(httpd_req_t* req) {
   snprintf(mdns, sizeof(mdns), "%s.local", hostname);
 
   JsonDocument doc;
-  doc["connected"]       = net::wifi::is_connected();
-  doc["ssid"]            = ssid;
-  doc["rssi"]            = rssi;
-  doc["ip"]              = ip.ip;
-  doc["gateway"]         = ip.gw;
-  doc["netmask"]         = ip.netmask;
-  doc["dns"]             = ip.dns;
-  doc["mdns_hostname"]   = mdns;
-  doc["connected_for_s"] = conn_s;
+  doc["connected"]        = net::wifi::is_connected();
+  doc["ssid"]             = ssid;
+  doc["bssid"]            = net::wifi::get_bssid();
+  doc["rssi"]             = rssi;
+  doc["bssid_pin_active"] = net::wifi::is_bssid_pin_active();
+  doc["ip"]               = ip.ip;
+  doc["gateway"]          = ip.gw;
+  doc["netmask"]          = ip.netmask;
+  doc["dns"]              = ip.dns;
+  doc["mdns_hostname"]    = mdns;
+  doc["connected_for_s"]  = conn_s;
 
   char body[512];
   size_t n = serializeJson(doc, body, sizeof(body));
@@ -298,6 +302,7 @@ esp_err_t handle_wifi_scan_get(httpd_req_t* req) {
   for (const auto& r : results) {
     JsonObject o = arr.add<JsonObject>();
     o["ssid"]   = r.ssid;
+    o["bssid"]  = r.bssid;
     o["rssi"]   = r.rssi;
     o["secure"] = r.secure;
   }

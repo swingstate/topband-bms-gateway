@@ -90,6 +90,10 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["ble_mppt_mac"]      = c.ble_mppt_mac;
   doc["ble_shunt_key"]     = "";   // always redacted — leave blank to keep existing key
   doc["ble_mppt_key"]      = "";   // always redacted
+
+  // v8 WiFi AP selection fields (non-secret, included in export/import)
+  doc["wifi_bssid"]            = c.wifi_bssid;
+  doc["wifi_rssi_threshold"]   = c.wifi_rssi_threshold;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -277,6 +281,11 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     const char* k = doc["ble_mppt_key"].as<const char*>();
     if (k && k[0] != '\0') snprintf(c.ble_mppt_key, sizeof(c.ble_mppt_key), "%s", k);
   }
+
+  // v8 WiFi AP selection
+  copy_str(doc["wifi_bssid"], c.wifi_bssid);
+  if (doc["wifi_rssi_threshold"].is<int>())
+    c.wifi_rssi_threshold = (int8_t)doc["wifi_rssi_threshold"].as<int>();
 
   return true;
 }

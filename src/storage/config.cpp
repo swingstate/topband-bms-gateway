@@ -134,6 +134,13 @@ static Config make_default() {
   c.ble_mppt_enabled  = false;
   // ble_shunt_mac, ble_mppt_mac, ble_shunt_key, ble_mppt_key: empty (zero-init from Config{})
 
+  // v8 additions: WiFi AP selection.
+  // wifi_bssid: empty = auto-select strongest AP (default for all installs).
+  // wifi_rssi_threshold: -75 dBm for fresh installs (rejects weak APs below ~15 m range;
+  // reduces sticky-client risk). Migration from v7 uses -127 to preserve existing behaviour.
+  // c.wifi_bssid is zero-init from Config{}, so wifi_bssid[0] == '\0'.
+  c.wifi_rssi_threshold = -75;
+
   return c;
 }
 
@@ -693,6 +700,87 @@ struct Config_v6 {
 static_assert(sizeof(Config_v6) == 696,
     "Config_v6 size drifted from expected 696 B — check alignment against v6 NVS blobs");
 
+// ── Config_v7: schema version 7 layout (800 bytes) ───────────────────────────
+// Identical to Config before the WiFi AP-selection fields were appended (v8).
+struct Config_v7 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  uint16_t                 notify_debounce_s;
+  Config::BatteryConfigMode battery_config_mode;
+  bool                     ble_shunt_enabled;
+  bool                     ble_mppt_enabled;
+  char                     ble_shunt_mac[18];
+  char                     ble_mppt_mac[18];
+  char                     ble_shunt_key[33];
+  char                     ble_mppt_key[33];
+  // 3 bytes implicit tail padding → 800 B
+};
+
+static_assert(sizeof(Config_v7) == 800,
+    "Config_v7 size drifted from expected 800 B — check alignment against v7 NVS blobs");
+
 // ── v6 → v7 migration ────────────────────────────────────────────────────────
 // BLE source fields are the only additions. All default to disabled/empty so
 // system behaviour is byte-for-byte identical to V3.0 after migration.
@@ -776,6 +864,101 @@ static bool migrate_v6_to_v7(const uint8_t* buf, size_t len, Config& out) {
   return true;
 }
 
+// ── v7 → v8 migration ────────────────────────────────────────────────────────
+// wifi_bssid and wifi_rssi_threshold are the only new fields.
+// wifi_bssid = '' preserves auto-select (no pin) for all existing devices.
+// wifi_rssi_threshold = -127 disables the RSSI floor to preserve existing
+// behaviour on single-AP or weak-signal sites.
+static bool migrate_v7_to_v8(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v7)) return false;
+
+  Config_v7 v7;
+  memcpy(&v7, buf, sizeof(Config_v7));
+
+  // Start from DEFAULT_CONFIG so wifi_bssid/'rssi_threshold get valid values
+  // before we overwrite them with the migration-specific safe defaults below.
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v7.board_preset;
+  out.pins                    = v7.pins;
+  out.rs485_enabled           = v7.rs485_enabled;
+  out.bms_count               = v7.bms_count;
+  out.force_cell_count        = v7.force_cell_count;
+  out.can_protocol            = v7.can_protocol;
+  out.can_enabled             = v7.can_enabled;
+  out.charge_amps_per_pack    = v7.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v7.discharge_amps_per_pack;
+  out.cvl_voltage             = v7.cvl_voltage;
+  out.safe_pack_volt          = v7.safe_pack_volt;
+  out.safe_cell_volt          = v7.safe_cell_volt;
+  out.safe_cell_drift         = v7.safe_cell_drift;
+  out.spike_volt_max          = v7.spike_volt_max;
+  out.spike_curr_max          = v7.spike_curr_max;
+  out.spike_soc_max           = v7.spike_soc_max;
+  out.charge_temp_min         = v7.charge_temp_min;
+  out.charge_temp_max         = v7.charge_temp_max;
+  out.discharge_temp_min      = v7.discharge_temp_min;
+  out.discharge_temp_max      = v7.discharge_temp_max;
+  out.temp_soft_zone          = v7.temp_soft_zone;
+  out.temp_mode               = v7.temp_mode;
+  out.soc_mode                = v7.soc_mode;
+  out.setup_mode              = v7.setup_mode;
+  out.auto_from_bms_applied   = v7.auto_from_bms_applied;
+  out.maint_charge_enabled    = v7.maint_charge_enabled;
+  out.maint_target_voltage    = v7.maint_target_voltage;
+  out.auto_balance_enabled    = v7.auto_balance_enabled;
+  out.auto_balance_last_ts    = v7.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v7.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v7.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v7.timezone_offset_h;
+  out.mqtt_enabled            = v7.mqtt_enabled;
+  memcpy(out.mqtt_host,       v7.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v7.mqtt_port;
+  memcpy(out.mqtt_user,       v7.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v7.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v7.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v7.mqtt_level;
+  out.mqtt_diag_enabled       = v7.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v7.ha_discovery_enabled;
+  out.mqtt_full_publish       = v7.mqtt_full_publish;
+  out.auth_enabled            = v7.auth_enabled;
+  memcpy(out.auth_user, v7.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v7.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v7.theme_id;
+  out.chart_series_a          = v7.chart_series_a;
+  out.chart_series_b          = v7.chart_series_b;
+  out.ui_poll_live_ms         = v7.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v7.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v7.ui_poll_alerts_ms;
+  out.last_reset_ts           = v7.last_reset_ts;
+  out.serial_debug_enabled    = v7.serial_debug_enabled;
+  out.spy_persist_default     = v7.spy_persist_default;
+  out.notify_telegram_enabled  = v7.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v7.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v7.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  memcpy(out.notify_sender_name,      v7.notify_sender_name,      sizeof(out.notify_sender_name));
+  out.notify_alert_flags          = v7.notify_alert_flags;
+  out.notify_telegram_last_ok_ts  = v7.notify_telegram_last_ok_ts;
+  out.notify_poll_interval_s      = v7.notify_poll_interval_s;
+  out.notify_cooldown_s           = v7.notify_cooldown_s;
+  out.notify_telegram_verified    = v7.notify_telegram_verified;
+  out.notify_debounce_s           = v7.notify_debounce_s;
+  out.battery_config_mode         = v7.battery_config_mode;
+  out.ble_shunt_enabled           = v7.ble_shunt_enabled;
+  out.ble_mppt_enabled            = v7.ble_mppt_enabled;
+  memcpy(out.ble_shunt_mac, v7.ble_shunt_mac, sizeof(out.ble_shunt_mac));
+  memcpy(out.ble_mppt_mac,  v7.ble_mppt_mac,  sizeof(out.ble_mppt_mac));
+  memcpy(out.ble_shunt_key, v7.ble_shunt_key, sizeof(out.ble_shunt_key));
+  memcpy(out.ble_mppt_key,  v7.ble_mppt_key,  sizeof(out.ble_mppt_key));
+  // wifi_bssid: empty (auto-select, no pin) — conservative default for existing sites.
+  // wifi_rssi_threshold: -127 = no floor; preserves existing connect-to-any-RSSI behaviour.
+  out.wifi_bssid[0]        = '\0';
+  out.wifi_rssi_threshold  = -127;
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
+
 }  // namespace
 
 // Config layout check (updated each schema version).
@@ -788,9 +971,11 @@ static bool migrate_v6_to_v7(const uint8_t* buf, size_t len, Config& out) {
 // 696 B (4-byte struct alignment, largest member is float).
 // v7 additions: 2×bool + 2×char[18] + 2×char[33] = 104 B appended at end.
 //   696 B (v6) - 3 B tail pad + 104 B new fields = 797 B raw; pads to 800 B.
+// v8 additions: char[18] wifi_bssid + int8_t wifi_rssi_threshold = 19 B.
+//   800 B (v7) - 3 B tail pad + 19 B new fields = 816 B raw; 816 % 4 = 0, no new pad.
 // This assert catches field additions or reorderings that silently change the NVS blob.
-static_assert(sizeof(Config) == 800,
-    "Config size drifted from expected 800 B — if intentional, bump schema version, "
+static_assert(sizeof(Config) == 816,
+    "Config size drifted from expected 816 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
@@ -1129,6 +1314,10 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     if (len < sizeof(Config)) return false;
     memcpy(&out, buf, sizeof(Config));
     return true;
+  }
+
+  if (ver == 7) {
+    return migrate_v7_to_v8(buf, len, out);
   }
 
   if (ver == 6) {
