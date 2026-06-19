@@ -8,6 +8,7 @@
 #include "handlers_alerts.h"
 #include "handlers_ota.h"
 #include "handlers_notify.h"
+#include "handlers_net_diag.h"
 #include "handlers_static.h"
 #include "app/self_test.h"
 #include "esp_log.h"
@@ -47,7 +48,7 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[30];
+static AuthCtx g_auth_ctx[35];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
@@ -145,6 +146,10 @@ bool start_httpd(const Config& /*cfg*/) {
            web::handle_notify_status_get);
   reg_auth(g_server, "/api/notify/alert-types", HTTP_GET,
            web::handle_notify_alert_types_get);
+
+  // ── Network self-test (staged DNS→TCP→TLS diagnostic) ─────────────────────
+  reg_auth(g_server, "/api/net/self-test", HTTP_POST, web::handle_net_diag_post);
+  reg_auth(g_server, "/api/net/self-test", HTTP_GET,  web::handle_net_diag_get);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

@@ -1724,6 +1724,21 @@ function renderSettingsNotifications() {
              border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
       </div>
 
+      <!-- ── Group 1b: Network self-test ─────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Network self-test</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Checks the outbound TLS path stage-by-stage: WiFi association,
+          DNS resolution, TCP reachability, TLS handshake, and NTP clock.
+          No credentials or bot token required. Use this when "Send test" fails
+          to find exactly which stage is broken.
+        </p>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="net-diag-btn" onclick="runNetDiag()">Run self-test</button>
+        </div>
+        <div id="net-diag-result" style="display:none;margin-top:14px"></div>
+      </div>
+
       <!-- ── Group 2: Alerts ───────────────────────────────────────────────── -->
       <div class="settings-section">
         <div class="settings-section-title">Alerts</div>
@@ -1998,6 +2013,80 @@ async function testTelegramNotification() {
         resultEl.style.color = 'var(--color-alarm)';
         resultEl.style.borderColor = 'var(--color-alarm)';
         resultEl.textContent = d.message || 'Test failed.';
+      }
+    } catch (e) { /* ignore transient poll errors */ }
+  }, 1000);
+}
+
+/* ── Network self-test ───────────────────────────────────────────────────────── */
+
+let g_net_diag_poll = null;
+
+function renderNetDiagStages(stages) {
+  if (!stages || !stages.length) return '<span style="color:var(--text-muted)">No data</span>';
+  const colorFor = (s) =>
+    !s.run  ? 'var(--text-muted)'  :
+    s.pass  ? 'var(--color-success)' : 'var(--color-alarm)';
+  const iconFor  = (s) => !s.run ? '–' : s.pass ? '&#x2713;' : '&#x2717;';
+  return stages.map(s => `
+    <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;font-size:13px">
+      <span style="min-width:18px;font-weight:bold;color:${colorFor(s)}">${iconFor(s)}</span>
+      <div>
+        <strong>${escHtml(s.label)}</strong><br>
+        <span style="color:var(--text-muted)">${escHtml(s.detail || (s.run ? '' : 'Not run'))}</span>
+      </div>
+    </div>`).join('');
+}
+
+async function runNetDiag() {
+  if (g_net_diag_poll) { clearInterval(g_net_diag_poll); g_net_diag_poll = null; }
+  const resultEl = document.getElementById('net-diag-result');
+  const btn      = document.getElementById('net-diag-btn');
+  if (!resultEl) return;
+
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = '<span class="spinner"></span> Running self-test…';
+  if (btn) btn.disabled = true;
+
+  try {
+    const r = await apiFetch('/api/net/self-test', { method: 'POST' });
+    if (!r) { if (btn) btn.disabled = false; return; }
+    if (r.status === 409) {
+      resultEl.innerHTML = '<span style="color:var(--text-muted)">Test already running…</span>';
+    } else if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      resultEl.innerHTML = `<span style="color:var(--color-alarm)">${escHtml(d.error || 'Failed to start')}</span>`;
+      if (btn) btn.disabled = false;
+      return;
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<span style="color:var(--color-alarm)">Network error: ${escHtml(e.message)}</span>`;
+    if (btn) btn.disabled = false;
+    return;
+  }
+
+  // Poll until running=false, max 30 s.
+  let polls = 0;
+  g_net_diag_poll = setInterval(async function() {
+    polls++;
+    if (polls > 30) {
+      clearInterval(g_net_diag_poll); g_net_diag_poll = null;
+      resultEl.innerHTML = '<span style="color:var(--color-alarm)">Timed out waiting for result.</span>';
+      if (btn) btn.disabled = false;
+      return;
+    }
+    try {
+      const r2 = await apiFetch('/api/net/self-test');
+      if (!r2) return;
+      const d = await r2.json();
+      // Show intermediate results while running.
+      if (d.stages) {
+        resultEl.innerHTML = (d.running ? '<span class="spinner"></span> ' : '') +
+          renderNetDiagStages(d.stages);
+      }
+      if (!d.running) {
+        clearInterval(g_net_diag_poll); g_net_diag_poll = null;
+        if (btn) btn.disabled = false;
       }
     } catch (e) { /* ignore transient poll errors */ }
   }, 1000);

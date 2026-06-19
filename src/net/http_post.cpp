@@ -107,16 +107,22 @@ HttpPostResult https_post(const char*        url,
       esp_tls_get_and_clear_last_error(err_h, &tls_code, &tls_flags);
     }
     if (tls_code != 0) {
-      snprintf(result.error, sizeof(result.error),
-               "TLS handshake failed (-0x%04X); DRAM largest=%u B",
-               (unsigned)(-tls_code), (unsigned)dram_largest);
+      // tls_flags carries mbedtls_ssl_get_verify_result() bits (cert issues).
+      if (tls_flags != 0) {
+        snprintf(result.error, sizeof(result.error),
+                 "TLS handshake failed: mbedTLS -0x%04X (cert flags 0x%04X)",
+                 (unsigned)(-tls_code), (unsigned)tls_flags);
+      } else {
+        snprintf(result.error, sizeof(result.error),
+                 "TLS handshake failed: mbedTLS -0x%04X",
+                 (unsigned)(-tls_code));
+      }
     } else {
       snprintf(result.error, sizeof(result.error),
-               "TLS connect failed (unreachable/timeout); DRAM largest=%u B",
-               (unsigned)dram_largest);
+               "TLS connect failed: unreachable or socket timeout");
     }
-    ESP_LOGW(TAG, "esp_tls_conn_http_new_sync → %d, tls_code=0x%04X, DRAM_largest=%u",
-             conn_ret, (unsigned)(-tls_code), (unsigned)dram_largest);
+    ESP_LOGW(TAG, "TLS failed: conn_ret=%d mbedtls_code=-0x%04X flags=0x%04X DRAM_largest=%u B",
+             conn_ret, (unsigned)(-tls_code), (unsigned)tls_flags, (unsigned)dram_largest);
     esp_tls_conn_destroy(tls);
     return result;
   }
