@@ -71,12 +71,11 @@ namespace {
 static bool s_active = false;
 static sources::ShuntSource* s_shunt = nullptr;
 static sources::MpptSource*  s_mppt  = nullptr;
-// Coexistence diagnostic: total GAP_EVENT_DISC events received (all devices,
-// not just Victron). Counts every advertisement report that passes from the
-// controller through VHCI to the NimBLE host task on Core 0. With
-// filter_duplicates=0 and a dense BLE environment this can be hundreds per
-// 200 ms scan window, revealing Core 0 CPU load from the NimBLE host task.
-static uint32_t s_gap_event_count = 0;
+// Diagnostic counters: all advertisements received (any device), Victron company
+// ID advertisements, and MPPT (type 0x01) advertisements (before MAC check).
+static uint32_t s_gap_event_count  = 0;
+static uint32_t s_victron_adv_count = 0;
+static uint32_t s_mppt_adv_count    = 0;
 
 // Key bytes decoded from Config hex strings at startup.
 static uint8_t s_shunt_key[16] = {};
@@ -243,15 +242,46 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
   // Check Victron Energy company ID (0x02E1, little-endian: E1 02).
   if (md[0] != 0xE1 || md[1] != 0x02) return 0;
 
+  s_victron_adv_count++;
   uint8_t record_type = md[2];
 
-  if (record_type == 0x01 && s_mppt_enabled && s_mppt_mac_valid) {
-    if (mac_matches(disc.addr.val, s_mppt_mac)) {
-      decode_mppt(md, fields.mfg_data_len, now_ms);
+  if (record_type == 0x01) {
+    s_mppt_adv_count++;
+    if (s_mppt_enabled && s_mppt_mac_valid) {
+      if (mac_matches(disc.addr.val, s_mppt_mac)) {
+        decode_mppt(md, fields.mfg_data_len, now_ms);
+      } else {
+        // Log once every 10 occurrences — MPPT type seen but wrong MAC.
+        if (s_mppt_adv_count % 10 == 1) {
+          ESP_LOGI(TAG, "MPPT adv (type 0x01) MAC %02X:%02X:%02X:%02X:%02X:%02X "
+                        "does not match configured target (victron_adv=%lu mppt_adv=%lu)",
+                   disc.addr.val[5], disc.addr.val[4], disc.addr.val[3],
+                   disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
+                   (unsigned long)s_victron_adv_count,
+                   (unsigned long)s_mppt_adv_count);
+        }
+      }
+    } else if (s_mppt_enabled) {
+      ESP_LOGW(TAG, "MPPT adv seen but MAC/key not valid — check config");
     }
-  } else if (record_type == 0x02 && s_shunt_enabled && s_shunt_mac_valid) {
-    if (mac_matches(disc.addr.val, s_shunt_mac)) {
-      decode_shunt(md, fields.mfg_data_len, now_ms);
+  } else if (record_type == 0x02) {
+    if (s_shunt_enabled && s_shunt_mac_valid) {
+      if (mac_matches(disc.addr.val, s_shunt_mac)) {
+        decode_shunt(md, fields.mfg_data_len, now_ms);
+      }
+    }
+  } else {
+    // Unknown Victron record type — log on first occurrence per record type.
+    // Victron uses type 0x01=MPPT, 0x02=SmartShunt, 0x03=Lynx, 0x06=Inverter, etc.
+    // If your device shows up here instead of 0x01, update the record_type check.
+    static uint8_t s_last_unknown_type = 0xFF;
+    if (record_type != s_last_unknown_type) {
+      s_last_unknown_type = record_type;
+      ESP_LOGI(TAG, "Unknown Victron record type 0x%02X from %02X:%02X:%02X:%02X:%02X:%02X "
+                    "— known types: 0x01=MPPT 0x02=SmartShunt 0x03=Lynx 0x06=Inverter",
+               record_type,
+               disc.addr.val[5], disc.addr.val[4], disc.addr.val[3],
+               disc.addr.val[2], disc.addr.val[1], disc.addr.val[0]);
     }
   }
 
@@ -263,16 +293,16 @@ static void start_scan() {
   struct ble_gap_disc_params disc_params = {};
   disc_params.passive = 1;  // no SCAN_REQ (observer-only)
 
-  // Fix 2 (dev.5): enable controller-side duplicate filter.
-  // With filter_duplicates=0 the controller reported every advertisement from
-  // every nearby BLE device to the NimBLE host task, flooding Core 0 with HCI
-  // events even when those devices were not Victron. With filter_duplicates=1
-  // the controller's 100-entry dedup cache (BT_CTRL_SCAN_DUPL_CACHE_SIZE=100)
-  // reports each MAC once per scan period. Victron devices advertise at ~1 Hz,
-  // well within the 2 s scan interval, so freshness is unaffected.
-  // Caveat: BT_CTRL_DUPL_SCAN_CACHE_REFRESH_PERIOD=0 means the cache never
-  // auto-expires. This is fine for Victron (static MACs, no privacy rotation).
-  disc_params.filter_duplicates = 1;
+  // filter_duplicates=0: report every advertisement from every device.
+  // filter_duplicates=1 was added in dev.5 to prevent Core 0 CPU starvation
+  // from dense BLE environments. That starvation is now solved structurally:
+  //   - NimBLE host task is on Core 1 (not Core 0 with WiFi/httpd)
+  //   - Scan window is 50 ms / 2000 ms = 2.5% duty cycle
+  // Keeping filter_duplicates=1 causes Victron data to only refresh when a new
+  // scan session starts (i.e. after each TLS pause/resume). With no alerts
+  // firing, MPPT/shunt values would never update. filter_duplicates=0 restores
+  // continuous refresh at ~1 Hz per device (Victron's advertisement rate).
+  disc_params.filter_duplicates = 0;
 
   // Fix 3 (dev.5): reduce scan window 200 ms → 50 ms (duty 10% → 2.5%).
   // Victron beacons repeat multiple times per 2 s interval (typically every
@@ -448,6 +478,22 @@ void resume_scan() {
 uint32_t gap_event_count() {
 #ifdef CONFIG_BT_NIMBLE_ENABLED
   return s_gap_event_count;
+#else
+  return 0;
+#endif
+}
+
+uint32_t victron_adv_count() {
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+  return s_victron_adv_count;
+#else
+  return 0;
+#endif
+}
+
+uint32_t mppt_adv_count() {
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+  return s_mppt_adv_count;
 #else
   return 0;
 #endif

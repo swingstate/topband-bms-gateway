@@ -49,11 +49,15 @@ void pause_scan();
 // (the on_sync callback will restart scanning automatically in that case).
 void resume_scan();
 
-// Coexistence diagnostic: total BLE_GAP_EVENT_DISC events received since boot.
-// Counts every advertisement from every nearby BLE device (not only Victron)
-// because filter_duplicates=0 passes all of them through VHCI to the NimBLE
-// host task on Core 0. High counts with short BLE session time = dense BLE
-// environment amplifying Core 0 CPU contention.
+// Total BLE_GAP_EVENT_DISC events received (all devices, not only Victron).
 uint32_t gap_event_count();
+
+// Total advertisements with Victron company ID (0x02E1) seen since boot.
+// Non-zero means at least one Victron device is in range and advertising.
+uint32_t victron_adv_count();
+
+// Total advertisements with Victron record type 0x01 (MPPT/Solar Charger).
+// If > 0 but MPPT values stay at 0, the MAC address in config does not match.
+uint32_t mppt_adv_count();
 
 }  // namespace sources::ble_scanner

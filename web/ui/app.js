@@ -2065,13 +2065,15 @@ async function runNetDiag() {
     return;
   }
 
-  // Poll until running=false, max 30 s.
+  const STAGE_NAMES = ['WiFi / link', 'DNS resolution', 'TCP connect', 'TLS handshake', 'Time / cert sanity'];
+
+  // Poll until running=false, max 60 s (TLS can take up to ~45 s worst case).
   let polls = 0;
   g_net_diag_poll = setInterval(async function() {
     polls++;
-    if (polls > 30) {
+    if (polls > 60) {
       clearInterval(g_net_diag_poll); g_net_diag_poll = null;
-      resultEl.innerHTML = '<span style="color:var(--color-alarm)">Timed out waiting for result.</span>';
+      resultEl.innerHTML = '<span style="color:var(--color-alarm)">Timed out (60 s). Check serial log for net_diag task output.</span>';
       if (btn) btn.disabled = false;
       return;
     }
@@ -2079,10 +2081,13 @@ async function runNetDiag() {
       const r2 = await apiFetch('/api/net/self-test');
       if (!r2) return;
       const d = await r2.json();
-      // Show intermediate results while running.
       if (d.stages) {
-        resultEl.innerHTML = (d.running ? '<span class="spinner"></span> ' : '') +
-          renderNetDiagStages(d.stages);
+        const stageName = (d.running && d.current_stage >= 0 && d.current_stage < STAGE_NAMES.length)
+          ? STAGE_NAMES[d.current_stage] : null;
+        const header = stageName
+          ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><span class="spinner"></span> Testing: <strong>${escHtml(stageName)}</strong>…</div>`
+          : '';
+        resultEl.innerHTML = header + renderNetDiagStages(d.stages);
       }
       if (!d.running) {
         clearInterval(g_net_diag_poll); g_net_diag_poll = null;
@@ -3472,6 +3477,8 @@ function renderDiagData(d) {
         ${kvRow('DRAM free now', fmtB(sys.dram_free))}
         ${kvRow('DRAM min ever (free)', fmtB(sys.dram_min))}
         ${kvRow('Largest contiguous now', fmtB(ble.dram_largest_block_now))}
+        ${kvRow('BLE adv total / Victron / MPPT(0x01)',
+                `${(ble.ble_gap_events||0).toLocaleString()} / ${(ble.ble_victron_advs||0).toLocaleString()} / ${(ble.ble_mppt_advs||0).toLocaleString()}`)}
       </div>
       <div class="diag-kv-grid" style="margin-top:4px">
         <div class="diag-kv"><span><strong>Largest contiguous, min ever (TRUE GATE)</strong></span><span style="font-weight:700;color:${gateColor}">${escHtml(gateLabel)}</span></div>
@@ -3491,6 +3498,8 @@ function renderDiagData(d) {
 
       ${mppt.enabled ? `<div style="margin-top:8px"><strong>MPPT</strong>
       <div class="diag-kv-grid">
+        ${kvRow('Type-0x01 advs seen', (ble.ble_mppt_advs||0).toLocaleString()
+          + ((ble.ble_mppt_advs||0) === 0 ? ' — device not seen (wrong MAC? out of range?)' : ''))}
         ${kvRow('Last adv', fmtAge(mppt.last_seen_s))}
         ${kvRow('PV power', fmtF(mppt.pv_power_w, 0) + ' W')}
         ${kvRow('PV voltage', fmtF(mppt.pv_voltage_v, 2) + ' V')}

@@ -19,7 +19,8 @@ struct Stage {
 
 struct Report {
   bool     running;
-  uint32_t started_at;  // esp_timer_get_time() / 1e6, seconds since boot
+  int8_t   current_stage;  // -1=idle/done, 0=wifi, 1=dns, 2=tcp, 3=tls, 4=ntp
+  uint32_t started_at;     // esp_timer_get_time() / 1e6, seconds since boot
   Stage    wifi;
   Stage    dns;
   Stage    tcp;

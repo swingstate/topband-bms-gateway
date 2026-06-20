@@ -61,8 +61,9 @@ esp_err_t handle_net_diag_get(httpd_req_t* req) {
 
   {
     int n = snprintf(buf, BUF,
-                     "{\"running\":%s,\"started_at\":%lu,\"stages\":[",
+                     "{\"running\":%s,\"current_stage\":%d,\"started_at\":%lu,\"stages\":[",
                      r.running ? "true" : "false",
+                     (int)r.current_stage,
                      (unsigned long)r.started_at);
     if (n > 0) pos = (size_t)n;
   }

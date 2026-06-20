@@ -214,43 +214,55 @@ static void run_stage_ntp(net::diag::Stage& s) {
 
 // ── Background task ────────────────────────────────────────────────────────────
 
-static void diag_task(void*) {
-  ESP_LOGI(TAG, "[self-test] starting 5-stage network diagnostic");
-
-  // Initialise report
-  net::diag::Report r = {};
-  r.running    = true;
-  r.started_at = (uint32_t)(esp_timer_get_time() / 1000000LL);
-
+// Publish the current report snapshot under the spinlock.
+// Copies ~820 bytes; runs in < 10 µs so portMUX hold time is acceptable.
+static void publish(const net::diag::Report& r) {
   portENTER_CRITICAL(&s_mux);
   s_report = r;
   portEXIT_CRITICAL(&s_mux);
+}
 
+static void diag_task(void*) {
+  ESP_LOGI(TAG, "[self-test] starting 5-stage network diagnostic");
+
+  net::diag::Report r = {};
+  r.running       = true;
+  r.current_stage = -1;
+  r.started_at    = (uint32_t)(esp_timer_get_time() / 1000000LL);
+  publish(r);
+
+  r.current_stage = 0;  publish(r);
   run_stage_wifi(r.wifi);
   ESP_LOGI(TAG, "[self-test] wifi: %s — %s",
            r.wifi.pass ? "PASS" : "FAIL", r.wifi.detail);
+  publish(r);
 
+  r.current_stage = 1;  publish(r);
   run_stage_dns(r.dns);
   ESP_LOGI(TAG, "[self-test] dns: %s — %s",
            r.dns.pass ? "PASS" : "FAIL", r.dns.detail);
+  publish(r);
 
+  r.current_stage = 2;  publish(r);
   run_stage_tcp(r.tcp);
   ESP_LOGI(TAG, "[self-test] tcp: %s — %s",
            r.tcp.pass ? "PASS" : "FAIL", r.tcp.detail);
+  publish(r);
 
+  r.current_stage = 3;  publish(r);
   run_stage_tls(r.tls);
   ESP_LOGI(TAG, "[self-test] tls: %s — %s",
            r.tls.pass ? "PASS" : "FAIL", r.tls.detail);
+  publish(r);
 
+  r.current_stage = 4;  publish(r);
   run_stage_ntp(r.ntp);
   ESP_LOGI(TAG, "[self-test] ntp: %s — %s",
            r.ntp.pass ? "PASS" : "FAIL", r.ntp.detail);
 
-  r.running = false;
-
-  portENTER_CRITICAL(&s_mux);
-  s_report = r;
-  portEXIT_CRITICAL(&s_mux);
+  r.running       = false;
+  r.current_stage = -1;
+  publish(r);
 
   ESP_LOGI(TAG, "[self-test] complete: wifi=%d dns=%d tcp=%d tls=%d ntp=%d",
            r.wifi.pass, r.dns.pass, r.tcp.pass, r.tls.pass, r.ntp.pass);
@@ -272,10 +284,13 @@ bool start() {
   portENTER_CRITICAL(&s_mux);
   s_report = {};
   s_report.running = true;
+  s_report.current_stage = -1;
   portEXIT_CRITICAL(&s_mux);
 
-  // Stack 6 KB: TLS handshake + lwIP DNS resolver each need ~2 KB.
-  BaseType_t ok = xTaskCreate(diag_task, "net_diag", 6144, nullptr, 2, nullptr);
+  // Stack 16 KB: matches notify_send/notify_test which also call esp_tls.
+  // esp_tls_conn_http_new_sync uses ~8 KB of stack internally for mbedTLS
+  // bignum and certificate operations. 6 KB overflows silently.
+  BaseType_t ok = xTaskCreate(diag_task, "net_diag", 16384, nullptr, 2, nullptr);
   if (ok != pdPASS) {
     portENTER_CRITICAL(&s_mux);
     s_report.running = false;

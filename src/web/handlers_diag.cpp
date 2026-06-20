@@ -323,6 +323,8 @@ esp_err_t handle_diag(httpd_req_t* req) {
     hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
     hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
     hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());
+    hs_str(s, ",\"ble_victron_advs\":"); hs_uint(s, sources::ble_scanner::victron_adv_count());
+    hs_str(s, ",\"ble_mppt_advs\":"); hs_uint(s, sources::ble_scanner::mppt_adv_count());
 
     // Contiguous DRAM block tracking — diagnostic only, not a runtime gate.
     // Values below ~20 KB indicate fragmentation that may impede a TLS handshake.
