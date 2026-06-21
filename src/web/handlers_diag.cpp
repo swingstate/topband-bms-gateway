@@ -367,16 +367,22 @@ esp_err_t handle_diag(httpd_req_t* req) {
         int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
         hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
         hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        // null when the charger sent a Victron not-available sentinel (0x7FFF/0xFFFF)
         hs_str(s, ",\"pv_power_w\":");
-        { char t[16]; snprintf(t,sizeof(t),"%.1f",d.pv_power_w);   hs_str(s,t); }
+        if (d.pv_power_valid)    { char t[16]; snprintf(t,sizeof(t),"%.1f",d.pv_power_w);    hs_str(s,t); }
+        else hs_str(s, "null");
         hs_str(s, ",\"pv_voltage_v\":");
-        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v); hs_str(s,t); }
+        if (d.pv_derived_valid)  { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v);  hs_str(s,t); }
+        else hs_str(s, "null");
         hs_str(s, ",\"pv_current_a\":");
-        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a); hs_str(s,t); }
+        if (d.pv_derived_valid)  { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a);  hs_str(s,t); }
+        else hs_str(s, "null");
         hs_str(s, ",\"batt_voltage_v\":");
-        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_voltage_v); hs_str(s,t); }
+        if (d.batt_v_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_voltage_v); hs_str(s,t); }
+        else hs_str(s, "null");
         hs_str(s, ",\"batt_current_a\":");
-        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_current_a); hs_str(s,t); }
+        if (d.batt_i_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_current_a); hs_str(s,t); }
+        else hs_str(s, "null");
       }
       hs_str(s, "}");
     }
