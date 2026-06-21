@@ -2020,26 +2020,46 @@ async function testTelegramNotification() {
 
 /* ── Network self-test ───────────────────────────────────────────────────────── */
 
-let g_net_diag_poll = null;
+let g_net_diag_poll      = null;
+let g_net_diag_lastStages = null;  // preserves last known stages so timeout can show them
 
 function renderNetDiagStages(stages) {
   if (!stages || !stages.length) return '<span style="color:var(--text-muted)">No data</span>';
   const colorFor = (s) =>
-    !s.run  ? 'var(--text-muted)'  :
+    !s.run  ? 'var(--text-muted)'    :
     s.pass  ? 'var(--color-success)' : 'var(--color-alarm)';
   const iconFor  = (s) => !s.run ? '–' : s.pass ? '&#x2713;' : '&#x2717;';
+  const durationStr = (s) => {
+    if (!s.run || !s.duration_ms) return '';
+    return s.duration_ms >= 1000
+      ? ` <span style="color:var(--text-muted);font-size:11px">${(s.duration_ms / 1000).toFixed(1)} s</span>`
+      : ` <span style="color:var(--text-muted);font-size:11px">${s.duration_ms} ms</span>`;
+  };
   return stages.map(s => `
     <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;font-size:13px">
       <span style="min-width:18px;font-weight:bold;color:${colorFor(s)}">${iconFor(s)}</span>
       <div>
-        <strong>${escHtml(s.label)}</strong><br>
+        <strong style="color:${colorFor(s)}">${escHtml(s.label)}</strong>${durationStr(s)}<br>
         <span style="color:var(--text-muted)">${escHtml(s.detail || (s.run ? '' : 'Not run'))}</span>
       </div>
     </div>`).join('');
 }
 
+function renderNetDiagResult(stages, headerHtml) {
+  const passed = stages ? stages.filter(s => s.run && s.pass).length : 0;
+  const total  = stages ? stages.filter(s => s.run).length : 0;
+  const summary = total > 0 ? `${passed}/${total} passed` : '';
+  return `<details open style="border:1px solid var(--border-color);border-radius:6px;padding:10px 14px">
+    <summary style="cursor:pointer;font-size:13px;font-weight:600;list-style:none;display:flex;align-items:center;gap:8px">
+      <span>Self-test results${summary ? ' — ' + summary : ''}</span>
+    </summary>
+    <div style="margin-top:10px">${headerHtml}${renderNetDiagStages(stages)}</div>
+  </details>`;
+}
+
 async function runNetDiag() {
   if (g_net_diag_poll) { clearInterval(g_net_diag_poll); g_net_diag_poll = null; }
+  g_net_diag_lastStages = null;
   const resultEl = document.getElementById('net-diag-result');
   const btn      = document.getElementById('net-diag-btn');
   if (!resultEl) return;
@@ -2067,27 +2087,44 @@ async function runNetDiag() {
 
   const STAGE_NAMES = ['WiFi / link', 'DNS resolution', 'TCP connect', 'TLS handshake', 'Time / cert sanity'];
 
-  // Poll until running=false, max 60 s (TLS can take up to ~45 s worst case).
+  // Poll until running=false, max 90 s (TLS can take up to ~45 s worst case;
+  // extra margin added for slow DNS + TCP on congested networks).
   let polls = 0;
   g_net_diag_poll = setInterval(async function() {
     polls++;
-    if (polls > 60) {
+    if (polls > 90) {
       clearInterval(g_net_diag_poll); g_net_diag_poll = null;
-      resultEl.innerHTML = '<span style="color:var(--color-alarm)">Timed out (60 s). Check serial log for net_diag task output.</span>';
       if (btn) btn.disabled = false;
+      // Show last known stage data so the hanging stage is visible.
+      const stuckStage = g_net_diag_lastStages
+        ? g_net_diag_lastStages.find(s => !s.run)
+        : null;
+      const stuckName = stuckStage ? stuckStage.label : 'unknown stage';
+      const timeoutHeader = `<div style="color:var(--color-alarm);font-size:13px;margin-bottom:8px">
+        Timed out (90 s) — last stage running: <strong>${escHtml(stuckName)}</strong>. Check serial log.
+      </div>`;
+      resultEl.innerHTML = renderNetDiagResult(
+        g_net_diag_lastStages || [],
+        timeoutHeader
+      );
       return;
     }
     try {
       const r2 = await apiFetch('/api/net/self-test');
-      if (!r2) return;
+      if (!r2 || !r2.ok) return;
       const d = await r2.json();
       if (d.stages) {
-        const stageName = (d.running && d.current_stage >= 0 && d.current_stage < STAGE_NAMES.length)
-          ? STAGE_NAMES[d.current_stage] : null;
-        const header = stageName
-          ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><span class="spinner"></span> Testing: <strong>${escHtml(stageName)}</strong>…</div>`
-          : '';
-        resultEl.innerHTML = header + renderNetDiagStages(d.stages);
+        g_net_diag_lastStages = d.stages;
+        if (d.running) {
+          const stageName = (d.current_stage >= 0 && d.current_stage < STAGE_NAMES.length)
+            ? STAGE_NAMES[d.current_stage] : null;
+          const header = stageName
+            ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><span class="spinner"></span> Testing: <strong>${escHtml(stageName)}</strong>…</div>`
+            : '';
+          resultEl.innerHTML = `<div style="margin-bottom:8px">${header}${renderNetDiagStages(d.stages)}</div>`;
+        } else {
+          resultEl.innerHTML = renderNetDiagResult(d.stages, '');
+        }
       }
       if (!d.running) {
         clearInterval(g_net_diag_poll); g_net_diag_poll = null;

@@ -12,9 +12,10 @@
 namespace net::diag {
 
 struct Stage {
-  bool run;        // was this stage executed?
-  bool pass;
-  char detail[160];
+  bool     run;           // was this stage executed?
+  bool     pass;
+  uint32_t duration_ms;  // wall-clock time for this stage (0 if not run)
+  char     detail[160];
 };
 
 struct Report {

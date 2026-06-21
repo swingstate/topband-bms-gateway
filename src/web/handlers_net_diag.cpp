@@ -28,10 +28,13 @@ static size_t append_stage(char* buf, size_t cap, size_t pos,
   json_esc(st.detail, esc, sizeof(esc));
   int n = snprintf(buf + pos, cap - pos,
                    "{\"id\":\"%s\",\"label\":\"%s\","
-                   "\"run\":%s,\"pass\":%s,\"detail\":\"%s\"}",
+                   "\"run\":%s,\"pass\":%s,"
+                   "\"duration_ms\":%lu,"
+                   "\"detail\":\"%s\"}",
                    id, label,
                    st.run  ? "true" : "false",
                    st.pass ? "true" : "false",
+                   (unsigned long)st.duration_ms,
                    esc);
   if (n > 0 && pos + (size_t)n < cap) pos += (size_t)n;
   return pos;
@@ -54,8 +57,10 @@ esp_err_t handle_net_diag_post(httpd_req_t* req) {
 esp_err_t handle_net_diag_get(httpd_req_t* req) {
   net::diag::Report r = net::diag::get_report();
 
-  // Build JSON: ~1100 chars max.
-  static constexpr size_t BUF = 1200;
+  // Build JSON.
+  // Per stage max: ~250 chars (id+label+run+pass+duration_ms+detail up to 160 B).
+  // 5 stages * 250 + header ~80 + footer 3 = ~1333 B; 1600 gives headroom.
+  static constexpr size_t BUF = 1600;
   char buf[BUF];
   size_t pos = 0;
 

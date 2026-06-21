@@ -48,13 +48,14 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[35];
+static constexpr int AUTH_CTX_MAX = 35;
+static AuthCtx g_auth_ctx[AUTH_CTX_MAX];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
                      const char* uri, httpd_method_t method,
                      esp_err_t (*handler)(httpd_req_t*)) {
-  if (g_auth_ctx_count >= 30) {
+  if (g_auth_ctx_count >= AUTH_CTX_MAX) {
     ESP_LOGE(TAG, "reg_auth: out of context slots");
     return;
   }

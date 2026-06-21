@@ -530,9 +530,19 @@ struct TestTaskArgs {
 static void test_task(void* arg) {
   auto* a = static_cast<TestTaskArgs*>(arg);
 
+  // Use the configured sender name as the title so the test notification matches
+  // the format of real alert notifications.  Fall back to hostname when unset.
+  char sender_buf[48] = {};
+  bool has_sender = (a->cfg.notify_sender_name[0] != '\0');
+  if (has_sender) {
+    snprintf(sender_buf, sizeof(sender_buf), "%s", a->cfg.notify_sender_name);
+  } else {
+    net::wifi::get_hostname(sender_buf, sizeof(sender_buf));
+  }
+
   notify::NotifyMessage msg = {};
   msg.severity = notify::Severity::Info;
-  msg.title    = "TopBand BMS Gateway test";
+  msg.title    = sender_buf;
   msg.body     = "Notification test from Settings. Your gateway can reach this service.";
 
   char err[128] = {};
@@ -541,8 +551,17 @@ static void test_task(void* arg) {
   sources::ble_scanner::resume_scan();
 
   if (ok) {
-    set_test_result(notify::TestStatus::Ok,
-                    "Test notification sent — check your Telegram chat.");
+    char ok_msg[128];
+    if (has_sender) {
+      snprintf(ok_msg, sizeof(ok_msg),
+               "Test sent — sender: \"%s\". Check your Telegram chat.",
+               a->cfg.notify_sender_name);
+    } else {
+      snprintf(ok_msg, sizeof(ok_msg),
+               "Test sent (sender name not set, used hostname). "
+               "Check your Telegram chat.");
+    }
+    set_test_result(notify::TestStatus::Ok, ok_msg);
     notify::mark_telegram_verified();
   } else {
     set_test_result(notify::TestStatus::Failed, err[0] ? err : "Test failed (unknown error)");
@@ -577,8 +596,8 @@ bool test(const char* provider_id,
     return true;
   }
 
-  // Build a merged config: start from form values, fall back to saved secrets
-  // when the form left sensitive fields blank (leave-blank-to-keep pattern).
+  // Build a merged config: start from form values, fall back to saved values
+  // when the form left sensitive or optional fields blank.
   Config merged = form_cfg;
   if (merged.notify_telegram_token[0] == '\0') {
     memcpy(merged.notify_telegram_token,
@@ -590,6 +609,11 @@ bool test(const char* provider_id,
            saved_cfg.notify_telegram_chat_id,
            sizeof(merged.notify_telegram_chat_id));
   }
+  // Sender name: always take from saved config so the test notification matches
+  // real alert notifications.  The test POST body does not carry this field.
+  memcpy(merged.notify_sender_name,
+         saved_cfg.notify_sender_name,
+         sizeof(merged.notify_sender_name));
 
   auto* a = static_cast<TestTaskArgs*>(malloc(sizeof(TestTaskArgs)));
   if (!a) {

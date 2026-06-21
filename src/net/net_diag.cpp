@@ -231,34 +231,50 @@ static void diag_task(void*) {
   r.started_at    = (uint32_t)(esp_timer_get_time() / 1000000LL);
   publish(r);
 
-  r.current_stage = 0;  publish(r);
-  run_stage_wifi(r.wifi);
-  ESP_LOGI(TAG, "[self-test] wifi: %s — %s",
-           r.wifi.pass ? "PASS" : "FAIL", r.wifi.detail);
-  publish(r);
+  { int64_t t0 = esp_timer_get_time();
+    r.current_stage = 0; publish(r);
+    run_stage_wifi(r.wifi);
+    r.wifi.duration_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000LL);
+    ESP_LOGI(TAG, "[self-test] wifi: %s (%lu ms) — %s",
+             r.wifi.pass ? "PASS" : "FAIL",
+             (unsigned long)r.wifi.duration_ms, r.wifi.detail);
+    publish(r); }
 
-  r.current_stage = 1;  publish(r);
-  run_stage_dns(r.dns);
-  ESP_LOGI(TAG, "[self-test] dns: %s — %s",
-           r.dns.pass ? "PASS" : "FAIL", r.dns.detail);
-  publish(r);
+  { int64_t t0 = esp_timer_get_time();
+    r.current_stage = 1; publish(r);
+    run_stage_dns(r.dns);
+    r.dns.duration_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000LL);
+    ESP_LOGI(TAG, "[self-test] dns: %s (%lu ms) — %s",
+             r.dns.pass ? "PASS" : "FAIL",
+             (unsigned long)r.dns.duration_ms, r.dns.detail);
+    publish(r); }
 
-  r.current_stage = 2;  publish(r);
-  run_stage_tcp(r.tcp);
-  ESP_LOGI(TAG, "[self-test] tcp: %s — %s",
-           r.tcp.pass ? "PASS" : "FAIL", r.tcp.detail);
-  publish(r);
+  { int64_t t0 = esp_timer_get_time();
+    r.current_stage = 2; publish(r);
+    run_stage_tcp(r.tcp);
+    r.tcp.duration_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000LL);
+    ESP_LOGI(TAG, "[self-test] tcp: %s (%lu ms) — %s",
+             r.tcp.pass ? "PASS" : "FAIL",
+             (unsigned long)r.tcp.duration_ms, r.tcp.detail);
+    publish(r); }
 
-  r.current_stage = 3;  publish(r);
-  run_stage_tls(r.tls);
-  ESP_LOGI(TAG, "[self-test] tls: %s — %s",
-           r.tls.pass ? "PASS" : "FAIL", r.tls.detail);
-  publish(r);
+  { int64_t t0 = esp_timer_get_time();
+    r.current_stage = 3; publish(r);
+    run_stage_tls(r.tls);
+    r.tls.duration_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000LL);
+    ESP_LOGI(TAG, "[self-test] tls: %s (%lu ms) — %s",
+             r.tls.pass ? "PASS" : "FAIL",
+             (unsigned long)r.tls.duration_ms, r.tls.detail);
+    publish(r); }
 
-  r.current_stage = 4;  publish(r);
-  run_stage_ntp(r.ntp);
-  ESP_LOGI(TAG, "[self-test] ntp: %s — %s",
-           r.ntp.pass ? "PASS" : "FAIL", r.ntp.detail);
+  { int64_t t0 = esp_timer_get_time();
+    r.current_stage = 4; publish(r);
+    run_stage_ntp(r.ntp);
+    r.ntp.duration_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000LL);
+    ESP_LOGI(TAG, "[self-test] ntp: %s (%lu ms) — %s",
+             r.ntp.pass ? "PASS" : "FAIL",
+             (unsigned long)r.ntp.duration_ms, r.ntp.detail);
+    publish(r); }
 
   r.running       = false;
   r.current_stage = -1;

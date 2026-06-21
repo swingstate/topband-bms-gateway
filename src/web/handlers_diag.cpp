@@ -403,6 +403,40 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, "}");
     }
 
+    // ── ble_debug — per-advertisement filter funnel ───────────────────────────
+    // Shows the last ≤8 Victron advertisements with per-stage pass/fail flags.
+    // configured_mac: the MPPT MAC as the firmware actually compares it internally
+    //   (network order, matches what you see in VictronConnect / the config page).
+    // Counters: victron_total → mppt_type_match → mppt_mac_match → mppt_decrypt_ok
+    //   identify which filter stage is rejecting packets.
+    {
+      sources::ble_scanner::AdvDebugState dbg{};
+      sources::ble_scanner::get_adv_debug(dbg);
+
+      hs_str(s, ",\"ble_debug\":{");
+      hs_str(s, "\"configured_mac\":"); hs_json_str(s, dbg.configured_mac);
+      hs_str(s, ",\"mppt_mac_valid\":"); hs_bool(s, dbg.mppt_mac_valid);
+      hs_str(s, ",\"victron_total\":"); hs_uint(s, dbg.victron_total);
+      hs_str(s, ",\"mppt_type_match\":"); hs_uint(s, dbg.mppt_type_match);
+      hs_str(s, ",\"mppt_mac_match\":"); hs_uint(s, dbg.mppt_mac_match);
+      hs_str(s, ",\"mppt_decrypt_ok\":"); hs_uint(s, dbg.mppt_decrypt_ok);
+      hs_str(s, ",\"adv_ring\":[");
+      for (uint8_t i = 0; i < dbg.count; i++) {
+        const sources::ble_scanner::AdvDebugEntry& e = dbg.entries[i];
+        if (i > 0) hs_str(s, ",");
+        char type_hex[7];
+        snprintf(type_hex, sizeof(type_hex), "0x%02X", e.record_type);
+        hs_str(s, "{\"mac\":"); hs_json_str(s, e.mac_str);
+        hs_str(s, ",\"rssi\":"); { char t[8]; snprintf(t, sizeof(t), "%d", (int)e.rssi); hs_str(s, t); }
+        hs_str(s, ",\"type\":"); hs_json_str(s, type_hex);
+        hs_str(s, ",\"mac_match\":"); hs_bool(s, e.mac_match);
+        hs_str(s, ",\"type_ok\":"); hs_bool(s, e.record_type_ok);
+        hs_str(s, ",\"decrypt_ok\":"); hs_bool(s, e.decrypt_ok);
+        hs_str(s, "}");
+      }
+      hs_str(s, "]}");
+    }
+
     hs_str(s, "}");
   }
 

@@ -60,4 +60,33 @@ uint32_t victron_adv_count();
 // If > 0 but MPPT values stay at 0, the MAC address in config does not match.
 uint32_t mppt_adv_count();
 
+// ── Per-advertisement debug state ─────────────────────────────────────────────
+// Exposes the filter funnel so a non-recognising MPPT can be diagnosed without
+// serial access.  Returned via get_adv_debug(); consumed by /api/diag ble_debug.
+
+struct AdvDebugEntry {
+  char    mac_str[18];     // canonical "aa:bb:cc:dd:ee:ff" (BLE addr byte-reversed)
+  int8_t  rssi;
+  uint8_t record_type;     // md[2]: 0x01=MPPT, 0x02=SmartShunt, other=unknown
+  bool    mac_match;       // matched configured MPPT MAC after byte reversal
+  bool    record_type_ok;  // record_type == 0x01
+  bool    decrypt_ok;      // AES-CTR succeeded (n/a unless mac_match && record_type_ok)
+  bool    valid;           // slot is populated
+};
+
+struct AdvDebugState {
+  AdvDebugEntry entries[8];
+  uint8_t       count;             // number of valid entries in entries[] (0-8)
+  uint32_t      victron_total;     // Victron company ID ads received
+  uint32_t      mppt_type_match;   // Victron ads with record_type == 0x01
+  uint32_t      mppt_mac_match;    // type 0x01 ads where MAC matched configured target
+  uint32_t      mppt_decrypt_ok;   // type 0x01 + MAC match + AES decrypt ok
+  char          configured_mac[18]; // MPPT MAC as stored internally for comparison
+  bool          mppt_mac_valid;    // configured MAC parsed successfully at startup
+};
+
+// Fill out with a diagnostic snapshot of the last ≤8 Victron advertisements and
+// per-stage filter counters.  Thread-safe for diagnostic purposes (torn reads ok).
+void get_adv_debug(AdvDebugState& out);
+
 }  // namespace sources::ble_scanner

@@ -25,43 +25,53 @@
 
 static const char* TAG = "ble_scanner";
 
-// ── Victron GXVE advertisement format ────────────────────────────────────────
+// ── Victron Instant Readout advertisement format ──────────────────────────────
 //
-// Manufacturer-specific data (GAP type 0xFF) layout:
-//   byte 0-1: company ID = 0x02E1 (Victron Energy, little-endian)
-//   byte 2:   record type (see below)
-//   byte 3:   IV/nonce byte (increments each advertisement)
-//   byte 4+:  AES-128-CTR encrypted payload
+// NimBLE mfg_data[] includes the company ID (unlike bleak/esphome which strip it).
+// Two formats are in the wild; the parser handles both:
 //
-// Record types used by this spike:
-//   0x01 = Smart Solar MPPT / Solar Charger
-//   0x02 = BMV-700 / SmartShunt (battery monitor)
+// NEW format ("Product Advertisement", 2022+ firmware, md[2] == 0x10):
+//   md[0-1]  company ID = 0x02E1 (Victron Energy, LE: E1 02)
+//   md[2]    manufacturer_record_type = 0x10 (PRODUCT_ADVERTISEMENT)
+//   md[3]    record_length
+//   md[4-5]  product_id (uint16 LE)
+//   md[6]    record_type: 0x01=SOLAR_CHARGER, 0x02=BATTERY_MONITOR, …
+//   md[7]    data_counter_lsb   (IV / nonce LSB)
+//   md[8]    data_counter_msb   (IV / nonce MSB)
+//   md[9]    encryption_key_0   (key-check byte; must == advertisement_key[0])
+//   md[10+]  AES-128-CTR encrypted payload
 //
-// Decryption (AES-128-CTR):
-//   Key:     16 bytes from VictronConnect (owner-provided, stored in Config)
-//   Nonce:   [iv_byte, 0,0,0,0,0,0,0] (8 bytes)
-//   Counter: 0x00000001 (big-endian in bytes 8-15)
-//   → nonce_counter[16] = { iv, 0,0,0,0,0,0,0, 0,0,0,0,0,0,0,1 }
+// OLD format (pre-2022 firmware, md[2] == 0x01/0x02):
+//   md[0-1]  company ID = 0x02E1
+//   md[2]    record_type: 0x01=MPPT, 0x02=SmartShunt
+//   md[3]    IV/nonce byte (single byte)
+//   md[4+]   AES-128-CTR encrypted payload
 //
-// Field layouts after decryption:
+// Decryption (AES-128-CTR via mbedTLS):
+//   Key:   16 bytes from VictronConnect (stored in NVS)
+//   Nonce: new format → { data_counter_lsb, data_counter_msb, 0…0 } (16 bytes, LE counter)
+//          old format → { iv_byte, 0…0, 0,0,0,0,0,0,0,1 }
 //
-//   MPPT (type 0x01):
-//     byte 0:   device state (0=off, 2=fault, 3=bulk, 4=absorption, 5=float)
-//     byte 1-2: PV power (W, uint16 LE)
-//     byte 3-4: battery voltage * 100 (uint16 LE) → /100 for V
-//     byte 5-6: battery current * 10 (int16 LE, signed) → /10 for A
-//     byte 7-8: daily yield * 100 Wh (uint16 LE) → /100 for kWh
+// Solar Charger (SOLAR_CHARGER, 0x01) decrypted payload layout:
+//   plain[0]   charge_state  (uint8; 0=off, 3=bulk, 4=absorption, 5=float)
+//   plain[1]   charger_error (uint8)
+//   plain[2-3] battery_voltage   (int16 LE, /100 → V; 0x7FFF = no data)
+//   plain[4-5] battery_charging_current (int16 LE, /10 → A; 0x7FFF = no data)
+//   plain[6-7] yield_today   (uint16 LE, ×10 → Wh)
+//   plain[8-9] solar_power   (uint16 LE, ×1 → W)
 //
-//   SmartShunt (type 0x02):
-//     byte 0-1: battery voltage * 100 (uint16 LE) → /100 for V
-//     byte 2-3: battery current * 1000 (int16 LE) → /1000 for A (mA resolution)
-//     byte 4-5: remaining capacity * 10 (uint16 LE) → /10 for Ah
-//     byte 6-7: SOC * 10 (uint16 LE) → /10 for % (0-1000 → 0-100%)
+// SmartShunt (BATTERY_MONITOR, 0x02) decrypted payload layout (old-format):
+//   plain[0-1] battery_voltage  (uint16 LE, /100 → V)
+//   plain[2-3] battery_current  (int16 LE, /1000 → A)
+//   plain[4-5] remaining_Ah     (uint16 LE, /10 → Ah)
+//   plain[6-7] SoC              (uint16 LE, /10 → %)
+//   NOTE: new-format SmartShunt field layout not yet verified; check
+//         keshavdv/victron-ble battery_monitor.py if decrypted values look wrong.
 //
 // References:
-//   - Victron Open Energy Monitor project (victron-ble Python lib by keshavdv)
-//   - Field layout verified against SmartShunt firmware 3.x advertisement format
-//   - Owner must verify on hardware and report any field mapping discrepancies
+//   keshavdv/victron-ble (Python, authoritative Instant Readout spec)
+//   Fabian-Schmidt/esphome-victron_ble (C++ struct VICTRON_BLE_RECORD_BASE)
+//   Victron "extra-manufacturer-data-2022-12-14.pdf"
 
 #ifdef CONFIG_BT_NIMBLE_ENABLED
 
@@ -73,9 +83,33 @@ static sources::ShuntSource* s_shunt = nullptr;
 static sources::MpptSource*  s_mppt  = nullptr;
 // Diagnostic counters: all advertisements received (any device), Victron company
 // ID advertisements, and MPPT (type 0x01) advertisements (before MAC check).
-static uint32_t s_gap_event_count  = 0;
-static uint32_t s_victron_adv_count = 0;
-static uint32_t s_mppt_adv_count    = 0;
+static uint32_t s_gap_event_count    = 0;
+static uint32_t s_victron_adv_count  = 0;
+static uint32_t s_mppt_adv_count     = 0;
+// Per-stage counters for the MPPT filter funnel:
+//   s_mppt_adv_count     = Victron advs where record_type == 0x01
+//   s_mppt_mac_match     = type 0x01 advs where MAC also matches configured target
+//   s_mppt_decrypt_ok    = type 0x01 + MAC match + AES decrypt succeeded
+static uint32_t s_mppt_mac_match     = 0;
+static uint32_t s_mppt_decrypt_ok    = 0;
+
+// ── Per-advertisement debug ring buffer ───────────────────────────────────────
+// Written from the NimBLE host task (Core 1) for every advertisement that passes
+// the Victron company ID check, before any further filter is applied.
+// Read from the httpd task (Core 0) without a mutex — torn reads are acceptable
+// for diagnostic data; the head index is volatile to prevent reordering.
+struct AdvRingEntry {
+  uint8_t  ble_addr[6];    // raw bytes from disc.addr.val (BLE LSB-first order)
+  int8_t   rssi;
+  uint8_t  record_type;    // md[2]: 0x01=MPPT, 0x02=SmartShunt, other=unknown
+  bool     mac_match;      // matched configured MPPT target after byte reversal
+  bool     record_type_ok; // record_type == 0x01
+  bool     decrypt_ok;     // AES-CTR decrypt succeeded (n/a if !mac_match || !record_type_ok)
+  bool     valid;          // slot is populated
+};
+static constexpr int ADV_RING_SIZE = 8;
+static AdvRingEntry s_adv_ring[ADV_RING_SIZE] = {};
+static volatile uint8_t s_adv_ring_head = 0;  // next write slot (wraps mod ADV_RING_SIZE)
 
 // Key bytes decoded from Config hex strings at startup.
 static uint8_t s_shunt_key[16] = {};
@@ -120,8 +154,10 @@ static bool parse_hex_key(const char* hex, uint8_t* out) {
 // or bare 12-hex-char input and is the single source of truth for this logic.
 
 // AES-128-CTR decrypt using mbedTLS.
-// nonce_counter = { iv_byte, 0,0,0,0,0,0,0, 0,0,0,0,0,0,0,1 }
-static bool aes_ctr_decrypt(const uint8_t* key, uint8_t iv_byte,
+// nonce_counter_init: caller-built 16-byte initial counter block.
+//   New format: { data_counter_lsb, data_counter_msb, 0…0 }  (LE 16-bit counter)
+//   Old format: { iv_byte, 0…0, 0,0,0,0,0,0,0,1 }
+static bool aes_ctr_decrypt(const uint8_t* key, const uint8_t nonce_counter_init[16],
                              const uint8_t* in, uint8_t* out, size_t len) {
   mbedtls_aes_context ctx;
   mbedtls_aes_init(&ctx);
@@ -131,9 +167,9 @@ static bool aes_ctr_decrypt(const uint8_t* key, uint8_t iv_byte,
     return false;
   }
 
-  uint8_t nonce_counter[16] = {};
-  nonce_counter[0]  = iv_byte;  // nonce = [iv_byte, 0..0] (8 bytes)
-  nonce_counter[15] = 1;        // counter = 1 (big-endian)
+  // mbedTLS mutates nonce_counter during CTR streaming; copy to keep caller's buffer clean.
+  uint8_t nonce_counter[16];
+  memcpy(nonce_counter, nonce_counter_init, 16);
 
   uint8_t stream_block[16] = {};
   size_t  nc_off = 0;
@@ -144,73 +180,143 @@ static bool aes_ctr_decrypt(const uint8_t* key, uint8_t iv_byte,
   return (rc == 0);
 }
 
-// ── Decode MPPT (record type 0x01) ───────────────────────────────────────────
-static void decode_mppt(const uint8_t* data, size_t len, uint32_t now_ms) {
-  if (!s_mppt || !s_mppt_key_valid || len < 4) return;
+// ── Decode MPPT / Solar Charger (record_type 0x01) ───────────────────────────
+// new_fmt=true  → Product Advertisement layout (md[7-8]=IV, md[9]=key_check, md[10+]=enc)
+// new_fmt=false → Old single-byte-IV layout (md[3]=IV, md[4+]=enc)
+// Returns true when AES decrypt succeeded and values were pushed to MpptSource.
+static bool decode_mppt(const uint8_t* md, size_t len, bool new_fmt, uint32_t now_ms) {
+  if (!s_mppt || !s_mppt_key_valid) return false;
 
-  uint8_t iv     = data[3];
-  const uint8_t* enc = data + 4;
-  size_t enc_len = len - 4;
-  if (enc_len < 7) return;
+  const uint8_t* enc;
+  size_t enc_len;
+  uint8_t nonce[16] = {};
+
+  if (new_fmt) {
+    // Minimum: company(2)+type(1)+len(1)+product_id(2)+rec_type(1)+iv(2)+key_check(1)+payload(1) = 11
+    if (len < 11) return false;
+    // Key-check byte: plaintext byte that must equal advertisement_key[0].
+    // Mismatch means the wrong instant-readout key is configured.
+    if (md[9] != s_mppt_key[0]) {
+      ESP_LOGW(TAG, "MPPT key_check mismatch: pkt=0x%02X key[0]=0x%02X — wrong instant-readout key?",
+               md[9], s_mppt_key[0]);
+      return false;
+    }
+    // Nonce: 16-bit little-endian counter { lsb, msb, 0…0 }
+    nonce[0] = md[7];  // data_counter_lsb
+    nonce[1] = md[8];  // data_counter_msb
+    enc     = md + 10;
+    enc_len = len - 10;
+    // Need plain[0..9] for solar_power at bytes 8-9.
+    if (enc_len < 10) return false;
+  } else {
+    if (len < 5) return false;
+    nonce[0]  = md[3];  // single IV byte
+    nonce[15] = 1;       // old-format big-endian counter starting at 1
+    enc     = md + 4;
+    enc_len = len - 4;
+    if (enc_len < 7) return false;
+  }
 
   uint8_t plain[32] = {};
-  if (!aes_ctr_decrypt(s_mppt_key, iv, enc, plain, enc_len)) return;
+  size_t  dec_len = enc_len < sizeof(plain) ? enc_len : sizeof(plain);
+  if (!aes_ctr_decrypt(s_mppt_key, nonce, enc, plain, dec_len)) return false;
 
-  // uint8_t  state      = plain[0];
-  uint16_t pv_power_raw = (uint16_t)(plain[1] | (plain[2] << 8));
-  uint16_t batt_v_raw   = (uint16_t)(plain[3] | (plain[4] << 8));
-  int16_t  batt_i_raw   = (int16_t)(plain[5] | (plain[6] << 8));
+  float pv_power_w, batt_volt_v, batt_curr_a;
 
-  float pv_power_w   = (float)pv_power_raw;           // W, integer
-  float batt_volt_v  = (float)batt_v_raw  / 100.0f;   // V
-  float batt_curr_a  = (float)batt_i_raw  / 10.0f;    // A
+  if (new_fmt) {
+    // Solar Charger (Product Advertisement) decrypted layout — verified against
+    // keshavdv/victron-ble solar_charger.py and esphome-victron_ble:
+    //   plain[0]   charge_state  (uint8)
+    //   plain[1]   charger_error (uint8)
+    //   plain[2-3] battery_voltage (int16 LE, /100 → V)
+    //   plain[4-5] battery_charging_current (int16 LE, /10 → A)
+    //   plain[6-7] yield_today (uint16 LE, ×10 → Wh)
+    //   plain[8-9] solar_power (uint16 LE, ×1 → W)
+    int16_t  batt_v_raw  = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
+    int16_t  batt_i_raw  = (int16_t) ((uint16_t)plain[4] | ((uint16_t)plain[5] << 8));
+    uint16_t solar_p_raw = (uint16_t)((uint16_t)plain[8] | ((uint16_t)plain[9] << 8));
 
-  // PV current = PV power / PV voltage; PV voltage is not directly in this record.
-  // For Phase A, PV voltage and PV current are derived from power + batt voltage
-  // as approximations (exact PV panel voltage is in a different register).
-  // Owner should verify the decoded PV power matches VictronConnect readout.
-  float pv_current_a  = 0.0f;
-  float pv_voltage_v  = 0.0f;
-  if (batt_volt_v > 1.0f && pv_power_w > 0.0f) {
-    // Approximation: PV panel voltage is typically batt_v * 1.2..3.0 for MPPT
-    // The exact panel voltage is not in this advertisement record type.
-    // Phase B can add the full MPPT data record (record 0x0B) if needed.
-    pv_current_a = batt_curr_a;  // MPPT output current ≈ battery charge current
-    pv_voltage_v = (batt_curr_a > 0.1f) ? (pv_power_w / batt_curr_a) : 0.0f;
+    batt_volt_v = (float)batt_v_raw  / 100.0f;  // V
+    batt_curr_a = (float)batt_i_raw  / 10.0f;   // A
+    pv_power_w  = (float)solar_p_raw;            // W
+  } else {
+    // Old format:
+    //   plain[0]   device_state
+    //   plain[1-2] PV power (uint16 LE, ×1 W)
+    //   plain[3-4] battery_voltage (uint16 LE, /100 V)
+    //   plain[5-6] battery_current (int16 LE, /10 A)
+    uint16_t pv_p_raw   = (uint16_t)((uint16_t)plain[1] | ((uint16_t)plain[2] << 8));
+    uint16_t batt_v_raw = (uint16_t)((uint16_t)plain[3] | ((uint16_t)plain[4] << 8));
+    int16_t  batt_i_raw = (int16_t) ((uint16_t)plain[5] | ((uint16_t)plain[6] << 8));
+
+    pv_power_w  = (float)pv_p_raw;
+    batt_volt_v = (float)batt_v_raw / 100.0f;
+    batt_curr_a = (float)batt_i_raw / 10.0f;
+  }
+
+  // PV panel voltage is not directly in the Solar Charger advertisement record.
+  // Derive it from power / current as an approximation (exact value requires
+  // the extended MPPT record 0x0B which is not broadcast in Instant Readout).
+  float pv_current_a = 0.0f;
+  float pv_voltage_v = 0.0f;
+  if (pv_power_w > 0.0f && batt_curr_a > 0.1f) {
+    pv_current_a = batt_curr_a;
+    pv_voltage_v = pv_power_w / batt_curr_a;
   }
 
   s_mppt->set_decoded_values(pv_power_w, pv_voltage_v, pv_current_a,
                               batt_volt_v, batt_curr_a, now_ms);
 
-  ESP_LOGD(TAG, "MPPT: pv_power=%.0f W  batt=%.2f V  %.2f A",
-           pv_power_w, batt_volt_v, batt_curr_a);
+  ESP_LOGD(TAG, "MPPT(%s): pv=%.0f W  batt=%.2f V  %.2f A",
+           new_fmt ? "new" : "old", pv_power_w, batt_volt_v, batt_curr_a);
+  return true;
 }
 
-// ── Decode SmartShunt (record type 0x02) ─────────────────────────────────────
-static void decode_shunt(const uint8_t* data, size_t len, uint32_t now_ms) {
-  if (!s_shunt || !s_shunt_key_valid || len < 4) return;
+// ── Decode SmartShunt / Battery Monitor (record_type 0x02) ───────────────────
+// new_fmt flag selects correct IV/payload offsets (same as decode_mppt).
+// Field layout below matches the old-format spec; new-format field layout for
+// BATTERY_MONITOR has not been hardware-verified — check keshavdv/victron-ble
+// battery_monitor.py if values look wrong with a new-firmware SmartShunt.
+static void decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t now_ms) {
+  if (!s_shunt || !s_shunt_key_valid) return;
 
-  uint8_t iv      = data[3];
-  const uint8_t* enc = data + 4;
-  size_t enc_len  = len - 4;
-  if (enc_len < 8) return;
+  const uint8_t* enc;
+  size_t enc_len;
+  uint8_t nonce[16] = {};
+
+  if (new_fmt) {
+    if (len < 11) return;
+    nonce[0] = md[7];
+    nonce[1] = md[8];
+    enc     = md + 10;
+    enc_len = len - 10;
+    if (enc_len < 8) return;
+  } else {
+    if (len < 4) return;
+    nonce[0]  = md[3];
+    nonce[15] = 1;
+    enc     = md + 4;
+    enc_len = len - 4;
+    if (enc_len < 8) return;
+  }
 
   uint8_t plain[32] = {};
-  if (!aes_ctr_decrypt(s_shunt_key, iv, enc, plain, enc_len)) return;
+  size_t  dec_len = enc_len < sizeof(plain) ? enc_len : sizeof(plain);
+  if (!aes_ctr_decrypt(s_shunt_key, nonce, enc, plain, dec_len)) return;
 
-  uint16_t batt_v_raw  = (uint16_t)(plain[0] | (plain[1] << 8));
-  int16_t  curr_raw    = (int16_t) (plain[2] | (plain[3] << 8));
-  // uint16_t remain_raw = (uint16_t)(plain[4] | (plain[5] << 8));  // Ah*10
-  uint16_t soc_raw     = (uint16_t)(plain[6] | (plain[7] << 8));
+  uint16_t batt_v_raw  = (uint16_t)((uint16_t)plain[0] | ((uint16_t)plain[1] << 8));
+  int16_t  curr_raw    = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
+  // plain[4-5]: remaining_Ah * 10 (not used)
+  uint16_t soc_raw     = (uint16_t)((uint16_t)plain[6] | ((uint16_t)plain[7] << 8));
 
   float voltage_v = (float)batt_v_raw / 100.0f;   // V
   float current_a = (float)curr_raw   / 1000.0f;  // A (mA resolution)
-  float soc_pct   = (float)soc_raw    / 10.0f;    // % (0-100)
+  float soc_pct   = (float)soc_raw    / 10.0f;    // %
 
   s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, now_ms);
 
-  // Key is never logged. Values are logged at DEBUG only.
-  ESP_LOGD(TAG, "Shunt: %.3f A  %.2f V  %.1f%%", current_a, voltage_v, soc_pct);
+  ESP_LOGD(TAG, "Shunt(%s): %.3f A  %.2f V  %.1f%%",
+           new_fmt ? "new" : "old", current_a, voltage_v, soc_pct);
 }
 
 // ── MAC address comparison ────────────────────────────────────────────────────
@@ -243,18 +349,55 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
   if (md[0] != 0xE1 || md[1] != 0x02) return 0;
 
   s_victron_adv_count++;
-  uint8_t record_type = md[2];
+
+  // Detect advertisement format from md[2]:
+  //   0x10 = PRODUCT_ADVERTISEMENT (new format, 2022+ firmware)
+  //          → actual record_type is at md[6], IV at md[7-8], key-check at md[9]
+  //   0x01/0x02/… = old format, md[2] IS the record_type directly
+  static constexpr uint8_t PRODUCT_ADVERTISEMENT = 0x10;
+  bool    new_fmt     = (md[2] == PRODUCT_ADVERTISEMENT);
+  uint8_t record_type;
+
+  if (new_fmt) {
+    if (fields.mfg_data_len < 7) return 0;  // need md[6] for record_type
+    record_type = md[6];
+  } else {
+    record_type = md[2];
+  }
+
+  // ── Populate per-advertisement debug ring buffer ──────────────────────────
+  // record_type here is the semantic device type (0x01=SOLAR_CHARGER, etc.)
+  // regardless of advertisement format, so the diagnostic UI sees a consistent value.
+  {
+    uint8_t slot = s_adv_ring_head % ADV_RING_SIZE;
+    AdvRingEntry& e = s_adv_ring[slot];
+    memcpy(e.ble_addr, disc.addr.val, 6);
+    e.rssi           = disc.rssi;
+    e.record_type    = record_type;
+    e.mac_match      = false;
+    e.record_type_ok = (record_type == 0x01);
+    e.decrypt_ok     = false;
+    e.valid          = true;
+    s_adv_ring_head  = (uint8_t)((slot + 1) % ADV_RING_SIZE);
+  }
+  uint8_t written_slot = (uint8_t)((s_adv_ring_head + ADV_RING_SIZE - 1) % ADV_RING_SIZE);
+  AdvRingEntry& cur = s_adv_ring[written_slot];
 
   if (record_type == 0x01) {
     s_mppt_adv_count++;
     if (s_mppt_enabled && s_mppt_mac_valid) {
-      if (mac_matches(disc.addr.val, s_mppt_mac)) {
-        decode_mppt(md, fields.mfg_data_len, now_ms);
+      bool matched = mac_matches(disc.addr.val, s_mppt_mac);
+      cur.mac_match = matched;
+      if (matched) {
+        s_mppt_mac_match++;
+        bool ok = decode_mppt(md, fields.mfg_data_len, new_fmt, now_ms);
+        cur.decrypt_ok = ok;
+        if (ok) s_mppt_decrypt_ok++;
       } else {
-        // Log once every 10 occurrences — MPPT type seen but wrong MAC.
         if (s_mppt_adv_count % 10 == 1) {
-          ESP_LOGI(TAG, "MPPT adv (type 0x01) MAC %02X:%02X:%02X:%02X:%02X:%02X "
+          ESP_LOGI(TAG, "MPPT adv (rec=0x01 fmt=%s) MAC %02X:%02X:%02X:%02X:%02X:%02X "
                         "does not match configured target (victron_adv=%lu mppt_adv=%lu)",
+                   new_fmt ? "new" : "old",
                    disc.addr.val[5], disc.addr.val[4], disc.addr.val[3],
                    disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
                    (unsigned long)s_victron_adv_count,
@@ -267,19 +410,18 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
   } else if (record_type == 0x02) {
     if (s_shunt_enabled && s_shunt_mac_valid) {
       if (mac_matches(disc.addr.val, s_shunt_mac)) {
-        decode_shunt(md, fields.mfg_data_len, now_ms);
+        decode_shunt(md, fields.mfg_data_len, new_fmt, now_ms);
       }
     }
   } else {
-    // Unknown Victron record type — log on first occurrence per record type.
-    // Victron uses type 0x01=MPPT, 0x02=SmartShunt, 0x03=Lynx, 0x06=Inverter, etc.
-    // If your device shows up here instead of 0x01, update the record_type check.
+    // Unknown device record type within a Victron advertisement.
+    // Known types: 0x01=SOLAR_CHARGER, 0x02=BATTERY_MONITOR, 0x03=Lynx,
+    //              0x04=Multi/Quattro, 0x06=Inverter, 0x0B=SmartSolar-extended
     static uint8_t s_last_unknown_type = 0xFF;
     if (record_type != s_last_unknown_type) {
       s_last_unknown_type = record_type;
-      ESP_LOGI(TAG, "Unknown Victron record type 0x%02X from %02X:%02X:%02X:%02X:%02X:%02X "
-                    "— known types: 0x01=MPPT 0x02=SmartShunt 0x03=Lynx 0x06=Inverter",
-               record_type,
+      ESP_LOGI(TAG, "Unknown Victron record_type 0x%02X (fmt=%s) from %02X:%02X:%02X:%02X:%02X:%02X",
+               record_type, new_fmt ? "new" : "old",
                disc.addr.val[5], disc.addr.val[4], disc.addr.val[3],
                disc.addr.val[2], disc.addr.val[1], disc.addr.val[0]);
     }
@@ -496,6 +638,50 @@ uint32_t mppt_adv_count() {
   return s_mppt_adv_count;
 #else
   return 0;
+#endif
+}
+
+void get_adv_debug(AdvDebugState& out) {
+  memset(&out, 0, sizeof(out));
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+  out.victron_total    = s_victron_adv_count;
+  out.mppt_type_match  = s_mppt_adv_count;
+  out.mppt_mac_match   = s_mppt_mac_match;
+  out.mppt_decrypt_ok  = s_mppt_decrypt_ok;
+  out.mppt_mac_valid   = s_mppt_mac_valid;
+
+  // Render the configured MPPT MAC exactly as the internal comparison bytes
+  // (network order, MSB first — same representation as the config string).
+  if (s_mppt_mac_valid) {
+    snprintf(out.configured_mac, sizeof(out.configured_mac),
+             "%02x:%02x:%02x:%02x:%02x:%02x",
+             s_mppt_mac[0], s_mppt_mac[1], s_mppt_mac[2],
+             s_mppt_mac[3], s_mppt_mac[4], s_mppt_mac[5]);
+  }
+
+  // Snapshot the ring into out.entries[].  The head may advance during the
+  // copy (single-writer, we are the reader), but each individual entry write
+  // is at most a few bytes — torn reads give stale but not corrupted data.
+  // Walk the ring oldest-first so entries[0] is the oldest.
+  uint8_t head = s_adv_ring_head;
+  out.count = 0;
+  for (int i = 0; i < ADV_RING_SIZE; i++) {
+    uint8_t slot = (uint8_t)((head + i) % ADV_RING_SIZE);
+    const AdvRingEntry& src = s_adv_ring[slot];
+    if (!src.valid) continue;
+    AdvDebugEntry& dst = out.entries[out.count++];
+    // Convert BLE LSB-first address to canonical "AA:BB:CC:DD:EE:FF" string.
+    snprintf(dst.mac_str, sizeof(dst.mac_str),
+             "%02x:%02x:%02x:%02x:%02x:%02x",
+             src.ble_addr[5], src.ble_addr[4], src.ble_addr[3],
+             src.ble_addr[2], src.ble_addr[1], src.ble_addr[0]);
+    dst.rssi           = src.rssi;
+    dst.record_type    = src.record_type;
+    dst.mac_match      = src.mac_match;
+    dst.record_type_ok = src.record_type_ok;
+    dst.decrypt_ok     = src.decrypt_ok;
+    dst.valid          = true;
+  }
 #endif
 }
 
