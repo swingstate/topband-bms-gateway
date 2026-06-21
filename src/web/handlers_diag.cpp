@@ -454,6 +454,12 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, "{\"name\":");
       hs_json_str(s, task_buf[i].pcTaskName);
       hs_str(s, ",\"stack_hwm\":");
+      // usStackHighWaterMark is in words (StackType_t = 4 B on Xtensa); convert to bytes.
+      // This is a since-boot low-water mark — sample AFTER full load for meaningful numbers.
+      // NOTE: configured stack size (stack_cfg) is NOT available from the FreeRTOS SMP
+      // TaskStatus_t (pxEndOfStack absent when configRECORD_STACK_HIGH_ADDRESS defaults to 0
+      // in FreeRTOS-Kernel-SMP/FreeRTOS.h). Reclaimable = cfg_from_source - (cfg - hwm).
+      // See sdkconfig.defaults and task creation sites for per-task configured sizes.
       hs_uint(s, (uint32_t)task_buf[i].usStackHighWaterMark * sizeof(StackType_t));
       // xCoreID requires configTASKLIST_INCLUDE_COREID=1 (FREERTOS_VTASKLIST_INCLUDE_COREID).
       // Guard so the handler compiles even if that option is off; UI shows "any" for -1.

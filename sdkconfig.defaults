@@ -9,8 +9,10 @@
 # PSRAM automatically via CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL. This prevents
 # internal-heap fragmentation OOM in the static file handlers (malloc up to
 # 32 KB for HTML template buffers). Allocations <= 16 KB stay in fast internal
-# SRAM. lwIP/WiFi stacks are unaffected: they use heap_caps_malloc(MALLOC_CAP_DMA
-# | MALLOC_CAP_INTERNAL) explicitly and never touch this path. NimBLE uses
+# SRAM. WiFi DMA-critical paths (static RX buffers, queues) use
+# heap_caps_malloc(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL) explicitly and bypass this
+# threshold. WiFi control structures and lwIP heap go to PSRAM via
+# SPIRAM_TRY_ALLOCATE_WIFI_LWIP (separate mechanism below). NimBLE uses
 # MALLOC_CAP_INTERNAL explicitly (BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL) so it is
 # also immune to this threshold.
 #
@@ -38,6 +40,27 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 # decorated with EXT_RAM_BSS_ATTR are placed in PSRAM instead of DRAM BSS.
 # Required for the ~114 KB history ring buffers moved in iter/ram-optimization.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+#
+# WiFi/lwIP allocations prefer PSRAM with internal-SRAM fallback.
+# Affected paths: wifi_malloc/wifi_calloc (WiFi control structures, management
+# frames) and lwIP mem_clib_malloc/calloc (all pbufs, TCP PCBs, socket queues).
+# WiFi static RX DMA buffers use MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA explicitly
+# in the IDF WiFi driver and are never moved to PSRAM regardless of this flag.
+# NimBLE uses MALLOC_CAP_INTERNAL (BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL). CAN and
+# timer ISR paths use IRAM/DRAM-backed structures and never touch lwIP pbufs.
+# No ISR-context allocation is affected.
+#
+# Expected gain: ~15-30 KB of fragmented DRAM freed, increasing
+# dram_largest_block so the mbedTLS IN-buffer (16 KB contiguous, must stay
+# internal) has headroom even under full MQTT+BLE load.
+#
+# IDF Kconfig side-effect: when SPIRAM_TRY_ALLOCATE_WIFI_LWIP is set, the
+# Kconfig default for CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM changes 10 → 16.
+# Those static buffers are MALLOC_CAP_INTERNAL (WiFi DMA), so 6 extra × 1600 B
+# = ~9.6 KB would be added to internal DRAM — the opposite of what we want.
+# Pin it explicitly at 10 to suppress that auto-increase.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 
 # ── Main task stack ───────────────────────────────────────────────────────────
 # Default 3584 B is too small when esp-littlefs rename-over-existing triggers
@@ -53,6 +76,15 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
 CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+
+# ── System event task (sys_evt) stack ────────────────────────────────────────
+# IDF default is 2304 B. Prior device reading showed ~100 B HWM headroom —
+# a confirmed panic risk: a WiFi reconnect with extra IP event processing, an
+# MQTT reconnect handler, or a new event source can push it over and corrupt
+# adjacent memory. Increase to 3072 B (+768 B internal SRAM) to give a safe
+# margin. Do NOT reduce this back to the IDF default without first measuring
+# the new HWM under full reconnect load (BLE scan + MQTT + WiFi reconnect).
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072
 
 # ── Task watchdog ─────────────────────────────────────────────────────────────
 # 60 s timeout. A WDT trip means a task is blocked — that is a bug, not a
@@ -86,6 +118,12 @@ CONFIG_LITTLEFS_OBJ_NAME_LEN=64
 CONFIG_LITTLEFS_PAGE_SIZE=256
 CONFIG_LITTLEFS_READ_SIZE=128
 CONFIG_LITTLEFS_WRITE_SIZE=128
+
+# ── NVS ──────────────────────────────────────────────────────────────────────
+# NVS page cache (one 4 KB page per NVS partition) moves to PSRAM instead of
+# internal SRAM. NVS is never accessed from ISR context; CPU-only reads of
+# config keys at task level. Small but free gain (~4 KB).
+CONFIG_NVS_ALLOCATE_CACHE_IN_SPIRAM=y
 
 # ── Flash size ────────────────────────────────────────────────────────────────
 # Must match the physical flash on the Waveshare ESP32-S3 (16 MB).
