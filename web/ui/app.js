@@ -473,22 +473,43 @@ function updateDashboardCards() {
       color: 'var(--text-primary)',
       alarm: alarmVolt(volt),
     },
-    {
-      label: 'Cell Min',
-      value: cellMin !== null ? fmt(cellMin, 3) : '—',
-      unit: 'V',
-      sub: '',
-      color: cellVColor(cellMin),
-      alarm: alarmCellMin(cellMin),
-    },
-    {
-      label: 'Cell Max',
-      value: cellMax !== null ? fmt(cellMax, 3) : '—',
-      unit: 'V',
-      sub: '',
-      color: cellVColor(cellMax),
-      alarm: alarmCellMax(cellMax),
-    },
+    // Cell Min / Max — hidden when MPPT is enabled (replaced by Solar Power + Yield Today).
+    // Drift is always present.
+    ...(!mpptSrc.enabled ? [
+      {
+        label: 'Cell Min',
+        value: cellMin !== null ? fmt(cellMin, 3) : '—',
+        unit: 'V',
+        sub: '',
+        color: cellVColor(cellMin),
+        alarm: alarmCellMin(cellMin),
+      },
+      {
+        label: 'Cell Max',
+        value: cellMax !== null ? fmt(cellMax, 3) : '—',
+        unit: 'V',
+        sub: '',
+        color: cellVColor(cellMax),
+        alarm: alarmCellMax(cellMax),
+      },
+    ] : [
+      {
+        label: 'Solar Power' + '<span class="source-badge badge-mppt">MPPT</span>',
+        value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
+        unit: 'W',
+        sub: csLabel,
+        color: 'var(--brand-teal)',
+        alarm: false,
+      },
+      {
+        label: 'Yield Today' + '<span class="source-badge badge-mppt">MPPT</span>',
+        value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
+        unit: 'kWh',
+        sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
+        color: 'var(--brand-teal)',
+        alarm: false,
+      },
+    ]),
     {
       label: 'Cell Drift',
       value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—',
@@ -522,26 +543,6 @@ function updateDashboardCards() {
       alarm: false,
     },
   ];
-
-  // Append MPPT tiles when MPPT is enabled.
-  if (mpptSrc.enabled) {
-    cards.push({
-      label: 'Solar Power' + '<span class="source-badge badge-mppt">MPPT</span>',
-      value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
-      unit: 'W',
-      sub: csLabel,
-      color: 'var(--brand-teal)',
-      alarm: false,
-    });
-    cards.push({
-      label: 'Yield Today' + '<span class="source-badge badge-mppt">MPPT</span>',
-      value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
-      unit: 'kWh',
-      sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
-      color: 'var(--brand-teal)',
-      alarm: false,
-    });
-  }
 
   grid.innerHTML = '';
   cards.forEach(c => {
