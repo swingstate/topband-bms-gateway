@@ -449,14 +449,14 @@ function updateDashboardCards() {
   const csLabel = mpptEnabled ? (chargeStateLabels[mpptSrc.charge_state] || `State ${mpptSrc.charge_state}`) : '—';
 
   // Layout: 5 columns, 2 rows.
-  // Row 1: [Solar/CellMin] [SOC] [Battery Power] [Cell Drift] [Temperature]
-  // Row 2: [Yield/CellMax] [Pack Voltage] [Current] [Energy Today] [Runtime]
+  // Row 1: [Solar/CellMin] [Battery Power (Total)] [SOC] [Cell Drift] [Temperature]
+  // Row 2: [Yield/CellMax] [Current (total)]       [Pack Voltage] [Energy Today] [Runtime]
   const col1top = mpptSrc.enabled ? {
     label: 'Solar Power',
     value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
     unit: 'W',
     sub: csLabel,
-    color: 'var(--brand-teal)',
+    color: 'var(--text-primary)',
     alarm: false,
     src: 'mppt',
   } : {
@@ -474,7 +474,7 @@ function updateDashboardCards() {
     value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
     unit: 'kWh',
     sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
-    color: 'var(--brand-teal)',
+    color: 'var(--text-primary)',
     alarm: false,
     src: 'mppt',
   } : {
@@ -490,16 +490,16 @@ function updateDashboardCards() {
   const cards = [
     // Row 1
     col1top,
-    { label: 'State of Charge', value: soc !== null ? fmt(soc, 0) : '—', unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: 'bms' },
-    { label: 'Battery Power',   value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
-    { label: 'Cell Drift',      value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
-    { label: 'Temperature',     value: temp !== null ? fmt(temp, 1) : '—', unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
+    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
+    { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: 'bms' },
+    { label: 'Cell Drift',            value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
+    { label: 'Temperature',           value: temp !== null ? fmt(temp, 1) : '—',   unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
     // Row 2
     col1bot,
-    { label: 'Pack Voltage',    value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt),  src: 'bms' },
-    { label: 'Current (total)', value: cur !== null ? fmtA(cur) : '—',    unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,            src: curSrcId },
-    { label: 'Energy Today',    value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
-    { label: 'Runtime Est.',    value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    { label: 'Current (total)',  value: cur !== null ? fmtA(cur) : '—',   unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,           src: curSrcId },
+    { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: 'bms' },
+    { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
   ];
 
   grid.innerHTML = '';
@@ -879,89 +879,97 @@ async function loadCharts() {
 }
 
 /* ── Battery overview page ──────────────────────────────────────────────────── */
+
+function batteryMBox(label, id) {
+  return `
+    <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
+      <div id="${id}" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
+    </div>`;
+}
+
+function batteryVDiv() {
+  return `<div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>`;
+}
+
 function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
-
-  const sources   = (g_live && g_live.sources) || {};
-  const shuntSrc  = sources.shunt || {};
-  const curSrcId  = sources.battery_current_src || 'bms';
-  const shuntMode = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
+  const shuntMode    = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
   const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
 
-  const fv = (v, dec, unit) => (v !== undefined && v !== null) ? `${Number(v).toFixed(dec)} ${unit}` : '—';
-
-  const shuntSection = shuntEnabled ? `
-    <p class="section-header">SmartShunt</p>
-    <div class="card" style="max-width:560px">
-      <div style="display:flex;gap:32px;flex-wrap:wrap;margin-bottom:16px">
-        <div>
-          <div class="pack-metric-label">Current</div>
-          <div class="pack-metric-value">${fv(shuntSrc.current_a, 2, 'A')}</div>
-        </div>
-        <div>
-          <div class="pack-metric-label">Voltage</div>
-          <div class="pack-metric-value">${fv(shuntSrc.voltage_v, 2, 'V')}</div>
-        </div>
-        <div>
-          <div class="pack-metric-label">SOC</div>
-          <div class="pack-metric-value">${fv(shuntSrc.soc_pct, 1, '%')}</div>
-        </div>
-        <div>
-          <div class="pack-metric-label">Status</div>
-          <div class="pack-metric-value">${shuntSrc.seen ? '<span style="color:var(--color-success)">Seen</span>' : '<span style="color:var(--text-muted)">Not seen</span>'}</div>
-        </div>
-        ${shuntSrc.seen ? `<div><div class="pack-metric-label">Last seen</div><div class="pack-metric-value">${Math.round((shuntSrc.ms_since_last_seen||0)/1000)} s ago</div></div>` : ''}
+  const shuntCard = shuntEnabled ? `
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
+    <div class="card" style="padding-top:14px">
+      <div style="padding:0 18px 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="pack-status-dot offline" id="shunt-strip-dot" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px" id="shunt-strip-text">—</span>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="shunt-strip-age"></span>
       </div>
-      <div style="border-top:1px solid var(--border);padding-top:14px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:10px">Current source mode</div>
-        <div style="display:flex;flex-direction:column;gap:8px" id="shunt-mode-options">
+      <div style="border-top:1px solid var(--border)"></div>
+      <div style="display:flex;align-items:center">
+        ${batteryMBox('Current', 'sagg-curr')}
+        ${batteryVDiv()}
+        ${batteryMBox('Voltage', 'sagg-volt')}
+        ${batteryVDiv()}
+        ${batteryMBox('SOC', 'sagg-soc')}
+      </div>
+      <div style="border-top:1px solid var(--border);padding:16px 18px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Current Source Mode</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
           <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
             <input type="radio" name="shunt_mode" value="0" ${shuntMode===0?'checked':''} style="margin-top:2px;width:auto">
-            <span>
-              <strong>Auto</strong> &mdash;
-              <span style="color:var(--text-muted)">BMS leads; shunt fills in below 0.5&thinsp;A dead-zone when enabled</span>
-            </span>
+            <span><strong>Auto</strong> <span style="color:var(--text-muted)">— BMS leads; shunt fills in below 0.5&thinsp;A dead-zone</span></span>
           </label>
           <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
             <input type="radio" name="shunt_mode" value="1" ${shuntMode===1?'checked':''} style="margin-top:2px;width:auto">
-            <span>
-              <strong>Shunt leads</strong> &mdash;
-              <span style="color:var(--text-muted)">SmartShunt always used when available, BMS fallback</span>
-            </span>
+            <span><strong>Shunt leads</strong> <span style="color:var(--text-muted)">— SmartShunt always used when available, BMS fallback</span></span>
           </label>
           <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
             <input type="radio" name="shunt_mode" value="2" ${shuntMode===2?'checked':''} style="margin-top:2px;width:auto">
-            <span>
-              <strong>BMS leads</strong> &mdash;
-              <span style="color:var(--text-muted)">BMS always used; shunt ignored</span>
-            </span>
+            <span><strong>BMS leads</strong> <span style="color:var(--text-muted)">— BMS always used; shunt ignored</span></span>
           </label>
         </div>
-        <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+        <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
           <button class="btn btn-primary" onclick="saveShuntMode()">Save</button>
           <span id="shunt-mode-feedback" style="font-size:12px"></span>
+          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src" style="position:static;display:inline-block">—</span></span>
         </div>
-        <p style="font-size:12px;color:var(--text-muted);margin-top:10px">
-          Active source: <span class="card-src card-src-${curSrcId}" style="position:static;display:inline-block">${curSrcId.toUpperCase()}</span>
-        </p>
       </div>
-    </div>
-  ` : (g_config && !shuntEnabled ? `
-    <p class="section-header">SmartShunt</p>
-    <div class="card" style="max-width:560px">
-      <p style="color:var(--text-muted)">SmartShunt BLE source is not enabled. Enable it in General &rarr; BLE.</p>
-    </div>
-  ` : '');
+    </div>` : (g_config ? `
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
+    <div class="card">
+      <p style="color:var(--text-muted);font-size:13px;margin:0">SmartShunt BLE source is not enabled.
+        Configure it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</p>
+    </div>` : '');
 
   root.innerHTML = `
-    <div style="padding:24px">
-      <h2 style="margin:0 0 6px;font-size:20px">Battery Packs</h2>
-      <p id="battery-summary" style="font-size:13px;color:var(--text-muted);margin:0 0 20px"></p>
+    <div style="max-width:860px">
+      <!-- Status strip -->
+      <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="pack-status-dot offline" id="batt-strip-dot" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px" id="batt-strip-text">—</span>
+        <span id="batt-strip-pill"></span>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="batt-strip-soc"></span>
+      </div>
+      <!-- Aggregate metrics -->
+      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
+        <div style="display:flex;align-items:center">
+          ${batteryMBox('SOC', 'bagg-soc')}
+          ${batteryVDiv()}
+          ${batteryMBox('Pack Voltage', 'bagg-volt')}
+          ${batteryVDiv()}
+          ${batteryMBox('Current', 'bagg-curr')}
+          ${batteryVDiv()}
+          ${batteryMBox('Power', 'bagg-pow')}
+        </div>
+      </div>
+      <!-- Pack grid -->
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Battery Packs</div>
       <div class="packs-grid" id="battery-overview-grid">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>
       </div>
-      ${shuntSection}
+      ${shuntCard}
     </div>`;
   updateBatteryOverviewCards();
 }
@@ -992,6 +1000,13 @@ async function saveShuntMode() {
   }
 }
 
+function setEl(id, text, color) {
+  const e = document.getElementById(id);
+  if (!e) return;
+  e.textContent = text;
+  if (color !== undefined) e.style.color = color;
+}
+
 function updateBatteryOverviewCards() {
   const grid = document.getElementById('battery-overview-grid');
   if (!grid) return;
@@ -999,22 +1014,51 @@ function updateBatteryOverviewCards() {
   const snap   = (g_live && g_live.snapshot) || {};
   const packs  = snap.packs || [];
   const safety = (g_live && g_live.safety)   || {};
+  const sources = (g_live && g_live.sources) || {};
 
-  const summary = document.getElementById('battery-summary');
-  if (summary) {
-    const online    = g_live ? (g_live.bms_count_online || 0) : 0;
-    const total     = g_live ? (g_live.bms_count_configured || 0) : 0;
-    const soc       = safety.soc_avg !== undefined ? fmt(safety.soc_avg, 0) + '% SOC' : '';
-    const volt      = safety.pack_voltage_avg !== undefined ? fmt(safety.pack_voltage_avg, 2) + ' V avg' : '';
-    summary.textContent = [online + '/' + total + ' online', soc, volt].filter(Boolean).join(' · ');
-  }
+  // ── Status strip ──
+  const online = g_live ? (g_live.bms_count_online || 0) : 0;
+  const total  = g_live ? (g_live.bms_count_configured || 0) : 0;
+  const dot = document.getElementById('batt-strip-dot');
+  if (dot) { dot.className = 'pack-status-dot ' + (online > 0 ? 'online' : 'offline'); }
+  setEl('batt-strip-text', `${online}/${total} packs online`);
+  const pillEl = document.getElementById('batt-strip-pill');
+  if (pillEl) pillEl.innerHTML = safety.pack_current_total !== undefined ? chargePill(safety.pack_current_total) : '';
+  const socAvg = safety.soc_avg;
+  setEl('batt-strip-soc', socAvg !== undefined ? `Avg SOC ${fmt(socAvg, 0)}%` : '');
 
+  // ── Aggregate metric boxes ──
+  const soc  = socAvg !== undefined ? socAvg : null;
+  const volt = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
+  const cur  = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
+  const pow  = (cur !== null && volt !== null) ? cur * volt : null;
+
+  setEl('bagg-soc',  soc  !== null ? fmt(soc,  0)  + ' %' : '—', soc  !== null ? socColor(soc)         : 'var(--text-muted)');
+  setEl('bagg-volt', volt !== null ? fmt(volt, 2) + ' V'  : '—', volt !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+  setEl('bagg-curr', cur  !== null ? fmtA(cur)  + ' A'   : '—', cur  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+  setEl('bagg-pow',  pow  !== null ? fmt(pow,  0)  + ' W' : '—', pow  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+
+  // ── SmartShunt live values ──
+  const shunt = sources.shunt || {};
+  const shuntSeen  = !!shunt.seen;
+  const shuntStale = shuntSeen && (shunt.ms_since_last_seen || 0) > 30000;
+  const shuntDot = document.getElementById('shunt-strip-dot');
+  if (shuntDot) shuntDot.className = 'pack-status-dot ' + (shuntSeen && !shuntStale ? 'online' : 'offline');
+  setEl('shunt-strip-text', shuntSeen ? (shuntStale ? 'Stale' : 'Receiving data') : 'Not seen');
+  setEl('shunt-strip-age', shuntSeen ? Math.round((shunt.ms_since_last_seen || 0) / 1000) + ' s ago' : '');
+  setEl('sagg-curr', shunt.current_a !== undefined ? fmtA(shunt.current_a) + ' A' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
+  setEl('sagg-volt', shunt.voltage_v !== undefined ? fmt(shunt.voltage_v, 2) + ' V' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
+  setEl('sagg-soc',  shunt.soc_pct  !== undefined ? fmt(shunt.soc_pct, 1) + ' %' : '—', shuntSeen ? socColor(shunt.soc_pct) : 'var(--text-muted)');
+  const curSrcId = sources.battery_current_src || 'bms';
+  const srcEl = document.getElementById('shunt-active-src');
+  if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; srcEl.style.position = 'static'; srcEl.style.display = 'inline-block'; }
+
+  // ── Pack grid ──
   if (packs.length === 0) {
     grid.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>';
     return;
   }
 
-  // Recreate if count changed.
   const existing = grid.querySelectorAll('.battery-overview-card');
   if (existing.length !== packs.length) {
     grid.innerHTML = '';
