@@ -232,8 +232,8 @@ a { text-decoration: none; color: inherit; }
 .pill-can.off,
 .pill-mppt.off,
 .pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
-.pill-mppt  { background: var(--brand-teal); color: var(--brand-aubergine); }
-.pill-shunt { background: #7c6fcd;           color: #fff; }
+.pill-mppt  { background: var(--color-success); color: #fff; }
+.pill-shunt { background: #7c6fcd;             color: #fff; }
 
 /* ── Card source indicator (subtle pill, positioned bottom-right) ─────────────── */
 .card-src {

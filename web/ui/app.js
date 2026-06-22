@@ -448,120 +448,58 @@ function updateDashboardCards() {
   const chargeStateLabels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
   const csLabel = mpptEnabled ? (chargeStateLabels[mpptSrc.charge_state] || `State ${mpptSrc.charge_state}`) : '—';
 
+  // Layout: 5 columns, 2 rows.
+  // Row 1: [Solar/CellMin] [SOC] [Battery Power] [Cell Drift] [Temperature]
+  // Row 2: [Yield/CellMax] [Pack Voltage] [Current] [Energy Today] [Runtime]
+  const col1top = mpptSrc.enabled ? {
+    label: 'Solar Power',
+    value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
+    unit: 'W',
+    sub: csLabel,
+    color: 'var(--brand-teal)',
+    alarm: false,
+    src: 'mppt',
+  } : {
+    label: 'Cell Min',
+    value: cellMin !== null ? fmt(cellMin, 3) : '—',
+    unit: 'V',
+    sub: '',
+    color: cellVColor(cellMin),
+    alarm: alarmCellMin(cellMin),
+    src: 'bms',
+  };
+
+  const col1bot = mpptSrc.enabled ? {
+    label: 'Solar yield today',
+    value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
+    unit: 'kWh',
+    sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
+    color: 'var(--brand-teal)',
+    alarm: false,
+    src: 'mppt',
+  } : {
+    label: 'Cell Max',
+    value: cellMax !== null ? fmt(cellMax, 3) : '—',
+    unit: 'V',
+    sub: '',
+    color: cellVColor(cellMax),
+    alarm: alarmCellMax(cellMax),
+    src: 'bms',
+  };
+
   const cards = [
-    {
-      label: 'State of Charge',
-      value: soc !== null ? fmt(soc, 0) : '—',
-      unit: '%',
-      sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '',
-      color: socColor(soc),
-      alarm: alarmSoc(soc),
-      src: 'bms',
-    },
-    {
-      label: 'Battery Power',
-      value: power !== null ? fmt(power, 0) : '—',
-      unit: 'W',
-      sub: chargePill(cur),
-      color: 'var(--text-primary)',
-      alarm: false,
-      src: 'bms',
-    },
-    {
-      label: 'Current (total)',
-      value: cur !== null ? fmtA(cur) : '—',
-      unit: 'A',
-      sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`,
-      color: 'var(--text-primary)',
-      alarm: false,
-      src: curSrcId,
-    },
-    {
-      label: 'Pack Voltage',
-      value: volt !== null ? fmt(volt, 2) : '—',
-      unit: 'V',
-      sub: `CVL ${fmt(cvl, 2)} V`,
-      color: 'var(--text-primary)',
-      alarm: alarmVolt(volt),
-      src: 'bms',
-    },
-    // Cell Min / Max — hidden when MPPT is enabled (replaced by Solar Power + Yield Today).
-    // Drift is always present.
-    ...(!mpptSrc.enabled ? [
-      {
-        label: 'Cell Min',
-        value: cellMin !== null ? fmt(cellMin, 3) : '—',
-        unit: 'V',
-        sub: '',
-        color: cellVColor(cellMin),
-        alarm: alarmCellMin(cellMin),
-        src: 'bms',
-      },
-      {
-        label: 'Cell Max',
-        value: cellMax !== null ? fmt(cellMax, 3) : '—',
-        unit: 'V',
-        sub: '',
-        color: cellVColor(cellMax),
-        alarm: alarmCellMax(cellMax),
-        src: 'bms',
-      },
-    ] : [
-      {
-        label: 'Solar Power',
-        value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
-        unit: 'W',
-        sub: csLabel,
-        color: 'var(--brand-teal)',
-        alarm: false,
-        src: 'mppt',
-      },
-      {
-        label: 'Solar yield today',
-        value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
-        unit: 'kWh',
-        sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
-        color: 'var(--brand-teal)',
-        alarm: false,
-        src: 'mppt',
-      },
-    ]),
-    {
-      label: 'Cell Drift',
-      value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—',
-      unit: 'mV',
-      sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal',
-      color: driftColor(cellDrift),
-      alarm: alarmDrift(cellDrift),
-      src: 'bms',
-    },
-    {
-      label: 'Temperature',
-      value: temp !== null ? fmt(temp, 1) : '—',
-      unit: '°C',
-      sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
-      color: 'var(--text-primary)',
-      alarm: alarmTemp(temp),
-      src: 'bms',
-    },
-    {
-      label: 'Energy Today',
-      value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—',
-      unit: 'kWh in',
-      sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '',
-      color: 'var(--text-primary)',
-      alarm: false,
-      src: 'bms',
-    },
-    {
-      label: 'Runtime Est.',
-      value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—',
-      unit: '',
-      sub: rtLabels[rtState] || 'Idle',
-      color: 'var(--text-primary)',
-      alarm: false,
-      src: 'bms',
-    },
+    // Row 1
+    col1top,
+    { label: 'State of Charge', value: soc !== null ? fmt(soc, 0) : '—', unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: 'bms' },
+    { label: 'Battery Power',   value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
+    { label: 'Cell Drift',      value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
+    { label: 'Temperature',     value: temp !== null ? fmt(temp, 1) : '—', unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
+    // Row 2
+    col1bot,
+    { label: 'Pack Voltage',    value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt),  src: 'bms' },
+    { label: 'Current (total)', value: cur !== null ? fmtA(cur) : '—',    unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,            src: curSrcId },
+    { label: 'Energy Today',    value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    { label: 'Runtime Est.',    value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
   ];
 
   grid.innerHTML = '';
@@ -588,37 +526,119 @@ function renderSolar() {
   const m = sources.mppt || {};
   const pt = sources.solar_passthrough || {};
 
-  const chargeStateLabels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
-  const csText = m.seen ? (chargeStateLabels[m.charge_state] || `State ${m.charge_state}`) : '—';
-  const fv = (v, dec, unit) => (v !== undefined && v !== null) ? `${Number(v).toFixed(dec)} ${unit}` : '—';
+  if (!g_config || !g_config.ble_mppt_enabled) {
+    root.innerHTML = `
+      <div style="max-width:520px">
+        <div class="card" style="padding:24px">
+          <p style="color:var(--text-muted);margin:0">MPPT BLE source is not enabled.
+          Enable it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</p>
+        </div>
+      </div>`;
+    return;
+  }
 
-  const ptText = !pt.received ? '<span style="color:var(--text-muted)">Unknown (no message received)</span>'
-               : pt.state ? '<span style="color:var(--color-success)">Active</span>'
-               : '<span style="color:var(--text-muted)">Inactive</span>';
+  const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
+  const cs = m.charge_state;
+  const csText = m.seen ? (csLabels[cs] || `State ${cs}`) : '—';
+  const csPillCls = (cs === 3 || cs === 4) ? 'pill-charging'
+                  : (cs === 5 || cs === 6) ? 'pill-idle'
+                  : (cs === 2) ? 'pill-discharging' : 'pill-idle';
+
+  const seen = !!m.seen;
+  const staleMs = m.ms_since_last_seen || 0;
+  const stale = seen && staleMs > 30000;
+  const lastSeen = seen ? Math.round(staleMs / 1000) + ' s ago' : '—';
+  const dotCls = seen && !stale ? 'online' : 'offline';
+  const statusText = seen && !stale ? 'Receiving data' : seen ? 'Stale' : 'No data';
+
+  function metricCell(label, value, unit, accent) {
+    const color = accent ? `color:${accent}` : 'color:var(--text-primary)';
+    const valHtml = (value !== null && value !== undefined)
+      ? `<span style="font-size:28px;font-weight:700;line-height:1;${color}">${value}</span>`
+        + `<span style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px">${unit}</span>`
+      : `<span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span>`;
+    return `
+      <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
+        <div>${valHtml}</div>
+      </div>`;
+  }
+
+  function vdivider() {
+    return `<div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>`;
+  }
+
+  const pvPower  = m.pv_power_valid ? fmt(m.pv_power_w, 0)    : null;
+  const pvVolt   = m.pv_v_valid     ? fmt(m.pv_voltage_v, 2)  : null;
+  const pvCurr   = m.pv_i_valid     ? fmt(m.pv_current_a, 1)  : null;
+  const yieldKwh = m.yield_valid    ? fmt((m.yield_today_wh || 0) / 1000, 2) : null;
+  const battV    = m.batt_v_valid   ? fmt(m.batt_voltage_v, 2) : null;
+  const battA    = m.batt_i_valid   ? fmt(m.batt_current_a, 1) : null;
+
+  const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
+  const ptText = !pt.received
+    ? '<span style="color:var(--text-muted)">Unknown — no message received yet</span>'
+    : pt.state
+      ? '<span style="color:var(--color-success);font-weight:600">Active</span>'
+      : '<span style="color:var(--text-muted)">Inactive</span>';
+  const ptAge = pt.received ? Math.round((Date.now() - (pt.ts_ms || 0)) / 1000) + ' s ago' : null;
 
   root.innerHTML = `
-    <p class="section-header">Solar (MPPT)</p>
-    <div class="card" style="max-width:520px">
-      ${!m.enabled ? `<p style="color:var(--text-muted)">MPPT BLE source is not enabled. Enable it in Settings &rarr; BLE.</p>` : `
-      <table class="kv-table">
-        <tr><td>Status</td><td>${m.seen ? '<span style="color:var(--color-success)">Seen</span>' : '<span style="color:var(--text-muted)">Not seen</span>'}</td></tr>
-        <tr><td>Charger state</td><td>${csText}</td></tr>
-        <tr><td>PV power</td><td>${m.pv_power_valid ? fv(m.pv_power_w, 0, 'W') : '— (sentinel)'}</td></tr>
-        <tr><td>PV voltage</td><td>${m.pv_v_valid ? fv(m.pv_voltage_v, 2, 'V') : '— (sentinel)'}</td></tr>
-        <tr><td>PV current</td><td>${m.pv_i_valid ? fv(m.pv_current_a, 1, 'A') : '— (sentinel)'}</td></tr>
-        <tr><td>Battery voltage</td><td>${m.batt_v_valid ? fv(m.batt_voltage_v, 2, 'V') : '— (sentinel)'}</td></tr>
-        <tr><td>Battery current</td><td>${m.batt_i_valid ? fv(m.batt_current_a, 1, 'A') : '— (sentinel)'}</td></tr>
-        <tr><td>Yield today</td><td>${m.yield_valid ? fv((m.yield_today_wh||0)/1000, 2, 'kWh') : '— (sentinel)'}</td></tr>
-        <tr><td>Last seen</td><td>${m.seen ? Math.round((m.ms_since_last_seen||0)/1000) + ' s ago' : '—'}</td></tr>
-      </table>`}
-    </div>
-    <p class="section-header">Solar Passthrough</p>
-    <div class="card" style="max-width:520px">
-      <table class="kv-table">
-        <tr><td>State</td><td>${ptText}</td></tr>
-        ${pt.received ? `<tr><td>Last update</td><td>${Math.round(((Date.now()) - (pt.ts_ms||0)) / 1000)} s ago</td></tr>` : ''}
-      </table>
-      ${!g_config || !g_config.mqtt_solar_passthrough_topic ? '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">No topic configured. Set it in Settings &rarr; MQTT.</p>' : ''}
+    <div style="max-width:680px">
+
+      <!-- Status strip -->
+      <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="pack-status-dot ${dotCls}" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px">${statusText}</span>
+        ${seen ? `<span class="charging-pill ${csPillCls}" style="margin:0">${csText}</span>` : ''}
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Last seen: ${lastSeen}</span>
+      </div>
+
+      <!-- PV Input + Yield Today -->
+      <div style="display:grid;grid-template-columns:3fr 2fr;gap:12px;margin-bottom:12px">
+        <div class="card" style="padding-top:14px;padding-bottom:14px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">PV Input</div>
+          <div style="display:flex;align-items:center">
+            ${metricCell('Power', pvPower, 'W', 'var(--brand-teal)')}
+            ${vdivider()}
+            ${metricCell('Voltage', pvVolt, 'V')}
+            ${vdivider()}
+            ${metricCell('Current', pvCurr, 'A')}
+          </div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Solar yield today</div>
+          <div>
+            <span style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">${yieldKwh !== null ? yieldKwh : '—'}</span>
+            ${yieldKwh !== null ? '<span style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px">kWh</span>' : ''}
+          </div>
+        </div>
+      </div>
+
+      <!-- Battery Output (MPPT-side) -->
+      ${(m.batt_v_valid || m.batt_i_valid) ? `
+      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">Battery Output</div>
+        <div style="display:flex;align-items:center">
+          ${metricCell('Voltage', battV, 'V')}
+          ${vdivider()}
+          ${metricCell('Current', battA, 'A')}
+        </div>
+      </div>` : ''}
+
+      <!-- Solar Passthrough -->
+      <div class="card">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Solar Passthrough</div>
+        ${ptConfigured ? `
+        <div class="net-kv-grid">
+          <div class="net-kv-row"><span>State</span><span>${ptText}</span></div>
+          <div class="net-kv-row"><span>Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
+          ${ptAge !== null ? `<div class="net-kv-row"><span>Last update</span><span>${ptAge}</span></div>` : ''}
+        </div>` : `
+        <p style="color:var(--text-muted);font-size:13px;margin:0">No topic configured.
+          Set it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; MQTT</a>.</p>`}
+      </div>
+
     </div>
   `;
 }
