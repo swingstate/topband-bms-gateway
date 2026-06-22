@@ -39,4 +39,10 @@ void get_effective_base(char* out, size_t out_size);
 // Force HA discovery publish on the next MqttTask tick (no-op if disconnected).
 void trigger_ha_discovery();
 
+// Solar Passthrough state received from the configured OpenDTU MQTT topic.
+// out_state: true = passthrough active, false = inactive.
+// out_ts_ms: esp_timer millisecond timestamp of last received message (0 = never received).
+// Returns false when no topic is configured or no message has been received yet.
+bool get_solar_passthrough(bool& out_state, uint32_t& out_ts_ms);
+
 }  // namespace mqtt::publisher

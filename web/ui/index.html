@@ -38,6 +38,26 @@
         </svg>
         <span>Battery</span>
       </a>
+      <a href="/solar" class="sidebar-item" id="nav-solar" title="Solar (MPPT)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="4"/>
+          <line x1="12" y1="2" x2="12" y2="4"/>
+          <line x1="12" y1="20" x2="12" y2="22"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="2" y1="12" x2="4" y2="12"/>
+          <line x1="20" y1="12" x2="22" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+        <span>Solar</span>
+      </a>
+      <a href="/shunt" class="sidebar-item" id="nav-shunt" title="SmartShunt">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="2 12 6 12 8 5 10 19 12 12 14 16 16 12 22 12"/>
+        </svg>
+        <span>Shunt</span>
+      </a>
       <a href="/settings" class="sidebar-item" id="nav-general" title="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
@@ -83,6 +103,8 @@
         <span class="status-pill pill-bms" id="status-bms">BMS —</span>
         <span class="status-pill pill-can" id="status-can">CAN —</span>
         <span class="status-pill pill-mqtt off" id="status-mqtt">MQTT</span>
+        <span class="status-pill pill-mppt off" id="status-mppt" style="display:none">MPPT</span>
+        <span class="status-pill pill-shunt off" id="status-shunt" style="display:none">SHUNT</span>
         <span class="topbar-time" id="topbar-time">--:--</span>
         <button class="logout-btn" id="logout-btn" title="Sign out" style="display:none">Sign out</button>
         <button class="theme-btn" id="theme-btn" title="Toggle theme">

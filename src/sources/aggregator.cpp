@@ -1,6 +1,12 @@
 #include "aggregator.h"
+#include <cmath>
 
 namespace sources {
+
+// BMS dead-zone threshold: at |current| below this level the BMS coulomb counter
+// loses accuracy and may report 0. The shunt (if enabled) fills this gap.
+// Named constant so the handover point is visible in one place.
+static constexpr float SHUNT_LEAD_THRESHOLD_A = 0.5f;
 
 void Aggregator::init(BmsSource* bms, ShuntSource* shunt, MpptSource* mppt) {
   m_bms   = bms;
@@ -31,12 +37,14 @@ SourceReading Aggregator::select(Metric m,
                                  const SourceReading& shunt_r,
                                  const SourceReading& mppt_r) {
   switch (m) {
-    case Metric::TOTAL_CURRENT:
-      // Shunt leads when it has ANY usable data (Valid or Stale).
-      // BMS Stale (< 0.5 A) is specifically worse than shunt Stale — the shunt
-      // is accurate at low currents while the BMS is not.
-      if (shunt_r.is_usable()) return shunt_r;
+    case Metric::TOTAL_CURRENT: {
+      // BMS leads by default. Below SHUNT_LEAD_THRESHOLD_A the BMS coulomb
+      // counter is inaccurate (reports 0 or near-zero); shunt fills the gap
+      // when enabled and has a valid reading.
+      float bms_abs = bms_r.is_usable() ? fabsf(bms_r.value) : 0.0f;
+      if (bms_abs < SHUNT_LEAD_THRESHOLD_A && shunt_r.is_usable()) return shunt_r;
       return bms_r;
+    }
 
     case Metric::TOTAL_VOLTAGE:
       // BMS leads; per-pack voltage is the primary control input.

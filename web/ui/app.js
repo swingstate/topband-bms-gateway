@@ -67,6 +67,8 @@ const routes = {
   '/':          renderDashboard,
   '/dashboard': renderDashboard,
   '/battery':   renderBattery,
+  '/solar':     renderSolar,
+  '/shunt':     renderShunt,
   '/general':   renderSettings,   // backward-compat alias
   '/settings':  renderSettings,
   '/network':   renderNetwork,
@@ -110,6 +112,8 @@ function updateSidebarActive(path) {
     if (href === path) { el.classList.add('active'); return; }
     if (path === '/' && href === '/') { el.classList.add('active'); return; }
     if (path.startsWith('/battery') && href === '/battery') { el.classList.add('active'); return; }
+    if (path === '/solar'  && href === '/solar')  { el.classList.add('active'); return; }
+    if (path === '/shunt'  && href === '/shunt')  { el.classList.add('active'); return; }
     if ((path === '/settings' || path === '/general') && href === '/settings') { el.classList.add('active'); return; }
     if (path === '/network' && href === '/network') { el.classList.add('active'); return; }
   });
@@ -246,6 +250,36 @@ function updateStatusBar() {
       const hasAlarm = (safety.alarm_flags || 0) !== 0;
       const txFail   = (can.tx_fail || 0) > 0 || (can.bus_off_count || 0) > 0;
       canEl.className = 'status-pill pill-can' + (hasAlarm || txFail ? ' alarm' : '');
+    }
+  }
+
+  // MPPT pill — shown only when MPPT is enabled in config.
+  const mpptEl = document.getElementById('status-mppt');
+  if (mpptEl && g_config) {
+    if (!g_config.ble_mppt_enabled) {
+      mpptEl.style.display = 'none';
+    } else {
+      mpptEl.style.display = '';
+      const src = (g_live && g_live.sources && g_live.sources.mppt) || {};
+      const seen = src.seen;
+      const stale = seen && src.ms_since_last_seen > 30000;
+      mpptEl.className = 'status-pill pill-mppt' + (seen && !stale ? '' : ' off');
+      mpptEl.textContent = 'MPPT';
+    }
+  }
+
+  // SHUNT pill — shown only when SmartShunt is enabled in config.
+  const shuntEl = document.getElementById('status-shunt');
+  if (shuntEl && g_config) {
+    if (!g_config.ble_shunt_enabled) {
+      shuntEl.style.display = 'none';
+    } else {
+      shuntEl.style.display = '';
+      const src = (g_live && g_live.sources && g_live.sources.shunt) || {};
+      const seen = src.seen;
+      const stale = seen && src.ms_since_last_seen > 30000;
+      shuntEl.className = 'status-pill pill-shunt' + (seen && !stale ? '' : ' off');
+      shuntEl.textContent = 'SHUNT';
     }
   }
 }
@@ -389,6 +423,23 @@ function updateDashboardCards() {
   const rtState = (g_live && g_live.runtime_est_state) || 'idle';
   const rtLabels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
 
+  // Sources section (MPPT / Shunt data from firmware aggregator).
+  const sources   = (g_live && g_live.sources) || {};
+  const mpptSrc   = sources.mppt || {};
+  const shuntSrc  = sources.shunt || {};
+  const curSrcId  = sources.battery_current_src || 'bms';
+  const curBadge  = `<span class="source-badge badge-${curSrcId}">${curSrcId.toUpperCase()}</span>`;
+
+  // MPPT tiles — only shown when MPPT enabled and seen.
+  const mpptEnabled = mpptSrc.enabled && mpptSrc.seen;
+  const pvPowerW    = mpptEnabled && mpptSrc.pv_power_valid  ? mpptSrc.pv_power_w    : null;
+  const pvVoltV     = mpptEnabled && mpptSrc.pv_v_valid      ? mpptSrc.pv_voltage_v  : null;
+  const pvCurrA     = mpptEnabled && mpptSrc.pv_i_valid      ? mpptSrc.pv_current_a  : null;
+  const yieldWh     = mpptEnabled && mpptSrc.yield_valid     ? mpptSrc.yield_today_wh : null;
+
+  const chargeStateLabels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
+  const csLabel = mpptEnabled ? (chargeStateLabels[mpptSrc.charge_state] || `State ${mpptSrc.charge_state}`) : '—';
+
   const cards = [
     {
       label: 'State of Charge',
@@ -410,7 +461,7 @@ function updateDashboardCards() {
       label: 'Current (total)',
       value: cur !== null ? fmtA(cur) : '—',
       unit: 'A',
-      sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`,
+      sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A ${curBadge}`,
       color: 'var(--text-primary)',
       alarm: false,
     },
@@ -472,6 +523,26 @@ function updateDashboardCards() {
     },
   ];
 
+  // Append MPPT tiles when MPPT is enabled.
+  if (mpptSrc.enabled) {
+    cards.push({
+      label: 'Solar Power' + '<span class="source-badge badge-mppt">MPPT</span>',
+      value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
+      unit: 'W',
+      sub: csLabel,
+      color: 'var(--brand-teal)',
+      alarm: false,
+    });
+    cards.push({
+      label: 'Yield Today' + '<span class="source-badge badge-mppt">MPPT</span>',
+      value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
+      unit: 'kWh',
+      sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
+      color: 'var(--brand-teal)',
+      alarm: false,
+    });
+  }
+
   grid.innerHTML = '';
   cards.forEach(c => {
     const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
@@ -484,6 +555,81 @@ function updateDashboardCards() {
     `;
     grid.appendChild(card);
   });
+}
+
+/* ── Solar detail page ───────────────────────────────────────────────────────── */
+function renderSolar() {
+  const root = document.getElementById('page-root');
+  const sources = (g_live && g_live.sources) || {};
+  const m = sources.mppt || {};
+  const pt = sources.solar_passthrough || {};
+
+  const chargeStateLabels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
+  const csText = m.seen ? (chargeStateLabels[m.charge_state] || `State ${m.charge_state}`) : '—';
+  const fv = (v, dec, unit) => (v !== undefined && v !== null) ? `${Number(v).toFixed(dec)} ${unit}` : '—';
+
+  const ptText = !pt.received ? '<span style="color:var(--text-muted)">Unknown (no message received)</span>'
+               : pt.state ? '<span style="color:var(--color-success)">Active</span>'
+               : '<span style="color:var(--text-muted)">Inactive</span>';
+
+  root.innerHTML = `
+    <p class="section-header">Solar (MPPT)</p>
+    <div class="card" style="max-width:520px">
+      ${!m.enabled ? `<p style="color:var(--text-muted)">MPPT BLE source is not enabled. Enable it in Settings &rarr; BLE.</p>` : `
+      <table class="kv-table">
+        <tr><td>Status</td><td>${m.seen ? '<span style="color:var(--color-success)">Seen</span>' : '<span style="color:var(--text-muted)">Not seen</span>'}</td></tr>
+        <tr><td>Charger state</td><td>${csText}</td></tr>
+        <tr><td>PV power</td><td>${m.pv_power_valid ? fv(m.pv_power_w, 0, 'W') : '— (sentinel)'}</td></tr>
+        <tr><td>PV voltage</td><td>${m.pv_v_valid ? fv(m.pv_voltage_v, 2, 'V') : '— (sentinel)'}</td></tr>
+        <tr><td>PV current</td><td>${m.pv_i_valid ? fv(m.pv_current_a, 1, 'A') : '— (sentinel)'}</td></tr>
+        <tr><td>Battery voltage</td><td>${m.batt_v_valid ? fv(m.batt_voltage_v, 2, 'V') : '— (sentinel)'}</td></tr>
+        <tr><td>Battery current</td><td>${m.batt_i_valid ? fv(m.batt_current_a, 1, 'A') : '— (sentinel)'}</td></tr>
+        <tr><td>Yield today</td><td>${m.yield_valid ? fv((m.yield_today_wh||0)/1000, 2, 'kWh') : '— (sentinel)'}</td></tr>
+        <tr><td>Last seen</td><td>${m.seen ? Math.round((m.ms_since_last_seen||0)/1000) + ' s ago' : '—'}</td></tr>
+      </table>`}
+    </div>
+    <p class="section-header">Solar Passthrough</p>
+    <div class="card" style="max-width:520px">
+      <table class="kv-table">
+        <tr><td>State</td><td>${ptText}</td></tr>
+        ${pt.received ? `<tr><td>Last update</td><td>${Math.round(((Date.now()) - (pt.ts_ms||0)) / 1000)} s ago</td></tr>` : ''}
+      </table>
+      ${!g_config || !g_config.mqtt_solar_passthrough_topic ? '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">No topic configured. Set it in Settings &rarr; MQTT.</p>' : ''}
+    </div>
+  `;
+}
+
+/* ── Shunt detail page ────────────────────────────────────────────────────────── */
+function renderShunt() {
+  const root = document.getElementById('page-root');
+  const sources = (g_live && g_live.sources) || {};
+  const s = sources.shunt || {};
+  const curSrcId = sources.battery_current_src || 'bms';
+
+  const fv = (v, dec, unit) => (v !== undefined && v !== null) ? `${Number(v).toFixed(dec)} ${unit}` : '—';
+
+  root.innerHTML = `
+    <p class="section-header">SmartShunt</p>
+    <div class="card" style="max-width:520px">
+      ${!s.enabled ? `<p style="color:var(--text-muted)">SmartShunt BLE source is not enabled. Enable it in Settings &rarr; BLE.</p>` : `
+      <table class="kv-table">
+        <tr><td>Status</td><td>${s.seen ? '<span style="color:var(--color-success)">Seen</span>' : '<span style="color:var(--text-muted)">Not seen</span>'}</td></tr>
+        <tr><td>Current</td><td>${fv(s.current_a, 2, 'A')}</td></tr>
+        <tr><td>Voltage</td><td>${fv(s.voltage_v, 2, 'V')}</td></tr>
+        <tr><td>SOC</td><td>${fv(s.soc_pct, 1, '%')}</td></tr>
+        <tr><td>Last seen</td><td>${s.seen ? Math.round((s.ms_since_last_seen||0)/1000) + ' s ago' : '—'}</td></tr>
+      </table>`}
+    </div>
+    <p class="section-header">Current Source</p>
+    <div class="card" style="max-width:520px">
+      <p>Active source for total battery current:
+        <span class="source-badge badge-${curSrcId}" style="font-size:0.75rem;padding:2px 8px">${curSrcId.toUpperCase()}</span>
+      </p>
+      <p style="color:var(--text-muted);font-size:12px;margin-top:4px">
+        BMS leads. Shunt fills in below 0.5&thinsp;A when enabled and the BMS reports near-zero.
+      </p>
+    </div>
+  `;
 }
 
 function updatePackCards() {
@@ -1649,6 +1795,17 @@ function renderSettingsMqtt() {
         </div>
         <div id="mqtt-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Solar Passthrough (OpenDTU)</div>
+        <div class="form-group">
+          <label>Passthrough MQTT Topic</label>
+          <input type="text" id="cfg-mqtt_solar_passthrough_topic"
+            value="${escHtml(c.mqtt_solar_passthrough_topic || '')}"
+            placeholder="e.g. solar/AC_output_active">
+          <div class="help">Topic published by OpenDTU-OnBattery for the Solar Passthrough state.
+            Payload: 1/true = active, 0/false = inactive. Leave blank to disable.</div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -2455,13 +2612,14 @@ async function saveMqttSection() {
   cfg.auth_hash = '';
 
   const fields = [
-    ['cfg-mqtt_enabled',        'mqtt_enabled',        'bool'],
-    ['cfg-mqtt_host',           'mqtt_host',           'str'],
-    ['cfg-mqtt_port',           'mqtt_port',           'num'],
-    ['cfg-mqtt_user',           'mqtt_user',           'str'],
-    ['cfg-mqtt_base_topic',     'mqtt_base_topic',     'str'],
-    ['cfg-mqtt_level',          'mqtt_level',          'num'],
-    ['cfg-mqtt_diag_enabled',   'mqtt_diag_enabled',   'bool'],
+    ['cfg-mqtt_enabled',                    'mqtt_enabled',                    'bool'],
+    ['cfg-mqtt_host',                       'mqtt_host',                       'str'],
+    ['cfg-mqtt_port',                       'mqtt_port',                       'num'],
+    ['cfg-mqtt_user',                       'mqtt_user',                       'str'],
+    ['cfg-mqtt_base_topic',                 'mqtt_base_topic',                 'str'],
+    ['cfg-mqtt_level',                      'mqtt_level',                      'num'],
+    ['cfg-mqtt_diag_enabled',               'mqtt_diag_enabled',               'bool'],
+    ['cfg-mqtt_solar_passthrough_topic',    'mqtt_solar_passthrough_topic',    'str'],
     ['cfg-ha_discovery_enabled','ha_discovery_enabled','bool'],
   ];
   fields.forEach(([id, key, type]) => {

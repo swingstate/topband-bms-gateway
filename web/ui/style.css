@@ -222,7 +222,28 @@ a { text-decoration: none; color: inherit; }
 /* Gray/off state shared by wifi + mqtt when not connected / disabled */
 .pill-wifi.off,
 .pill-mqtt.off,
-.pill-can.off    { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-can.off,
+.pill-mppt.off,
+.pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-mppt  { background: var(--brand-teal); color: var(--brand-aubergine); }
+.pill-shunt { background: #7c6fcd;           color: #fff; }
+
+/* ── Source badges (on metric tiles) ────────────────────────────────────────── */
+.source-badge {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 1.5;
+}
+.badge-bms   { background: var(--color-success); color: #fff; }
+.badge-mppt  { background: var(--brand-teal);    color: var(--brand-aubergine); }
+.badge-shunt { background: #7c6fcd;              color: #fff; }
 
 .topbar-time { font-size: 13px; font-weight: 600; color: var(--text-muted); min-width: 40px; text-align: right; }
 

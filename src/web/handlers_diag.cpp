@@ -372,11 +372,15 @@ esp_err_t handle_diag(httpd_req_t* req) {
         if (d.pv_power_valid)    { char t[16]; snprintf(t,sizeof(t),"%.1f",d.pv_power_w);    hs_str(s,t); }
         else hs_str(s, "null");
         hs_str(s, ",\"pv_voltage_v\":");
-        if (d.pv_derived_valid)  { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v);  hs_str(s,t); }
+        if (d.pv_v_valid)        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v);  hs_str(s,t); }
         else hs_str(s, "null");
         hs_str(s, ",\"pv_current_a\":");
-        if (d.pv_derived_valid)  { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a);  hs_str(s,t); }
+        if (d.pv_i_valid)        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a);  hs_str(s,t); }
         else hs_str(s, "null");
+        hs_str(s, ",\"yield_today_wh\":");
+        if (d.yield_valid)       { char t[16]; snprintf(t,sizeof(t),"%.0f",d.yield_today_wh); hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"charge_state\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)d.charge_state); hs_str(s,t); }
         hs_str(s, ",\"batt_voltage_v\":");
         if (d.batt_v_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_voltage_v); hs_str(s,t); }
         else hs_str(s, "null");

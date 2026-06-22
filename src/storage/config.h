@@ -25,7 +25,10 @@
 //           sizeof(Config) grows 800 → 816 B.
 //           Migration: wifi_bssid = '' (auto-select), wifi_rssi_threshold = -127 (no floor,
 //           preserves existing behaviour for all existing sites).
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 8;
+// v8 → v9: added mqtt_solar_passthrough_topic (V3.1 OpenDTU display-only integration).
+//           sizeof(Config) grows 816 → 880 B.
+//           Migration: mqtt_solar_passthrough_topic = '' (feature off; owner configures later).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 9;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -240,7 +243,13 @@ struct Config {
   //   sites; too low keeps the sticky-AP problem if a very weak AP matches first.
   char  wifi_bssid[18];          // canonical "xx:xx:xx:xx:xx:xx" or empty
   int8_t wifi_rssi_threshold;    // dBm floor; -127 = no floor
-  // sizeof(Config) = 816 B (no new tail padding: 797 + 19 = 816, divisible by 4)
+
+  // ── Solar Passthrough (v9, V3.1 OpenDTU display-only integration) ────────────
+  // MQTT topic published by OpenDTU-OnBattery for the Solar-Passthrough state.
+  // Empty = feature disabled; gateway subscribes and displays on Solar detail page.
+  // Display-only — no control sent to the DTU/inverter. Read-only monitoring.
+  char mqtt_solar_passthrough_topic[64];
+  // sizeof(Config) = 880 B (816 + 64 = 880, divisible by 4)
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

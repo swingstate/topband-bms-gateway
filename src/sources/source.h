@@ -23,9 +23,11 @@ enum class Metric : uint8_t {
   TOTAL_CURRENT  = 0,   // combined bank current (A); positive = charging
   TOTAL_VOLTAGE  = 1,   // bank terminal voltage (V)
   PV_POWER       = 2,   // PV array power (W)
-  PV_CURRENT     = 3,   // PV array current (A)
-  PV_VOLTAGE     = 4,   // PV array voltage (V)
+  PV_CURRENT     = 3,   // PV array current (A); measured directly from MPPT input side
+  PV_VOLTAGE     = 4,   // PV array voltage (V); measured directly from MPPT input side
   SHUNT_SOC      = 5,   // shunt-counted SOC (%), supplementary only — never overrides BMS SOC
+  YIELD_TODAY    = 6,   // PV yield today (Wh); from MPPT Solar Charger record bytes 6-7
+  CHARGE_STATE   = 7,   // MPPT charger state (0=off,3=bulk,4=absorption,5=float); uint8 cast to float
 };
 
 enum class ReadingStatus : uint8_t {

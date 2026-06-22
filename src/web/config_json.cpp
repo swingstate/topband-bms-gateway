@@ -94,6 +94,9 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   // v8 WiFi AP selection fields (non-secret, included in export/import)
   doc["wifi_bssid"]            = c.wifi_bssid;
   doc["wifi_rssi_threshold"]   = c.wifi_rssi_threshold;
+
+  // v9 Solar Passthrough MQTT topic (non-secret, included in export/import)
+  doc["mqtt_solar_passthrough_topic"] = c.mqtt_solar_passthrough_topic;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -286,6 +289,9 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
   copy_str(doc["wifi_bssid"], c.wifi_bssid);
   if (doc["wifi_rssi_threshold"].is<int>())
     c.wifi_rssi_threshold = (int8_t)doc["wifi_rssi_threshold"].as<int>();
+
+  // v9 Solar Passthrough MQTT topic
+  copy_str(doc["mqtt_solar_passthrough_topic"], c.mqtt_solar_passthrough_topic);
 
   return true;
 }

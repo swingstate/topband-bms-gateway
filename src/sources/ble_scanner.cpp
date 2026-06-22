@@ -52,13 +52,20 @@ static const char* TAG = "ble_scanner";
 //   Nonce: new format → { data_counter_lsb, data_counter_msb, 0…0 } (16 bytes, LE counter)
 //          old format → { iv_byte, 0…0, 0,0,0,0,0,0,0,1 }
 //
-// Solar Charger (SOLAR_CHARGER, 0x01) decrypted payload layout:
-//   plain[0]   charge_state  (uint8; 0=off, 3=bulk, 4=absorption, 5=float)
-//   plain[1]   charger_error (uint8)
-//   plain[2-3] battery_voltage   (int16 LE, /100 → V; 0x7FFF = no data)
-//   plain[4-5] battery_charging_current (int16 LE, /10 → A; 0x7FFF = no data)
-//   plain[6-7] yield_today   (uint16 LE, ×10 → Wh)
-//   plain[8-9] solar_power   (uint16 LE, ×1 → W)
+// Solar Charger (SOLAR_CHARGER, 0x01) decrypted payload layout (new Product Advertisement):
+//   plain[0]     charge_state  (uint8; 0=off, 3=bulk, 4=absorption, 5=float)
+//   plain[1]     charger_error (uint8)
+//   plain[2-3]   battery_voltage (int16 LE, /100 → V; 0x7FFF = no data)
+//   plain[4-5]   battery_charging_current (int16 LE, /10 → A; 0x7FFF = no data)
+//   plain[6-7]   yield_today (uint16 LE, ×10 → Wh; 0xFFFF = no data)
+//   plain[8-9]   solar_power / pv_power (uint16 LE, W; 0xFFFF = no data)      ← transmitted
+//   plain[10-11] pv_voltage / charger_voltage (uint16 LE, /100 → V; 0xFFFF = no data) ← transmitted
+//   plain[12-13] pv_current / charger_current (int16 LE, /10 → A; 0x7FFF = no data)   ← transmitted
+//
+// Reference: keshavdv/victron-ble solar_charger.py (charger_voltage, charger_current);
+//            Fabian-Schmidt/esphome-victron_ble extended Solar Charger struct.
+// All three of {pv_power, pv_voltage, pv_current} are transmitted directly.
+// pv_v and pv_i are present when enc_len >= 12/14; decoded conditionally (not fatal if absent).
 //
 // SmartShunt (BATTERY_MONITOR, 0x02) decrypted payload layout (old-format):
 //   plain[0-1] battery_voltage  (uint16 LE, /100 → V)
@@ -206,7 +213,9 @@ static bool decode_mppt(const uint8_t* md, size_t len, bool new_fmt, uint32_t no
     nonce[1] = md[8];  // data_counter_msb
     enc     = md + 10;
     enc_len = len - 10;
-    // Need plain[0..9] for solar_power at bytes 8-9.
+    // Need at least plain[0..9] for pv_power at bytes 8-9.
+    // pv_voltage at bytes 10-11 and pv_current at bytes 12-13 are read
+    // conditionally if enc_len allows (not fatal if absent — older firmware).
     if (enc_len < 10) return false;
   } else {
     if (len < 5) return false;
@@ -227,39 +236,60 @@ static bool decode_mppt(const uint8_t* md, size_t len, bool new_fmt, uint32_t no
   //   unsigned uint16 fields → 0xFFFF = not available
   // Check raw value BEFORE scaling to avoid phantom readings (e.g. 3276.7 A at night).
 
-  float pv_power_w  = 0.0f;
-  float batt_volt_v = 0.0f;
-  float batt_curr_a = 0.0f;
-  bool  pv_power_valid = false;
-  bool  batt_v_valid   = false;
-  bool  batt_i_valid   = false;
+  uint8_t charge_state  = 0;
+  float pv_power_w      = 0.0f;
+  float pv_voltage_v    = 0.0f;
+  float pv_current_a    = 0.0f;
+  float batt_volt_v     = 0.0f;
+  float batt_curr_a     = 0.0f;
+  float yield_today_wh  = 0.0f;
+  bool  pv_power_valid  = false;
+  bool  pv_v_valid      = false;
+  bool  pv_i_valid      = false;
+  bool  batt_v_valid    = false;
+  bool  batt_i_valid    = false;
+  bool  yield_valid     = false;
 
   if (new_fmt) {
-    // Solar Charger (Product Advertisement) decrypted layout — verified against
-    // keshavdv/victron-ble solar_charger.py and esphome-victron_ble:
-    //   plain[0]   charge_state  (uint8)
-    //   plain[1]   charger_error (uint8)
-    //   plain[2-3] battery_voltage (int16 LE, /100 → V; sentinel 0x7FFF)
-    //   plain[4-5] battery_charging_current (int16 LE, /10 → A; sentinel 0x7FFF)
-    //   plain[6-7] yield_today (uint16 LE, ×10 → Wh; sentinel 0xFFFF)
-    //   plain[8-9] solar_power (uint16 LE, ×1 → W; sentinel 0xFFFF)
-    int16_t  batt_v_raw  = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
-    int16_t  batt_i_raw  = (int16_t) ((uint16_t)plain[4] | ((uint16_t)plain[5] << 8));
-    uint16_t solar_p_raw = (uint16_t)((uint16_t)plain[8] | ((uint16_t)plain[9] << 8));
+    charge_state = plain[0];
+
+    int16_t  batt_v_raw   = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
+    int16_t  batt_i_raw   = (int16_t) ((uint16_t)plain[4] | ((uint16_t)plain[5] << 8));
+    uint16_t yield_raw    = (uint16_t)((uint16_t)plain[6] | ((uint16_t)plain[7] << 8));
+    uint16_t solar_p_raw  = (uint16_t)((uint16_t)plain[8] | ((uint16_t)plain[9] << 8));
 
     batt_v_valid   = (batt_v_raw  != (int16_t)0x7FFF);
     batt_i_valid   = (batt_i_raw  != (int16_t)0x7FFF);
+    yield_valid    = (yield_raw   != 0xFFFFu);
     pv_power_valid = (solar_p_raw != 0xFFFFu);
 
-    if (batt_v_valid)   batt_volt_v = (float)batt_v_raw  / 100.0f;
-    if (batt_i_valid)   batt_curr_a = (float)batt_i_raw  / 10.0f;
-    if (pv_power_valid) pv_power_w  = (float)solar_p_raw;
+    if (batt_v_valid)   batt_volt_v   = (float)batt_v_raw  / 100.0f;
+    if (batt_i_valid)   batt_curr_a   = (float)batt_i_raw  / 10.0f;
+    if (yield_valid)    yield_today_wh = (float)yield_raw   * 10.0f;
+    if (pv_power_valid) pv_power_w    = (float)solar_p_raw;
+
+    // pv_voltage (charger_voltage) and pv_current (charger_current) are real measured
+    // fields from the MPPT input-side sensors, present at bytes 10-13 when enc_len >= 12/14.
+    // Reference: keshavdv/victron-ble solar_charger.py (charger_voltage, charger_current).
+    if (dec_len >= 12) {
+      uint16_t pv_v_raw = (uint16_t)((uint16_t)plain[10] | ((uint16_t)plain[11] << 8));
+      pv_v_valid = (pv_v_raw != 0xFFFFu);
+      if (pv_v_valid) pv_voltage_v = (float)pv_v_raw / 100.0f;
+    }
+    if (dec_len >= 14) {
+      int16_t pv_i_raw = (int16_t)((uint16_t)plain[12] | ((uint16_t)plain[13] << 8));
+      pv_i_valid = (pv_i_raw != (int16_t)0x7FFF);
+      if (pv_i_valid) pv_current_a = (float)pv_i_raw / 10.0f;
+    }
   } else {
     // Old format:
     //   plain[0]   device_state
     //   plain[1-2] PV power (uint16 LE, ×1 W; sentinel 0xFFFF)
     //   plain[3-4] battery_voltage (uint16 LE, /100 V; sentinel 0xFFFF)
     //   plain[5-6] battery_current (int16 LE, /10 A; sentinel 0x7FFF)
+    // Old format does not carry pv_voltage, pv_current, or yield_today.
+    charge_state = plain[0];
+
     uint16_t pv_p_raw   = (uint16_t)((uint16_t)plain[1] | ((uint16_t)plain[2] << 8));
     uint16_t batt_v_raw = (uint16_t)((uint16_t)plain[3] | ((uint16_t)plain[4] << 8));
     int16_t  batt_i_raw = (int16_t) ((uint16_t)plain[5] | ((uint16_t)plain[6] << 8));
@@ -271,37 +301,22 @@ static bool decode_mppt(const uint8_t* md, size_t len, bool new_fmt, uint32_t no
     if (pv_power_valid) pv_power_w  = (float)pv_p_raw;
     if (batt_v_valid)   batt_volt_v = (float)batt_v_raw / 100.0f;
     if (batt_i_valid)   batt_curr_a = (float)batt_i_raw / 10.0f;
+    // pv_v_valid / pv_i_valid remain false — old format does not carry these fields.
   }
 
-  // ── Derive pv_voltage and pv_current (not in the Solar Charger 0x01 record) ──
-  // The record provides solar_power (W) = V_pv × I_pv, but NOT V_pv or I_pv
-  // individually.  Derivation requires all three measured fields to be valid.
-  //
-  // V_pv ≈ P_solar / I_batt  (proxy: batt_i used as denominator, close since
-  //         V_pv/V_batt is near 1 during bulk/absorption charge)
-  // I_pv ≈ P_batt / V_pv     (battery-side power balance; avoids mirroring batt_i)
-  //
-  // This makes pv_v × pv_i = P_batt (not P_solar), the 1–5 % difference being
-  // the converter loss.  Use P_batt / P_solar as efficiency sanity check.
-  float pv_current_a    = 0.0f;
-  float pv_voltage_v    = 0.0f;
-  bool  pv_derived_valid = false;
+  s_mppt->set_decoded_values(charge_state,
+                              pv_power_w, pv_voltage_v, pv_current_a,
+                              batt_volt_v, batt_curr_a, yield_today_wh,
+                              pv_power_valid, pv_v_valid, pv_i_valid,
+                              batt_v_valid, batt_i_valid, yield_valid,
+                              now_ms);
 
-  if (pv_power_valid && batt_i_valid && batt_v_valid &&
-      pv_power_w > 0.0f && batt_curr_a > 0.1f && batt_volt_v > 1.0f) {
-    pv_voltage_v   = pv_power_w / batt_curr_a;                    // ≈ V_pv
-    pv_current_a   = (batt_volt_v * batt_curr_a) / pv_voltage_v;  // ≈ I_pv
-    pv_derived_valid = true;
-  }
-
-  s_mppt->set_decoded_values(pv_power_w, pv_voltage_v, pv_current_a,
-                              batt_volt_v, batt_curr_a,
-                              pv_power_valid, batt_v_valid, batt_i_valid,
-                              pv_derived_valid, now_ms);
-
-  ESP_LOGD(TAG, "MPPT(%s): pv=%.0f W  batt=%.2f V  %.2f A  (pv_valid=%d batt_v=%d batt_i=%d)",
-           new_fmt ? "new" : "old", pv_power_w, batt_volt_v, batt_curr_a,
-           (int)pv_power_valid, (int)batt_v_valid, (int)batt_i_valid);
+  ESP_LOGD(TAG, "MPPT(%s): cs=%u pv=%.0fW %.2fV %.2fA  batt=%.2fV %.2fA  yield=%.0fWh"
+                "  (pp=%d pv_v=%d pv_i=%d)",
+           new_fmt ? "new" : "old", (unsigned)charge_state,
+           pv_power_w, pv_voltage_v, pv_current_a,
+           batt_volt_v, batt_curr_a, yield_today_wh,
+           (int)pv_power_valid, (int)pv_v_valid, (int)pv_i_valid);
   return true;
 }
 
