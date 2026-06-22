@@ -68,7 +68,7 @@ const routes = {
   '/dashboard': renderDashboard,
   '/battery':   renderBattery,
   '/solar':     renderSolar,
-  '/shunt':     renderShunt,
+  '/shunt':     () => navigate('/battery'),
   '/general':   renderSettings,   // backward-compat alias
   '/settings':  renderSettings,
   '/network':   renderNetwork,
@@ -113,7 +113,6 @@ function updateSidebarActive(path) {
     if (path === '/' && href === '/') { el.classList.add('active'); return; }
     if (path.startsWith('/battery') && href === '/battery') { el.classList.add('active'); return; }
     if (path === '/solar'  && href === '/solar')  { el.classList.add('active'); return; }
-    if (path === '/shunt'  && href === '/shunt')  { el.classList.add('active'); return; }
     if ((path === '/settings' || path === '/general') && href === '/settings') { el.classList.add('active'); return; }
     if (path === '/network' && href === '/network') { el.classList.add('active'); return; }
   });
@@ -189,8 +188,17 @@ let g_chart_b = null;
 async function fetchConfigOnce() {
   try {
     const r = await apiFetch('/api/config');
-    if (r && r.ok) g_config = await r.json();
+    if (r && r.ok) {
+      g_config = await r.json();
+      updateSolarNavVisibility();
+    }
   } catch (e) { /* thresholds unavailable until config loads */ }
+}
+
+function updateSolarNavVisibility() {
+  const navSolar = document.getElementById('nav-solar');
+  if (!navSolar) return;
+  navSolar.style.display = (g_config && g_config.ble_mppt_enabled) ? '' : 'none';
 }
 
 /* ── Alarm threshold helpers ────────────────────────────────────────────────── */
@@ -448,22 +456,25 @@ function updateDashboardCards() {
       sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '',
       color: socColor(soc),
       alarm: alarmSoc(soc),
+      src: 'bms',
     },
     {
-      label: 'Power',
+      label: 'Battery Power',
       value: power !== null ? fmt(power, 0) : '—',
       unit: 'W',
       sub: chargePill(cur),
       color: 'var(--text-primary)',
       alarm: false,
+      src: 'bms',
     },
     {
       label: 'Current (total)',
       value: cur !== null ? fmtA(cur) : '—',
       unit: 'A',
-      sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A ${curBadge}`,
+      sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`,
       color: 'var(--text-primary)',
       alarm: false,
+      src: curSrcId,
     },
     {
       label: 'Pack Voltage',
@@ -472,6 +483,7 @@ function updateDashboardCards() {
       sub: `CVL ${fmt(cvl, 2)} V`,
       color: 'var(--text-primary)',
       alarm: alarmVolt(volt),
+      src: 'bms',
     },
     // Cell Min / Max — hidden when MPPT is enabled (replaced by Solar Power + Yield Today).
     // Drift is always present.
@@ -483,6 +495,7 @@ function updateDashboardCards() {
         sub: '',
         color: cellVColor(cellMin),
         alarm: alarmCellMin(cellMin),
+        src: 'bms',
       },
       {
         label: 'Cell Max',
@@ -491,32 +504,36 @@ function updateDashboardCards() {
         sub: '',
         color: cellVColor(cellMax),
         alarm: alarmCellMax(cellMax),
+        src: 'bms',
       },
     ] : [
       {
-        label: 'Solar Power' + '<span class="source-badge badge-mppt">MPPT</span>',
+        label: 'Solar Power',
         value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
         unit: 'W',
         sub: csLabel,
         color: 'var(--brand-teal)',
         alarm: false,
+        src: 'mppt',
       },
       {
-        label: 'Yield Today' + '<span class="source-badge badge-mppt">MPPT</span>',
+        label: 'Solar yield today',
         value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
         unit: 'kWh',
         sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
         color: 'var(--brand-teal)',
         alarm: false,
+        src: 'mppt',
       },
     ]),
     {
       label: 'Cell Drift',
       value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—',
       unit: 'mV',
-      sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">⚠ Imbalance</span>' : 'Normal',
+      sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal',
       color: driftColor(cellDrift),
       alarm: alarmDrift(cellDrift),
+      src: 'bms',
     },
     {
       label: 'Temperature',
@@ -525,6 +542,7 @@ function updateDashboardCards() {
       sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
       color: 'var(--text-primary)',
       alarm: alarmTemp(temp),
+      src: 'bms',
     },
     {
       label: 'Energy Today',
@@ -533,6 +551,7 @@ function updateDashboardCards() {
       sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '',
       color: 'var(--text-primary)',
       alarm: false,
+      src: 'bms',
     },
     {
       label: 'Runtime Est.',
@@ -541,18 +560,22 @@ function updateDashboardCards() {
       sub: rtLabels[rtState] || 'Idle',
       color: 'var(--text-primary)',
       alarm: false,
+      src: 'bms',
     },
   ];
 
   grid.innerHTML = '';
   cards.forEach(c => {
     const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
+    card.style.position = 'relative';
     // Omit inline color when in alarm state so the CSS .alarm rule can control the value color.
     const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
+    const srcBadge = c.src ? `<span class="card-src card-src-${c.src}">${c.src.toUpperCase()}</span>` : '';
     card.innerHTML = `
       <div class="metric-label">${c.label}</div>
       <div class="metric-value" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
       <div class="metric-sub">${c.sub}</div>
+      ${srcBadge}
     `;
     grid.appendChild(card);
   });
@@ -600,38 +623,6 @@ function renderSolar() {
   `;
 }
 
-/* ── Shunt detail page ────────────────────────────────────────────────────────── */
-function renderShunt() {
-  const root = document.getElementById('page-root');
-  const sources = (g_live && g_live.sources) || {};
-  const s = sources.shunt || {};
-  const curSrcId = sources.battery_current_src || 'bms';
-
-  const fv = (v, dec, unit) => (v !== undefined && v !== null) ? `${Number(v).toFixed(dec)} ${unit}` : '—';
-
-  root.innerHTML = `
-    <p class="section-header">SmartShunt</p>
-    <div class="card" style="max-width:520px">
-      ${!s.enabled ? `<p style="color:var(--text-muted)">SmartShunt BLE source is not enabled. Enable it in Settings &rarr; BLE.</p>` : `
-      <table class="kv-table">
-        <tr><td>Status</td><td>${s.seen ? '<span style="color:var(--color-success)">Seen</span>' : '<span style="color:var(--text-muted)">Not seen</span>'}</td></tr>
-        <tr><td>Current</td><td>${fv(s.current_a, 2, 'A')}</td></tr>
-        <tr><td>Voltage</td><td>${fv(s.voltage_v, 2, 'V')}</td></tr>
-        <tr><td>SOC</td><td>${fv(s.soc_pct, 1, '%')}</td></tr>
-        <tr><td>Last seen</td><td>${s.seen ? Math.round((s.ms_since_last_seen||0)/1000) + ' s ago' : '—'}</td></tr>
-      </table>`}
-    </div>
-    <p class="section-header">Current Source</p>
-    <div class="card" style="max-width:520px">
-      <p>Active source for total battery current:
-        <span class="source-badge badge-${curSrcId}" style="font-size:0.75rem;padding:2px 8px">${curSrcId.toUpperCase()}</span>
-      </p>
-      <p style="color:var(--text-muted);font-size:12px;margin-top:4px">
-        BMS leads. Shunt fills in below 0.5&thinsp;A when enabled and the BMS reports near-zero.
-      </p>
-    </div>
-  `;
-}
 
 function updatePackCards() {
   const grid = document.getElementById('packs-grid');
@@ -871,6 +862,78 @@ async function loadCharts() {
 function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
+
+  const sources   = (g_live && g_live.sources) || {};
+  const shuntSrc  = sources.shunt || {};
+  const curSrcId  = sources.battery_current_src || 'bms';
+  const shuntMode = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
+  const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
+
+  const fv = (v, dec, unit) => (v !== undefined && v !== null) ? `${Number(v).toFixed(dec)} ${unit}` : '—';
+
+  const shuntSection = shuntEnabled ? `
+    <p class="section-header">SmartShunt</p>
+    <div class="card" style="max-width:560px">
+      <div style="display:flex;gap:32px;flex-wrap:wrap;margin-bottom:16px">
+        <div>
+          <div class="pack-metric-label">Current</div>
+          <div class="pack-metric-value">${fv(shuntSrc.current_a, 2, 'A')}</div>
+        </div>
+        <div>
+          <div class="pack-metric-label">Voltage</div>
+          <div class="pack-metric-value">${fv(shuntSrc.voltage_v, 2, 'V')}</div>
+        </div>
+        <div>
+          <div class="pack-metric-label">SOC</div>
+          <div class="pack-metric-value">${fv(shuntSrc.soc_pct, 1, '%')}</div>
+        </div>
+        <div>
+          <div class="pack-metric-label">Status</div>
+          <div class="pack-metric-value">${shuntSrc.seen ? '<span style="color:var(--color-success)">Seen</span>' : '<span style="color:var(--text-muted)">Not seen</span>'}</div>
+        </div>
+        ${shuntSrc.seen ? `<div><div class="pack-metric-label">Last seen</div><div class="pack-metric-value">${Math.round((shuntSrc.ms_since_last_seen||0)/1000)} s ago</div></div>` : ''}
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:14px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">Current source mode</div>
+        <div style="display:flex;flex-direction:column;gap:8px" id="shunt-mode-options">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="shunt_mode" value="0" ${shuntMode===0?'checked':''} style="margin-top:2px;width:auto">
+            <span>
+              <strong>Auto</strong> &mdash;
+              <span style="color:var(--text-muted)">BMS leads; shunt fills in below 0.5&thinsp;A dead-zone when enabled</span>
+            </span>
+          </label>
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="shunt_mode" value="1" ${shuntMode===1?'checked':''} style="margin-top:2px;width:auto">
+            <span>
+              <strong>Shunt leads</strong> &mdash;
+              <span style="color:var(--text-muted)">SmartShunt always used when available, BMS fallback</span>
+            </span>
+          </label>
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="shunt_mode" value="2" ${shuntMode===2?'checked':''} style="margin-top:2px;width:auto">
+            <span>
+              <strong>BMS leads</strong> &mdash;
+              <span style="color:var(--text-muted)">BMS always used; shunt ignored</span>
+            </span>
+          </label>
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" onclick="saveShuntMode()">Save</button>
+          <span id="shunt-mode-feedback" style="font-size:12px"></span>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-top:10px">
+          Active source: <span class="card-src card-src-${curSrcId}" style="position:static;display:inline-block">${curSrcId.toUpperCase()}</span>
+        </p>
+      </div>
+    </div>
+  ` : (g_config && !shuntEnabled ? `
+    <p class="section-header">SmartShunt</p>
+    <div class="card" style="max-width:560px">
+      <p style="color:var(--text-muted)">SmartShunt BLE source is not enabled. Enable it in General &rarr; BLE.</p>
+    </div>
+  ` : '');
+
   root.innerHTML = `
     <div style="padding:24px">
       <h2 style="margin:0 0 6px;font-size:20px">Battery Packs</h2>
@@ -878,8 +941,35 @@ function renderBattery() {
       <div class="packs-grid" id="battery-overview-grid">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>
       </div>
+      ${shuntSection}
     </div>`;
   updateBatteryOverviewCards();
+}
+
+async function saveShuntMode() {
+  const fb = document.getElementById('shunt-mode-feedback');
+  const sel = document.querySelector('input[name="shunt_mode"]:checked');
+  if (!sel) return;
+  const mode = parseInt(sel.value, 10);
+  const cfg = Object.assign({}, g_config, { shunt_current_mode: mode, auth_hash: '' });
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (fb) { fb.style.color = 'var(--color-success)'; fb.textContent = 'Saved.'; }
+      setTimeout(() => { if (fb) fb.textContent = ''; }, 2000);
+    } else {
+      if (fb) { fb.style.color = 'var(--red)'; fb.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (fb) { fb.style.color = 'var(--red)'; fb.textContent = 'Network error.'; }
+  }
 }
 
 function updateBatteryOverviewCards() {

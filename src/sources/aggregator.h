@@ -39,6 +39,10 @@ public:
   // Keeps non-owning pointers — lifetime managed by caller (boot.cpp singletons).
   void init(BmsSource* bms, ShuntSource* shunt, MpptSource* mppt);
 
+  // Apply a new shunt current mode at runtime (e.g. after config save).
+  // Thread-safe: called from httpd task, reading() from BMS task.
+  void set_shunt_mode(Config::ShuntCurrentMode mode);
+
   // Refresh all enabled sources. Call once per BMS poller cycle.
   void update();
 
@@ -51,15 +55,20 @@ public:
   // bms_r:   BmsSource reading for the metric.
   // shunt_r: ShuntSource reading (may be Unavailable if disabled).
   // mppt_r:  MpptSource reading (may be Unavailable if disabled).
+  // mode:    shunt current mode (defaults to Auto for backward compat in tests).
   static SourceReading select(Metric m,
                               const SourceReading& bms_r,
                               const SourceReading& shunt_r,
-                              const SourceReading& mppt_r);
+                              const SourceReading& mppt_r,
+                              Config::ShuntCurrentMode mode = Config::ShuntCurrentMode::Auto);
 
 private:
   BmsSource*   m_bms   = nullptr;
   ShuntSource* m_shunt = nullptr;
   MpptSource*  m_mppt  = nullptr;
+  // Atomic-ish: written from httpd task, read from BMS task.
+  // Single-byte enum fits in one bus transaction on Xtensa — no spinlock needed.
+  volatile Config::ShuntCurrentMode m_shunt_mode = Config::ShuntCurrentMode::Auto;
 };
 
 }  // namespace sources

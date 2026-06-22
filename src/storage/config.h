@@ -28,7 +28,10 @@
 // v8 → v9: added mqtt_solar_passthrough_topic (V3.1 OpenDTU display-only integration).
 //           sizeof(Config) grows 816 → 880 B.
 //           Migration: mqtt_solar_passthrough_topic = '' (feature off; owner configures later).
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 9;
+// v9 → v10: added shunt_current_mode (uint8_t) — user-selectable aggregation rule.
+//            sizeof(Config) grows 880 → 884 B (1 B field + 3 B tail padding).
+//            Migration: Auto (preserves existing behaviour).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 10;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -249,7 +252,19 @@ struct Config {
   // Empty = feature disabled; gateway subscribes and displays on Solar detail page.
   // Display-only — no control sent to the DTU/inverter. Read-only monitoring.
   char mqtt_solar_passthrough_topic[64];
-  // sizeof(Config) = 880 B (816 + 64 = 880, divisible by 4)
+
+  // ── Shunt current aggregation mode (v10) ─────────────────────────────────────
+  // Controls which source provides TOTAL_CURRENT when SmartShunt is enabled.
+  //   Auto       — BMS leads; shunt takes over below 0.5 A (BMS dead-zone).
+  //   ShuntLeads — SmartShunt always leads; BMS is fallback when shunt unavailable.
+  //   BmsLeads   — BMS always leads; shunt reading is supplementary/display only.
+  enum class ShuntCurrentMode : uint8_t {
+    Auto       = 0,
+    ShuntLeads = 1,
+    BmsLeads   = 2,
+  };
+  ShuntCurrentMode shunt_current_mode;
+  // sizeof(Config) = 884 B (880 + 1 field + 3 B tail padding)
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

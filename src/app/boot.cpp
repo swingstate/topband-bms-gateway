@@ -62,6 +62,8 @@ bool update_and_save_config(const Config& new_cfg) {
     return false;
   }
   g_config = new_cfg;
+  // Apply live-settable changes that take effect without reboot.
+  sources::aggregator()->set_shunt_mode(new_cfg.shunt_current_mode);
   return true;
 }
 

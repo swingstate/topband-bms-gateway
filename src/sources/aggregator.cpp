@@ -14,6 +14,10 @@ void Aggregator::init(BmsSource* bms, ShuntSource* shunt, MpptSource* mppt) {
   m_mppt  = mppt;
 }
 
+void Aggregator::set_shunt_mode(Config::ShuntCurrentMode mode) {
+  m_shunt_mode = mode;
+}
+
 void Aggregator::update() {
   if (m_bms)   m_bms->update();
   if (m_shunt && m_shunt->enabled()) m_shunt->update();
@@ -26,7 +30,7 @@ SourceReading Aggregator::reading(Metric m) const {
                                                            : unavailable_reading();
   SourceReading mppt_r  = (m_mppt  && m_mppt->enabled())  ? m_mppt->reading(m)
                                                            : unavailable_reading();
-  return select(m, bms_r, shunt_r, mppt_r);
+  return select(m, bms_r, shunt_r, mppt_r, m_shunt_mode);
 }
 
 // ── Pure selection function ───────────────────────────────────────────────────
@@ -35,15 +39,24 @@ SourceReading Aggregator::reading(Metric m) const {
 SourceReading Aggregator::select(Metric m,
                                  const SourceReading& bms_r,
                                  const SourceReading& shunt_r,
-                                 const SourceReading& mppt_r) {
+                                 const SourceReading& mppt_r,
+                                 Config::ShuntCurrentMode mode) {
   switch (m) {
     case Metric::TOTAL_CURRENT: {
-      // BMS leads by default. Below SHUNT_LEAD_THRESHOLD_A the BMS coulomb
-      // counter is inaccurate (reports 0 or near-zero); shunt fills the gap
-      // when enabled and has a valid reading.
-      float bms_abs = bms_r.is_usable() ? fabsf(bms_r.value) : 0.0f;
-      if (bms_abs < SHUNT_LEAD_THRESHOLD_A && shunt_r.is_usable()) return shunt_r;
-      return bms_r;
+      switch (mode) {
+        case Config::ShuntCurrentMode::ShuntLeads:
+          // Shunt always leads; BMS is fallback when shunt unavailable.
+          return shunt_r.is_usable() ? shunt_r : bms_r;
+        case Config::ShuntCurrentMode::BmsLeads:
+          // BMS always leads; shunt is display-only supplementary.
+          return bms_r;
+        default: // Auto
+          // BMS leads. Below SHUNT_LEAD_THRESHOLD_A the BMS coulomb counter
+          // is inaccurate (reports 0 or near-zero); shunt fills the gap.
+          float bms_abs = bms_r.is_usable() ? fabsf(bms_r.value) : 0.0f;
+          if (bms_abs < SHUNT_LEAD_THRESHOLD_A && shunt_r.is_usable()) return shunt_r;
+          return bms_r;
+      }
     }
 
     case Metric::TOTAL_VOLTAGE:

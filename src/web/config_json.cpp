@@ -97,6 +97,9 @@ void config_to_json(const Config& c, JsonDocument& doc) {
 
   // v9 Solar Passthrough MQTT topic (non-secret, included in export/import)
   doc["mqtt_solar_passthrough_topic"] = c.mqtt_solar_passthrough_topic;
+
+  // v10 Shunt current aggregation mode
+  doc["shunt_current_mode"] = (uint8_t)c.shunt_current_mode;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -292,6 +295,12 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
 
   // v9 Solar Passthrough MQTT topic
   copy_str(doc["mqtt_solar_passthrough_topic"], c.mqtt_solar_passthrough_topic);
+
+  // v10 Shunt current aggregation mode
+  if (doc["shunt_current_mode"].is<uint8_t>()) {
+    uint8_t raw = doc["shunt_current_mode"].as<uint8_t>();
+    if (raw <= 2) c.shunt_current_mode = static_cast<Config::ShuntCurrentMode>(raw);
+  }
 
   return true;
 }

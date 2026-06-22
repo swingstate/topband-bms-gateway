@@ -1,4 +1,5 @@
 #include "handlers_live.h"
+#include "app/boot.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
 #include "bms/runtime_estimator.h"
@@ -168,6 +169,9 @@ esp_err_t handle_live(httpd_req_t* req) {
     sources::MpptSource*  mppt  = sources::mppt_source();
 
     JsonObject src = doc["sources"].to<JsonObject>();
+
+    // Expose the configured shunt mode so the UI can show the active policy.
+    src["shunt_current_mode"] = (uint8_t)app::get_config().shunt_current_mode;
 
     // battery_current_src: mirrors aggregator TOTAL_CURRENT selection rule.
     // Shunt leads only when |BMS current| < 0.5 A and shunt has a valid reading.

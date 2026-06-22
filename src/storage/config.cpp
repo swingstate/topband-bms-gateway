@@ -865,6 +865,90 @@ struct Config_v8 {
 static_assert(sizeof(Config_v8) == 816,
     "Config_v8 size drifted from expected 816 B — check alignment against v8 NVS blobs");
 
+// Historical Config layout at schema version 9.
+// Config_v8 + mqtt_solar_passthrough_topic[64] = 880 B.
+struct Config_v9 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  Config::SocMode          soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  uint16_t                 notify_debounce_s;
+  Config::BatteryConfigMode battery_config_mode;
+  bool                     ble_shunt_enabled;
+  bool                     ble_mppt_enabled;
+  char                     ble_shunt_mac[18];
+  char                     ble_mppt_mac[18];
+  char                     ble_shunt_key[33];
+  char                     ble_mppt_key[33];
+  char                     wifi_bssid[18];
+  int8_t                   wifi_rssi_threshold;
+  char                     mqtt_solar_passthrough_topic[64];
+  // 880 B total (880 % 4 = 0, no tail padding)
+};
+
+static_assert(sizeof(Config_v9) == 880,
+    "Config_v9 size drifted from expected 880 B — check alignment against v9 NVS blobs");
+
 // ── v6 → v7 migration ────────────────────────────────────────────────────────
 // BLE source fields are the only additions. All default to disabled/empty so
 // system behaviour is byte-for-byte identical to V3.0 after migration.
@@ -1135,6 +1219,99 @@ static bool migrate_v8_to_v9(const uint8_t* buf, size_t len, Config& out) {
   return true;
 }
 
+// ── v9 → v10 migration ───────────────────────────────────────────────────────
+// shunt_current_mode is the only new field.
+// Default Auto: preserves existing BMS-leads / shunt-fills-dead-zone behaviour.
+static bool migrate_v9_to_v10(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v9)) return false;
+
+  Config_v9 v9;
+  memcpy(&v9, buf, sizeof(Config_v9));
+
+  // Start from DEFAULT_CONFIG so shunt_current_mode gets Auto.
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v9.board_preset;
+  out.pins                    = v9.pins;
+  out.rs485_enabled           = v9.rs485_enabled;
+  out.bms_count               = v9.bms_count;
+  out.force_cell_count        = v9.force_cell_count;
+  out.can_protocol            = v9.can_protocol;
+  out.can_enabled             = v9.can_enabled;
+  out.charge_amps_per_pack    = v9.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v9.discharge_amps_per_pack;
+  out.cvl_voltage             = v9.cvl_voltage;
+  out.safe_pack_volt          = v9.safe_pack_volt;
+  out.safe_cell_volt          = v9.safe_cell_volt;
+  out.safe_cell_drift         = v9.safe_cell_drift;
+  out.spike_volt_max          = v9.spike_volt_max;
+  out.spike_curr_max          = v9.spike_curr_max;
+  out.spike_soc_max           = v9.spike_soc_max;
+  out.charge_temp_min         = v9.charge_temp_min;
+  out.charge_temp_max         = v9.charge_temp_max;
+  out.discharge_temp_min      = v9.discharge_temp_min;
+  out.discharge_temp_max      = v9.discharge_temp_max;
+  out.temp_soft_zone          = v9.temp_soft_zone;
+  out.temp_mode               = v9.temp_mode;
+  out.soc_mode                = v9.soc_mode;
+  out.setup_mode              = v9.setup_mode;
+  out.auto_from_bms_applied   = v9.auto_from_bms_applied;
+  out.maint_charge_enabled    = v9.maint_charge_enabled;
+  out.maint_target_voltage    = v9.maint_target_voltage;
+  out.auto_balance_enabled    = v9.auto_balance_enabled;
+  out.auto_balance_last_ts    = v9.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v9.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v9.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v9.timezone_offset_h;
+  out.mqtt_enabled            = v9.mqtt_enabled;
+  memcpy(out.mqtt_host,       v9.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v9.mqtt_port;
+  memcpy(out.mqtt_user,       v9.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v9.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v9.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v9.mqtt_level;
+  out.mqtt_diag_enabled       = v9.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v9.ha_discovery_enabled;
+  out.mqtt_full_publish       = v9.mqtt_full_publish;
+  out.auth_enabled            = v9.auth_enabled;
+  memcpy(out.auth_user, v9.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v9.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v9.theme_id;
+  out.chart_series_a          = v9.chart_series_a;
+  out.chart_series_b          = v9.chart_series_b;
+  out.ui_poll_live_ms         = v9.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v9.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v9.ui_poll_alerts_ms;
+  out.last_reset_ts           = v9.last_reset_ts;
+  out.serial_debug_enabled    = v9.serial_debug_enabled;
+  out.spy_persist_default     = v9.spy_persist_default;
+  out.notify_telegram_enabled  = v9.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v9.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v9.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  memcpy(out.notify_sender_name,      v9.notify_sender_name,      sizeof(out.notify_sender_name));
+  out.notify_alert_flags          = v9.notify_alert_flags;
+  out.notify_telegram_last_ok_ts  = v9.notify_telegram_last_ok_ts;
+  out.notify_poll_interval_s      = v9.notify_poll_interval_s;
+  out.notify_cooldown_s           = v9.notify_cooldown_s;
+  out.notify_telegram_verified    = v9.notify_telegram_verified;
+  out.notify_debounce_s           = v9.notify_debounce_s;
+  out.battery_config_mode         = v9.battery_config_mode;
+  out.ble_shunt_enabled           = v9.ble_shunt_enabled;
+  out.ble_mppt_enabled            = v9.ble_mppt_enabled;
+  memcpy(out.ble_shunt_mac, v9.ble_shunt_mac, sizeof(out.ble_shunt_mac));
+  memcpy(out.ble_mppt_mac,  v9.ble_mppt_mac,  sizeof(out.ble_mppt_mac));
+  memcpy(out.ble_shunt_key, v9.ble_shunt_key, sizeof(out.ble_shunt_key));
+  memcpy(out.ble_mppt_key,  v9.ble_mppt_key,  sizeof(out.ble_mppt_key));
+  memcpy(out.wifi_bssid,    v9.wifi_bssid,    sizeof(out.wifi_bssid));
+  out.wifi_rssi_threshold  = v9.wifi_rssi_threshold;
+  memcpy(out.mqtt_solar_passthrough_topic, v9.mqtt_solar_passthrough_topic,
+         sizeof(out.mqtt_solar_passthrough_topic));
+  // shunt_current_mode: stays at DEFAULT_CONFIG value (Auto).
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
+
 }  // namespace
 
 // Config layout check (updated each schema version).
@@ -1151,9 +1328,11 @@ static bool migrate_v8_to_v9(const uint8_t* buf, size_t len, Config& out) {
 //   800 B (v7) - 3 B tail pad + 19 B new fields = 816 B raw; 816 % 4 = 0, no new pad.
 // v9 additions: char[64] mqtt_solar_passthrough_topic = 64 B appended.
 //   816 B (v8) + 64 B = 880 B; 880 % 4 = 0, no new pad.
+// v10 additions: ShuntCurrentMode (uint8_t) at end.
+//   880 B (v9) + 1 B = 881 B raw; compiler pads to 884 B (4-byte alignment).
 // This assert catches field additions or reorderings that silently change the NVS blob.
-static_assert(sizeof(Config) == 880,
-    "Config size drifted from expected 880 B — if intentional, bump schema version, "
+static_assert(sizeof(Config) == 884,
+    "Config size drifted from expected 884 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
@@ -1492,6 +1671,10 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     if (len < sizeof(Config)) return false;
     memcpy(&out, buf, sizeof(Config));
     return true;
+  }
+
+  if (ver == 9) {
+    return migrate_v9_to_v10(buf, len, out);
   }
 
   if (ver == 8) {
