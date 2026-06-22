@@ -155,6 +155,15 @@ function chargePill(current) {
   return pill('Idle', 'pill-idle');
 }
 
+function csPill(cs) {
+  const labels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
+  const label = labels[cs] !== undefined ? labels[cs] : `State ${cs}`;
+  const cls = (cs === 3 || cs === 4) ? 'pill-charging'
+            : (cs === 5 || cs === 6) ? 'pill-idle'
+            : cs === 2 ? 'pill-discharging' : 'pill-idle';
+  return `<span class="charging-pill ${cls}">${label}</span>`;
+}
+
 function formatRuntime(min) {
   if (min === undefined || min < 0) return '—';
   const h = Math.floor(min / 60);
@@ -445,8 +454,6 @@ function updateDashboardCards() {
   const pvCurrA     = mpptEnabled && mpptSrc.pv_i_valid      ? mpptSrc.pv_current_a  : null;
   const yieldWh     = mpptEnabled && mpptSrc.yield_valid     ? mpptSrc.yield_today_wh : null;
 
-  const chargeStateLabels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
-  const csLabel = mpptEnabled ? (chargeStateLabels[mpptSrc.charge_state] || `State ${mpptSrc.charge_state}`) : '—';
 
   // Layout: 5 columns, 2 rows.
   // Row 1: [Solar/CellMin] [Battery Power (Total)] [SOC] [Cell Drift] [Temperature]
@@ -455,7 +462,7 @@ function updateDashboardCards() {
     label: 'Solar Power',
     value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
     unit: 'W',
-    sub: csLabel,
+    sub: mpptEnabled ? csPill(mpptSrc.charge_state) : '—',
     color: 'var(--text-primary)',
     alarm: false,
     src: 'mppt',
@@ -505,15 +512,16 @@ function updateDashboardCards() {
   grid.innerHTML = '';
   cards.forEach(c => {
     const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
-    card.style.position = 'relative';
     // Omit inline color when in alarm state so the CSS .alarm rule can control the value color.
     const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
     const srcBadge = c.src ? `<span class="card-src card-src-${c.src}">${c.src.toUpperCase()}</span>` : '';
     card.innerHTML = `
       <div class="metric-label">${c.label}</div>
       <div class="metric-value" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
-      <div class="metric-sub">${c.sub}</div>
-      ${srcBadge}
+      <div class="metric-footer">
+        <span class="metric-sub">${c.sub}</span>
+        ${srcBadge}
+      </div>
     `;
     grid.appendChild(card);
   });
@@ -933,14 +941,20 @@ function renderBattery() {
         <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
           <button class="btn btn-primary" onclick="saveShuntMode()">Save</button>
           <span id="shunt-mode-feedback" style="font-size:12px"></span>
-          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src" style="position:static;display:inline-block">—</span></span>
+          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src">—</span></span>
         </div>
       </div>
     </div>` : (g_config ? `
     <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
-    <div class="card">
-      <p style="color:var(--text-muted);font-size:13px;margin:0">SmartShunt BLE source is not enabled.
-        Configure it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</p>
+    <div class="card" style="padding:18px">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div class="pack-status-dot offline" style="flex-shrink:0"></div>
+        <div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px">Not enabled</div>
+          <div style="font-size:12px;color:var(--text-muted)">SmartShunt BLE source is disabled.
+            Configure it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</div>
+        </div>
+      </div>
     </div>` : '');
 
   root.innerHTML = `
@@ -955,13 +969,13 @@ function renderBattery() {
       <!-- Aggregate metrics -->
       <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
         <div style="display:flex;align-items:center">
-          ${batteryMBox('SOC', 'bagg-soc')}
+          ${batteryMBox('Combined SOC', 'bagg-soc')}
           ${batteryVDiv()}
           ${batteryMBox('Pack Voltage', 'bagg-volt')}
           ${batteryVDiv()}
-          ${batteryMBox('Current', 'bagg-curr')}
+          ${batteryMBox('Combined Current', 'bagg-curr')}
           ${batteryVDiv()}
-          ${batteryMBox('Power', 'bagg-pow')}
+          ${batteryMBox('Combined Power', 'bagg-pow')}
         </div>
       </div>
       <!-- Pack grid -->
@@ -1051,7 +1065,7 @@ function updateBatteryOverviewCards() {
   setEl('sagg-soc',  shunt.soc_pct  !== undefined ? fmt(shunt.soc_pct, 1) + ' %' : '—', shuntSeen ? socColor(shunt.soc_pct) : 'var(--text-muted)');
   const curSrcId = sources.battery_current_src || 'bms';
   const srcEl = document.getElementById('shunt-active-src');
-  if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; srcEl.style.position = 'static'; srcEl.style.display = 'inline-block'; }
+  if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; }
 
   // ── Pack grid ──
   if (packs.length === 0) {
@@ -1111,7 +1125,7 @@ function renderBatteryOverviewCard(card, p) {
       <span class="pack-id">BMS ${p.bms_id + 1}</span>
       <div class="pack-status-dot ${online ? 'online' : 'offline'}"></div>
       <span style="font-size:12px;color:var(--fg-muted)">${online ? 'Online' : 'Offline'}</span>
-      <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">tap for detail ›</span>
+      <span class="pack-detail-btn">Details ›</span>
     </div>
     <div class="pack-metrics">
       <div><div class="pack-metric-label">SOC</div><div class="pack-metric-value" style="color:var(--purple)">${p.soc !== undefined ? p.soc + '%' : '—'}</div></div>

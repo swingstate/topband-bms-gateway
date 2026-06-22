@@ -235,34 +235,55 @@ a { text-decoration: none; color: inherit; }
 .pill-mppt  { background: var(--color-success); color: #fff; }
 .pill-shunt { background: #7c6fcd;             color: #fff; }
 
-/* ── Card source indicator (subtle pill, positioned bottom-right) ─────────────── */
+/* ── Card source indicator (inline pill, used in metric-footer row) ───────────── */
 .card-src {
-  position: absolute;
-  bottom: 8px;
-  right: 10px;
+  display: inline-block;
+  flex-shrink: 0;
   font-size: 0.58rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   padding: 1px 6px;
   border-radius: 999px;
-  opacity: 0.75;
   pointer-events: none;
 }
 .card-src-bms   {
-  background: color-mix(in srgb, var(--color-success) 18%, var(--bg-card));
+  background: color-mix(in srgb, var(--color-success) 14%, var(--bg-card));
   color: var(--color-success);
-  border: 1px solid color-mix(in srgb, var(--color-success) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 28%, transparent);
 }
 .card-src-mppt  {
-  background: color-mix(in srgb, var(--brand-teal) 18%, var(--bg-card));
-  color: var(--brand-teal);
-  border: 1px solid color-mix(in srgb, var(--brand-teal) 30%, transparent);
+  background: color-mix(in srgb, var(--brand-teal) 14%, var(--bg-card));
+  color: color-mix(in srgb, var(--brand-teal) 75%, #000);
+  border: 1px solid color-mix(in srgb, var(--brand-teal) 28%, transparent);
 }
 .card-src-shunt {
-  background: color-mix(in srgb, #7c6fcd 18%, var(--bg-card));
-  color: #9d92e0;
-  border: 1px solid color-mix(in srgb, #7c6fcd 30%, transparent);
+  background: color-mix(in srgb, #7c6fcd 14%, var(--bg-card));
+  color: #8a80c8;
+  border: 1px solid color-mix(in srgb, #7c6fcd 28%, transparent);
+}
+
+/* ── Metric card footer row (sub + src badge side by side) ───────────────────── */
+.metric-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+}
+.metric-footer .metric-sub { flex: 1; min-width: 0; }
+
+/* ── Pack detail chip ─────────────────────────────────────────────────────────── */
+.pack-detail-btn {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 8%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
+  border-radius: 5px;
+  padding: 2px 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 /* Inline source badge (kept for label use only) */
