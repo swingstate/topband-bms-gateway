@@ -47,6 +47,20 @@ uint32_t dropped_count();
 // Safety/control and the alert log are unaffected when degraded.
 bool is_degraded();
 
+// True if a TLS handshake is currently in progress (semaphore held by send/test task).
+// Used by the BLE spike Diag panel to correlate heap dips with TLS pressure points.
+bool is_tls_busy();
+
+// ── Dev TLS burst trigger (V3.1 Phase A gate-hardening) ──────────────────────
+// Only compiled when BLE_SPIKE_DEV_BURST=1. Production-inert otherwise.
+// Fires N back-to-back notify::send() calls (reusing the real TLS path) to stress-test
+// DRAM fragmentation alongside BLE scanning. NOT wired to the safety/control path.
+#if BLE_SPIKE_DEV_BURST
+bool dev_tls_burst_start(int n);   // kick off N sequential TLS handshakes; false if already running
+bool dev_tls_burst_active();       // true while the burst coordinator task is running
+int  dev_tls_burst_fired();        // total send() calls issued since boot by burst trigger
+#endif
+
 // ── Test send ─────────────────────────────────────────────────────────────────
 
 enum class TestStatus : uint8_t { Idle, Running, Ok, Failed };

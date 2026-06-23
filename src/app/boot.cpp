@@ -26,6 +26,8 @@
 #include "mqtt/publisher.h"
 #include "mqtt/ha_discovery.h"
 #include "notify/notify.h"
+#include "sources/registry.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -60,6 +62,8 @@ bool update_and_save_config(const Config& new_cfg) {
     return false;
   }
   g_config = new_cfg;
+  // Apply live-settable changes that take effect without reboot.
+  sources::aggregator()->set_shunt_mode(new_cfg.shunt_current_mode);
   return true;
 }
 
@@ -150,6 +154,12 @@ void run_boot() {
   // ── Step 3a: Notify module (TLS semaphore + persisted verified state) ─────
   notify::init();
 
+  // ── Step 3b: Source registry (BmsSource / ShuntSource / MpptSource / Aggregator)
+  // Must run before any task that calls sources::aggregator()->reading().
+  // Default-off invariant: with both BLE flags false this is a ~100 B BSS init,
+  // no heap allocation, and identical runtime behaviour to V3.0.
+  sources::init_registry(g_config);
+
   // ── Step 4: Snapshot bus (PSRAM double-buffer) ───────────────────────────
   {
     uint32_t psram_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -218,7 +228,9 @@ void run_boot() {
       enter_captive_portal();
       // Fall through to Step 9 (ControlTask) — BMS polling still runs.
     } else {
-      sta_connected = net::wifi::start_sta(30000);
+      sta_connected = net::wifi::start_sta(30000,
+                                               g_config.wifi_bssid[0] ? g_config.wifi_bssid : nullptr,
+                                               g_config.wifi_rssi_threshold);
       if (!sta_connected) {
         ESP_LOGW(TAG, "STA connect failed — falling back to captive portal");
         enter_captive_portal();
@@ -288,6 +300,26 @@ void run_boot() {
     ESP_LOGE(TAG, "ControlTask creation failed");
   } else {
     ESP_LOGI(TAG, "ControlTask created on Core 0 (bms_count=%u)", g_config.bms_count);
+  }
+
+  // ── Step 10.5: BLE scanner (V3.1 spike — after ControlTask is running) ──────
+  // SAFETY: BLE init NEVER runs before the BMS/CAN path is live. A BLE failure
+  // here cannot prevent safety/control from operating. Control path is unconditional.
+  // SAFETY: BLE stack is only started when at least one BLE source flag is set.
+  // With both flags false, this block is not entered and NimBLE is never initialized.
+  // STA gate: BLE must not run in AP/captive-portal mode. The captive portal's
+  // WiFi scan issues probe requests that compete with NimBLE for the 2.4 GHz
+  // radio; the probe responses are dropped and the scan returns empty results.
+  if (sta_connected && (g_config.ble_shunt_enabled || g_config.ble_mppt_enabled)) {
+    bool ble_ok = sources::ble_scanner::start(g_config,
+                                              sources::shunt_source(),
+                                              sources::mppt_source());
+    if (ble_ok) {
+      ESP_LOGI(TAG, "BLE scanner started — shunt=%d mppt=%d",
+               (int)g_config.ble_shunt_enabled, (int)g_config.ble_mppt_enabled);
+    } else {
+      ESP_LOGW(TAG, "BLE scanner start failed — continuing without BLE (non-fatal)");
+    }
   }
 
   // ── Step 11: Smoke reader (Phase C validation — Core 1) ──────────────────

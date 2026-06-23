@@ -109,6 +109,13 @@ a { text-decoration: none; color: inherit; }
   flex-shrink: 0;
   z-index: 10;
 }
+.sidebar-items { flex: 1; }
+.sidebar-bottom {
+  width: 100%;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 4px;
+  margin-top: 4px;
+}
 
 .sidebar-logo {
   width: 36px;
@@ -124,7 +131,12 @@ a { text-decoration: none; color: inherit; }
   gap: 2px;
   width: 100%;
   padding: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
 }
+.sidebar-items::-webkit-scrollbar { display: none; }
 
 .sidebar-item {
   display: flex;
@@ -222,7 +234,80 @@ a { text-decoration: none; color: inherit; }
 /* Gray/off state shared by wifi + mqtt when not connected / disabled */
 .pill-wifi.off,
 .pill-mqtt.off,
-.pill-can.off    { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-can.off,
+.pill-mppt.off,
+.pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-mppt  { background: var(--color-success); color: #fff; }
+.pill-shunt { background: #7c6fcd;             color: #fff; }
+
+/* ── Card source indicator (inline pill, used in metric-footer row) ───────────── */
+.card-src {
+  display: inline-block;
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.card-src-bms   {
+  background: color-mix(in srgb, var(--color-success) 14%, var(--bg-card));
+  color: var(--color-success);
+  border: 1px solid color-mix(in srgb, var(--color-success) 28%, transparent);
+}
+.card-src-mppt  {
+  background: color-mix(in srgb, var(--brand-teal) 14%, var(--bg-card));
+  color: color-mix(in srgb, var(--brand-teal) 75%, #000);
+  border: 1px solid color-mix(in srgb, var(--brand-teal) 28%, transparent);
+}
+.card-src-shunt {
+  background: color-mix(in srgb, #7c6fcd 14%, var(--bg-card));
+  color: #8a80c8;
+  border: 1px solid color-mix(in srgb, #7c6fcd 28%, transparent);
+}
+
+/* ── Metric card footer row (sub + src badge side by side) ───────────────────── */
+.metric-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+}
+.metric-footer .metric-sub { flex: 1; min-width: 0; }
+
+/* ── Pack detail chip ─────────────────────────────────────────────────────────── */
+.pack-detail-btn {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 8%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
+  border-radius: 5px;
+  padding: 2px 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Inline source badge (kept for label use only) */
+.source-badge {
+  display: inline-block;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 1.5;
+  opacity: 0.8;
+}
+.badge-bms   { background: color-mix(in srgb, var(--color-success) 18%, var(--bg-card)); color: var(--color-success); border: 1px solid color-mix(in srgb, var(--color-success) 30%, transparent); }
+.badge-mppt  { background: color-mix(in srgb, var(--brand-teal) 18%, var(--bg-card));    color: var(--brand-teal);    border: 1px solid color-mix(in srgb, var(--brand-teal) 30%, transparent); }
+.badge-shunt { background: color-mix(in srgb, #7c6fcd 18%, var(--bg-card));              color: #9d92e0;              border: 1px solid color-mix(in srgb, #7c6fcd 30%, transparent); }
 
 .topbar-time { font-size: 13px; font-weight: 600; color: var(--text-muted); min-width: 40px; text-align: right; }
 
@@ -513,7 +598,7 @@ a { text-decoration: none; color: inherit; }
 }
 
 /* Legacy single-column settings page */
-.settings-page { max-width: 680px; }
+.settings-page { max-width: 680px; margin: 0 auto; }
 .settings-section { margin-bottom: 24px; }
 .settings-section-title {
   font-size: 13px;
@@ -850,7 +935,7 @@ a { text-decoration: none; color: inherit; }
 }
 
 /* ── Network page ───────────────────────────────────────────────────────────── */
-.network-page { max-width: 680px; }
+.network-page { max-width: 680px; margin: 0 auto; }
 
 .net-kv-grid {
   display: grid;
@@ -965,4 +1050,102 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
     background: color-mix(in srgb, var(--brand-teal) 8%, transparent);
   }
   .settings-content { padding: 16px; }
+}
+
+/* ── Mobile layout (bottom nav) ───────────────────────────────────────────── */
+@media (max-width: 639px) {
+  body { height: 100dvh; }
+
+  /* Sidebar → fixed bottom tab bar */
+  .sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: stretch;
+    border-right: none;
+    border-top: 1px solid rgba(255,255,255,0.10);
+    padding: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 50;
+  }
+  .sidebar-logo { display: none; }
+  .sidebar-items {
+    flex-direction: row;
+    flex: 1;
+    gap: 0;
+    padding: 0;
+    justify-content: space-around;
+    overflow-x: auto;
+  }
+  .sidebar-bottom {
+    width: auto;
+    border-top: none;
+    border-left: 1px solid rgba(255,255,255,0.10);
+    padding: 0;
+    margin: 0;
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+  }
+  .sidebar-item {
+    padding: 7px 4px 5px;
+    border-left: none;
+    border-top: 2px solid transparent;
+    font-size: 9px;
+    flex: 1;
+    min-width: 44px;
+    max-width: 72px;
+    justify-content: center;
+  }
+  .sidebar-item svg { width: 18px; height: 18px; }
+  .sidebar-item.active {
+    border-left-color: transparent;
+    border-top-color: var(--brand-teal);
+    background: rgba(118, 210, 217, 0.08);
+  }
+
+  /* Main area: full width, reserve bottom for tab bar */
+  .main { width: 100%; }
+  .content {
+    padding: 10px;
+    padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Topbar: compact, hide pills that overflow */
+  .topbar { padding: 0 10px; gap: 6px; }
+  .topbar-title { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-time { display: none; }
+  .status-pill { display: none !important; }
+
+  /* Dashboard metric grid: single column on portrait mobile */
+  .metrics-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .metric-value { font-size: 22px; }
+  .metric-card { padding: 10px 12px; }
+  .charging-pill { font-size: 0.65rem; padding: 2px 7px; }
+  .card-src { font-size: 0.55rem; padding: 1px 5px; }
+
+  /* Charts: single column */
+  .charts-row { grid-template-columns: 1fr; }
+
+  /* Pack grid: single column */
+  .packs-grid { grid-template-columns: 1fr; }
+
+  /* Subpage wrappers: full-width on mobile */
+  .network-page { max-width: 100%; }
+  .settings-page { max-width: 100%; }
+
+  /* Net kv grid: narrower label column */
+  .net-kv-grid { grid-template-columns: 120px 1fr; }
+
+  /* Diag table: allow horizontal scroll */
+  .diag-tasks-table { font-size: 11px; }
 }

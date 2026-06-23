@@ -45,6 +45,29 @@ def read_ui_version():
     return "unknown"
 
 
+def auto_increment_ui_version():
+    """Bump the dev.N suffix in ui_provisioner.h on every build.
+
+    Ensures every pio run embeds a fresh version so the device can detect
+    that new UI assets need to be extracted from the tar.
+    Pattern matched: *-dev.N  →  *-dev.N+1
+    """
+    try:
+        text = PROV_HEADER.read_text(encoding="utf-8")
+        def _bump(m):
+            return m.group(0).replace(
+                f'.{m.group(1)}"', f'.{int(m.group(1)) + 1}"'
+            )
+        new_text, n = re.subn(
+            r'UI_VERSION\s*=\s*"[^"]*-dev\.(\d+)"', _bump, text
+        )
+        if n:
+            PROV_HEADER.write_text(new_text, encoding="utf-8")
+    except OSError as exc:
+        print(f"[build_ui] Warning: could not auto-increment UI version: {exc}",
+              file=sys.stderr)
+
+
 def build_tarball():
     if not UI_DIR.exists():
         print(f"[build_ui] ERROR: {UI_DIR} not found", file=sys.stderr)
@@ -108,10 +131,9 @@ def pre_generate_embed_s(raw_tar_bytes):
     embed_s = BUILD_DIR / "littlefs_ui.tar.S"
     embed_s.parent.mkdir(parents=True, exist_ok=True)
 
-    # Skip if .S is newer than the tar (already up-to-date).
-    if embed_s.exists() and embed_s.stat().st_mtime >= OUT_TAR.stat().st_mtime:
-        print(f"[build_ui] {embed_s.name} up-to-date, skipping generation")
-        return
+    # Always regenerate: mtime comparison can be unreliable when tar and .S
+    # are written within the same filesystem timestamp granularity (same second),
+    # causing the staleness check to incorrectly skip embedding fresh UI assets.
 
     try:
         result = subprocess.run(
@@ -132,5 +154,6 @@ def pre_generate_embed_s(raw_tar_bytes):
         print(f"[build_ui] Warning: .S generation exception: {exc}", file=sys.stderr)
 
 
+auto_increment_ui_version()
 raw = build_tarball()
 pre_generate_embed_s(raw)

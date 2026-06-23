@@ -1,9 +1,11 @@
 #include "handlers_diag.h"
+#include "handlers_live.h"
 #include "bms/poller.h"
 #include "can/tx.h"
 #include "bus/snapshot_bus.h"
 #include "mqtt/publisher.h"
 #include "net/ntp.h"
+#include "net/wifi.h"
 #include "storage/lfs_store.h"
 #include "storage/energy_store.h"
 #include "storage/history_store.h"
@@ -12,6 +14,9 @@
 #include "diag/log_ring.h"
 #include "app/version.h"
 #include "app/boot.h"
+#include "notify/notify.h"
+#include "sources/registry.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -22,8 +27,15 @@
 #include "freertos/task.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 static const char* TAG = "web_diag";
+
+// Low-water mark for the largest free contiguous DRAM block since boot.
+// Updated on every /api/diag poll. UINT32_MAX sentinel means "not yet sampled".
+// DIAGNOSTIC INSTRUMENT ONLY — this value is never used as a runtime gate.
+// Separation is intentional: a stale watermark must never block a live send.
+static uint32_t s_dram_largest_min = UINT32_MAX;
 
 // ── HStream (shared pattern from handlers_history.cpp) ───────────────────────
 
@@ -132,6 +144,12 @@ esp_err_t handle_diag(httpd_req_t* req) {
   uint32_t dram_largest     = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+  // Update contiguous-block low-water mark. Diagnostic only — displayed in ble_spike{}
+  // below so the owner can see the worst-case fragmentation seen since boot.
+  // Not a runtime gate: the runtime allows TLS to try regardless of this value.
+  if (dram_largest < s_dram_largest_min) s_dram_largest_min = dram_largest;
+  uint32_t dram_largest_min_ever = (s_dram_largest_min == UINT32_MAX) ? 0u : s_dram_largest_min;
 
   hs_str(s, "{");
 
@@ -269,6 +287,169 @@ esp_err_t handle_diag(httpd_req_t* req) {
   }
   hs_str(s, "}");
 
+  // ── ble_spike — V3.1 coexistence gate metrics ────────────────────────────
+  // DEV/SPIKE TOOLING — to be removed or folded into the real dashboard in Phase C.
+  // This section is the primary verification surface for the owner during the ≥30 min
+  // coexistence stress test. The pass/fail gate is min_dram_ever (already in system{})
+  // combined with zero WiFi/MQTT/WDT events while BLE scans.
+  {
+    bool ble_on   = sources::ble_scanner::is_active();
+    bool tls_busy = notify::is_tls_busy();
+
+    hs_str(s, ",\"ble_spike\":{");
+    hs_str(s, "\"ble_active\":"); hs_bool(s, ble_on);
+    hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
+    hs_str(s, ",\"tls_in_progress\":"); hs_bool(s, tls_busy);
+
+    // Coexistence diagnostic metrics (all read-only, Phase A instrumentation).
+    // wifi_disconnects: every STA disconnect since boot. Compare BLE-on vs BLE-off
+    //   sessions — an elevated count with BLE active confirms radio starvation
+    //   pushing the WiFi link out of association.
+    // handler_last_ms / handler_max_ms: /api/live wall-clock latency. A single
+    //   request >200 ms (one BLE scan window) confirms httpd task starvation on
+    //   Core 0.
+    // ble_gap_events: total BLE_GAP_EVENT_DISC events received. With
+    //   filter_duplicates=0, this is ALL nearby BLE advertisements, not only
+    //   Victron. High rate = dense BLE environment amplifying Core 0 NimBLE host
+    //   task CPU load even during otherwise-quiet 1800 ms inter-scan gaps.
+    hs_str(s, ",\"wifi_disconnects\":"); hs_uint(s, net::wifi::get_disconnect_count());
+    // Associated BSSID + RSSI — directly visible to operator so sticky-client diagnosis
+    // no longer requires a separate tool. Comparing bssid across sessions reveals which
+    // AP the ESP actually attached to.
+    { std::string bssid = net::wifi::get_bssid();
+      hs_str(s, ",\"wifi_bssid\":"); hs_json_str(s, bssid.empty() ? "" : bssid.c_str()); }
+    hs_str(s, ",\"wifi_rssi\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)net::wifi::get_rssi()); hs_str(s,t); }
+    hs_str(s, ",\"wifi_bssid_pin_active\":"); hs_bool(s, net::wifi::is_bssid_pin_active());
+    hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
+    hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
+    hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());
+    hs_str(s, ",\"ble_victron_advs\":"); hs_uint(s, sources::ble_scanner::victron_adv_count());
+    hs_str(s, ",\"ble_mppt_advs\":"); hs_uint(s, sources::ble_scanner::mppt_adv_count());
+
+    // Contiguous DRAM block tracking — diagnostic only, not a runtime gate.
+    // Values below ~20 KB indicate fragmentation that may impede a TLS handshake.
+    hs_str(s, ",\"dram_largest_block_now\":"); hs_uint(s, dram_largest);
+    hs_str(s, ",\"dram_largest_block_min_ever\":"); hs_uint(s, dram_largest_min_ever);
+
+    // Dev TLS burst trigger state (only meaningful when BLE_SPIKE_DEV_BURST=1).
+#if BLE_SPIKE_DEV_BURST
+    hs_str(s, ",\"burst_enabled\":true");
+    hs_str(s, ",\"burst_active\":"); hs_bool(s, notify::dev_tls_burst_active());
+    hs_str(s, ",\"burst_fired\":"); hs_uint(s, (uint32_t)notify::dev_tls_burst_fired());
+#else
+    hs_str(s, ",\"burst_enabled\":false");
+    hs_str(s, ",\"burst_active\":false");
+    hs_str(s, ",\"burst_fired\":0");
+#endif
+
+    // BMS total current (for side-by-side comparison with shunt current).
+    {
+      BmsSystemSnapshot snap{};
+      float bms_total_current = 0.0f;
+      if (bus::snapshot_bus::read(snap)) {
+        for (uint8_t i = 0; i < snap.pack_count_configured && i < 16; ++i) {
+          if (snap.pack[i].online) bms_total_current += snap.pack[i].pack_current;
+        }
+      }
+      hs_str(s, ",\"bms_current_a\":");
+      { char t[16]; snprintf(t, sizeof(t), "%.3f", bms_total_current); hs_str(s, t); }
+    }
+
+    // MPPT BLE decode state.
+    {
+      sources::MpptSource* mppt = sources::mppt_source();
+      bool mppt_enabled = mppt && mppt->enabled();
+      hs_str(s, ",\"mppt\":{");
+      hs_str(s, "\"enabled\":"); hs_bool(s, mppt_enabled);
+      if (mppt_enabled) {
+        sources::MpptSource::DiagSnap d = mppt->diag_snap();
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
+        hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
+        hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        // null when the charger sent a Victron not-available sentinel (0x7FFF/0xFFFF)
+        hs_str(s, ",\"pv_power_w\":");
+        if (d.pv_power_valid)    { char t[16]; snprintf(t,sizeof(t),"%.1f",d.pv_power_w);    hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"pv_voltage_v\":");
+        if (d.pv_v_valid)        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v);  hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"pv_current_a\":");
+        if (d.pv_i_valid)        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a);  hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"yield_today_wh\":");
+        if (d.yield_valid)       { char t[16]; snprintf(t,sizeof(t),"%.0f",d.yield_today_wh); hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"charge_state\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)d.charge_state); hs_str(s,t); }
+        hs_str(s, ",\"batt_voltage_v\":");
+        if (d.batt_v_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_voltage_v); hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"batt_current_a\":");
+        if (d.batt_i_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_current_a); hs_str(s,t); }
+        else hs_str(s, "null");
+      }
+      hs_str(s, "}");
+    }
+
+    // Shunt BLE decode state.
+    {
+      sources::ShuntSource* shunt = sources::shunt_source();
+      bool shunt_enabled = shunt && shunt->enabled();
+      hs_str(s, ",\"shunt\":{");
+      hs_str(s, "\"enabled\":"); hs_bool(s, shunt_enabled);
+      if (shunt_enabled) {
+        sources::ShuntSource::DiagSnap d = shunt->diag_snap();
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
+        hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
+        hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        hs_str(s, ",\"current_a\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.3f",d.current_a); hs_str(s,t); }
+        hs_str(s, ",\"voltage_v\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.voltage_v); hs_str(s,t); }
+        hs_str(s, ",\"soc_pct\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.1f",d.soc_pct);   hs_str(s,t); }
+      }
+      hs_str(s, "}");
+    }
+
+    // ── ble_debug — per-advertisement filter funnel ───────────────────────────
+    // Shows the last ≤8 Victron advertisements with per-stage pass/fail flags.
+    // configured_mac: the MPPT MAC as the firmware actually compares it internally
+    //   (network order, matches what you see in VictronConnect / the config page).
+    // Counters: victron_total → mppt_type_match → mppt_mac_match → mppt_decrypt_ok
+    //   identify which filter stage is rejecting packets.
+    {
+      sources::ble_scanner::AdvDebugState dbg{};
+      sources::ble_scanner::get_adv_debug(dbg);
+
+      hs_str(s, ",\"ble_debug\":{");
+      hs_str(s, "\"configured_mac\":"); hs_json_str(s, dbg.configured_mac);
+      hs_str(s, ",\"mppt_mac_valid\":"); hs_bool(s, dbg.mppt_mac_valid);
+      hs_str(s, ",\"victron_total\":"); hs_uint(s, dbg.victron_total);
+      hs_str(s, ",\"mppt_type_match\":"); hs_uint(s, dbg.mppt_type_match);
+      hs_str(s, ",\"mppt_mac_match\":"); hs_uint(s, dbg.mppt_mac_match);
+      hs_str(s, ",\"mppt_decrypt_ok\":"); hs_uint(s, dbg.mppt_decrypt_ok);
+      hs_str(s, ",\"adv_ring\":[");
+      for (uint8_t i = 0; i < dbg.count; i++) {
+        const sources::ble_scanner::AdvDebugEntry& e = dbg.entries[i];
+        if (i > 0) hs_str(s, ",");
+        char type_hex[7];
+        snprintf(type_hex, sizeof(type_hex), "0x%02X", e.record_type);
+        hs_str(s, "{\"mac\":"); hs_json_str(s, e.mac_str);
+        hs_str(s, ",\"rssi\":"); { char t[8]; snprintf(t, sizeof(t), "%d", (int)e.rssi); hs_str(s, t); }
+        hs_str(s, ",\"type\":"); hs_json_str(s, type_hex);
+        hs_str(s, ",\"mac_match\":"); hs_bool(s, e.mac_match);
+        hs_str(s, ",\"type_ok\":"); hs_bool(s, e.record_type_ok);
+        hs_str(s, ",\"decrypt_ok\":"); hs_bool(s, e.decrypt_ok);
+        hs_str(s, "}");
+      }
+      hs_str(s, "]}");
+    }
+
+    hs_str(s, "}");
+  }
+
   // ── tasks (FreeRTOS stack HWM) ────────────────────────────────────────────
   // Requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y and
   // CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y (sdkconfig.esp32s3).
@@ -283,6 +464,12 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, "{\"name\":");
       hs_json_str(s, task_buf[i].pcTaskName);
       hs_str(s, ",\"stack_hwm\":");
+      // usStackHighWaterMark is in words (StackType_t = 4 B on Xtensa); convert to bytes.
+      // This is a since-boot low-water mark — sample AFTER full load for meaningful numbers.
+      // NOTE: configured stack size (stack_cfg) is NOT available from the FreeRTOS SMP
+      // TaskStatus_t (pxEndOfStack absent when configRECORD_STACK_HIGH_ADDRESS defaults to 0
+      // in FreeRTOS-Kernel-SMP/FreeRTOS.h). Reclaimable = cfg_from_source - (cfg - hwm).
+      // See sdkconfig.defaults and task creation sites for per-task configured sizes.
       hs_uint(s, (uint32_t)task_buf[i].usStackHighWaterMark * sizeof(StackType_t));
       // xCoreID requires configTASKLIST_INCLUDE_COREID=1 (FREERTOS_VTASKLIST_INCLUDE_COREID).
       // Guard so the handler compiles even if that option is off; UI shows "any" for -1.
@@ -361,5 +548,40 @@ esp_err_t handle_diag_coredump(httpd_req_t* req) {
   httpd_resp_send_chunk(req, nullptr, 0);
   return ESP_OK;
 }
+
+// ── Dev TLS burst handler — POST /api/diag/tls-burst?n=<1..10> ───────────────
+// Only compiled and registered when BLE_SPIKE_DEV_BURST=1.
+// Starts the burst coordinator task in notify.cpp; returns immediately.
+// Returns 409 if a burst is already in flight.
+#if BLE_SPIKE_DEV_BURST
+esp_err_t handle_diag_tls_burst(httpd_req_t* req) {
+  httpd_resp_set_type(req, "application/json");
+
+  if (notify::dev_tls_burst_active()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "{\"error\":\"burst already active\"}");
+  }
+
+  // Parse n= query param; default 4.
+  char qs[32] = {};
+  int n = 4;
+  if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) == ESP_OK) {
+    char n_str[8] = {};
+    if (httpd_query_key_value(qs, "n", n_str, sizeof(n_str)) == ESP_OK) {
+      int parsed = atoi(n_str);
+      if (parsed >= 1 && parsed <= 10) n = parsed;
+    }
+  }
+
+  if (!notify::dev_tls_burst_start(n)) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"burst start failed\"}");
+  }
+
+  char resp[64];
+  snprintf(resp, sizeof(resp), "{\"ok\":true,\"n\":%d}", n);
+  return httpd_resp_sendstr(req, resp);
+}
+#endif  // BLE_SPIKE_DEV_BURST
 
 }  // namespace web

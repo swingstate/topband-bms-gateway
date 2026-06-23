@@ -38,6 +38,7 @@ idf_component_register(
     "net/wifi.cpp"
     "net/captdns.cpp"
     "net/ntp.cpp"
+    "net/net_diag.cpp"
     "web/server.cpp"
     "web/auth.cpp"
     "web/captive.cpp"
@@ -50,10 +51,17 @@ idf_component_register(
     "web/handlers_alerts.cpp"
     "web/handlers_ota.cpp"
     "web/handlers_notify.cpp"
+    "web/handlers_net_diag.cpp"
     "web/handlers_static.cpp"
     "net/http_post.cpp"
     "notify/notify.cpp"
     "notify/telegram.cpp"
+    "sources/registry.cpp"
+    "sources/bms_source.cpp"
+    "sources/shunt_source.cpp"
+    "sources/mppt_source.cpp"
+    "sources/aggregator.cpp"
+    "sources/ble_scanner.cpp"
     "mqtt/topics.cpp"
     "mqtt/payloads.cpp"
     "mqtt/publisher.cpp"
@@ -85,4 +93,5 @@ idf_component_register(
     esp_http_client
     mqtt
     app_update
+    bt
 )

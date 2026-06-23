@@ -1,4 +1,5 @@
 #include "handlers_live.h"
+#include "app/boot.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
 #include "bms/runtime_estimator.h"
@@ -6,20 +7,36 @@
 #include "storage/energy_store.h"
 #include "net/ntp.h"
 #include "app/version.h"
+#include "sources/registry.h"
+#include "mqtt/publisher.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include <ArduinoJson.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
 
 static const char* TAG = "web_live";
 
+// Coexistence diagnostic: track /api/live handler wall-clock latency.
+// Updated on every request; never locked (benign last-write-wins for diagnostics).
+// Visible at /api/diag ble_spike.handler_last_ms and handler_max_ms.
+// A single request taking >200 ms (one BLE scan window) while BLE is active
+// confirms CPU starvation of the httpd task on Core 0.
+static volatile uint32_t s_handler_last_ms = 0;
+static volatile uint32_t s_handler_max_ms  = 0;
+
 namespace web {
 
+uint32_t live_handler_last_ms() { return s_handler_last_ms; }
+uint32_t live_handler_max_ms()  { return s_handler_max_ms; }
+
 esp_err_t handle_live(httpd_req_t* req) {
+  const int64_t t_entry_us = esp_timer_get_time();
+
   BmsSystemSnapshot snap = {};
   bool has_snap = bus::snapshot_bus::read(snap);
 
@@ -142,6 +159,86 @@ esp_err_t handle_live(httpd_req_t* req) {
   doc["now_ts_s"]   = net::ntp::now_unix_s();
   doc["ntp_synced"] = net::ntp::is_synced();
 
+  // ── Sources (MPPT / Shunt / Solar Passthrough) ────────────────────────────
+  {
+    using sources::Metric;
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+
+    sources::BmsSource*   bms   = sources::bms_source();
+    sources::ShuntSource* shunt = sources::shunt_source();
+    sources::MpptSource*  mppt  = sources::mppt_source();
+
+    JsonObject src = doc["sources"].to<JsonObject>();
+
+    // Expose the configured shunt mode so the UI can show the active policy.
+    src["shunt_current_mode"] = (uint8_t)app::get_config().shunt_current_mode;
+
+    // battery_current_src: mirrors aggregator TOTAL_CURRENT selection rule.
+    // Shunt leads only when |BMS current| < 0.5 A and shunt has a valid reading.
+    const char* cur_src = "bms";
+    if (shunt && shunt->enabled()) {
+      sources::SourceReading bms_r =
+        bms ? bms->reading(Metric::TOTAL_CURRENT) : sources::unavailable_reading("A");
+      sources::SourceReading shunt_r = shunt->reading(Metric::TOTAL_CURRENT);
+      float bms_abs = bms_r.is_usable() ? fabsf(bms_r.value) : 0.0f;
+      if (bms_abs < 0.5f && shunt_r.is_usable()) cur_src = "shunt";
+    }
+    src["battery_current_src"] = cur_src;
+
+    // MPPT source details
+    JsonObject jm = src["mppt"].to<JsonObject>();
+    if (mppt) {
+      auto ds = mppt->diag_snap();
+      jm["enabled"]            = mppt->enabled();
+      jm["seen"]               = ds.seen;
+      jm["charge_state"]       = (int)ds.charge_state;
+      jm["pv_power_w"]         = ds.pv_power_w;
+      jm["pv_voltage_v"]       = ds.pv_voltage_v;
+      jm["pv_current_a"]       = ds.pv_current_a;
+      jm["batt_voltage_v"]     = ds.batt_voltage_v;
+      jm["batt_current_a"]     = ds.batt_current_a;
+      jm["yield_today_wh"]     = ds.yield_today_wh;
+      jm["pv_power_valid"]     = ds.pv_power_valid;
+      jm["pv_v_valid"]         = ds.pv_v_valid;
+      jm["pv_i_valid"]         = ds.pv_i_valid;
+      jm["batt_v_valid"]       = ds.batt_v_valid;
+      jm["batt_i_valid"]       = ds.batt_i_valid;
+      jm["yield_valid"]        = ds.yield_valid;
+      jm["ms_since_last_seen"] = mppt->ms_since_last_seen(now_ms);
+    } else {
+      jm["enabled"] = false;
+      jm["seen"]    = false;
+    }
+
+    // Shunt source details
+    JsonObject js = src["shunt"].to<JsonObject>();
+    if (shunt) {
+      auto ds = shunt->diag_snap();
+      js["enabled"]            = shunt->enabled();
+      js["seen"]               = ds.seen;
+      js["current_a"]          = ds.current_a;
+      js["voltage_v"]          = ds.voltage_v;
+      js["soc_pct"]            = ds.soc_pct;
+      js["ms_since_last_seen"] = shunt->ms_since_last_seen(now_ms);
+    } else {
+      js["enabled"] = false;
+      js["seen"]    = false;
+    }
+
+    // Solar Passthrough (OpenDTU MQTT, display-only)
+    // received=true once the configured topic delivers its first message.
+    // UI shows "unknown" until received or when stale; "active"/"inactive" after.
+    // ms_since_last: milliseconds since last message (0 when not yet received).
+    JsonObject jp = src["solar_passthrough"].to<JsonObject>();
+    bool pt_state = false;
+    uint32_t pt_ts = 0;
+    bool pt_received = mqtt::publisher::get_solar_passthrough(pt_state, pt_ts);
+    uint32_t pt_age_ms = (pt_received && now_ms >= pt_ts) ? (now_ms - pt_ts) : 0;
+    jp["received"]     = pt_received;
+    jp["state"]        = pt_state;
+    jp["ms_since_last"] = pt_age_ms;
+  }
+
   // Estimate size then allocate. PSRAM preferred: this JSON can be 5-20 KB and
   // is allocated/freed on every /api/live poll, fragmenting internal heap.
   size_t est = measureJson(doc) + 1;
@@ -158,6 +255,17 @@ esp_err_t handle_live(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   esp_err_t ret = httpd_resp_send(req, buf, (ssize_t)n);
   free(buf);
+
+  {
+    uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - t_entry_us) / 1000LL);
+    s_handler_last_ms = elapsed_ms;
+    if (elapsed_ms > s_handler_max_ms) s_handler_max_ms = elapsed_ms;
+    if (elapsed_ms > 200) {
+      // >200 ms = more than one full BLE scan window. Confirms CPU starvation
+      // when BLE is active. DIAGNOSTIC ONLY — no corrective action taken here.
+      ESP_LOGW(TAG, "/api/live latency %lu ms (BLE active starvation indicator)", (unsigned long)elapsed_ms);
+    }
+  }
 
   if (ret != ESP_OK) {
     ESP_LOGD(TAG, "client disconnected during /api/live send");

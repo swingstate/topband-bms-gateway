@@ -1,8 +1,9 @@
 #pragma once
 
-#ifndef FW_VERSION
-#  define FW_VERSION "3.0.0-preview.1"
-#endif
+// FW_VERSION is injected at compile time via -DFW_VERSION in platformio.ini.
+// That is the SINGLE source of truth — do NOT define it here.
+// If you see a stale version at runtime, update platformio.ini and do a clean build:
+//   rm sdkconfig.esp32s3 && pio run
 
 // GIT_SHA is injected by tools/git_sha_gen.py into include/git_sha.h before
 // each PlatformIO build. Fall back to "unknown" if the file is absent
@@ -16,8 +17,8 @@
 #  define GIT_SHA "unknown"
 #endif
 
-// Composite version string shown in health endpoint and boot log.
-// Example: "3.0.0 (a750b8d)" or "3.0.0 (a750b8d-dirty)"
+// Composite version string shown in health endpoint, boot log, and /api/diag.
+// Example: "3.1.0-dev.6 (a750b8d)" or "3.1.0-dev.6 (a750b8d-dirty)"
 #define FW_VERSION_FULL FW_VERSION " (" GIT_SHA ")"
 
 #define BUILD_DATE __DATE__

@@ -82,6 +82,24 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["notify_debounce_s"]        = c.notify_debounce_s;
   // v6 addition (non-secret, included in export/import)
   doc["battery_config_mode"]      = (uint8_t)c.battery_config_mode;
+
+  // v7 BLE source config — keys are SECRETS (redacted, same as mqtt_pass_obf pattern)
+  doc["ble_shunt_enabled"] = c.ble_shunt_enabled;
+  doc["ble_mppt_enabled"]  = c.ble_mppt_enabled;
+  doc["ble_shunt_mac"]     = c.ble_shunt_mac;
+  doc["ble_mppt_mac"]      = c.ble_mppt_mac;
+  doc["ble_shunt_key"]     = "";   // always redacted — leave blank to keep existing key
+  doc["ble_mppt_key"]      = "";   // always redacted
+
+  // v8 WiFi AP selection fields (non-secret, included in export/import)
+  doc["wifi_bssid"]            = c.wifi_bssid;
+  doc["wifi_rssi_threshold"]   = c.wifi_rssi_threshold;
+
+  // v9 Solar Passthrough MQTT topic (non-secret, included in export/import)
+  doc["mqtt_solar_passthrough_topic"] = c.mqtt_solar_passthrough_topic;
+
+  // v10 Shunt current aggregation mode
+  doc["shunt_current_mode"] = (uint8_t)c.shunt_current_mode;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -162,6 +180,8 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.maint_target_voltage = doc["maint_target_voltage"];
   if (doc["auto_balance_enabled"].is<bool>())
     c.auto_balance_enabled = doc["auto_balance_enabled"];
+  if (doc["auto_balance_last_ts"].is<uint32_t>())
+    c.auto_balance_last_ts = doc["auto_balance_last_ts"].as<uint32_t>();
   copy_str(doc["wifi_ssid"], c.wifi_ssid);
   copy_str(doc["ntp_server"], c.ntp_server);
   if (doc["timezone_offset_h"].is<int8_t>())
@@ -206,6 +226,8 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.ui_poll_diag_ms = doc["ui_poll_diag_ms"];
   if (doc["ui_poll_alerts_ms"].is<uint16_t>())
     c.ui_poll_alerts_ms = doc["ui_poll_alerts_ms"];
+  if (doc["last_reset_ts"].is<uint32_t>())
+    c.last_reset_ts = doc["last_reset_ts"].as<uint32_t>();
   if (doc["serial_debug_enabled"].is<bool>())
     c.serial_debug_enabled = doc["serial_debug_enabled"];
   if (doc["spy_persist_default"].is<bool>())
@@ -251,6 +273,37 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     // Guard: only accept known enum values (Auto=0, AutoMargin=1, Manual=2).
     if (raw <= 2)
       c.battery_config_mode = static_cast<Config::BatteryConfigMode>(raw);
+  }
+
+  // v7 BLE source config
+  if (doc["ble_shunt_enabled"].is<bool>())
+    c.ble_shunt_enabled = doc["ble_shunt_enabled"];
+  if (doc["ble_mppt_enabled"].is<bool>())
+    c.ble_mppt_enabled = doc["ble_mppt_enabled"];
+  copy_str(doc["ble_shunt_mac"], c.ble_shunt_mac);
+  copy_str(doc["ble_mppt_mac"],  c.ble_mppt_mac);
+  // Keys: leave-blank-to-keep — never echoed, only written when non-empty.
+  if (doc["ble_shunt_key"].is<const char*>()) {
+    const char* k = doc["ble_shunt_key"].as<const char*>();
+    if (k && k[0] != '\0') snprintf(c.ble_shunt_key, sizeof(c.ble_shunt_key), "%s", k);
+  }
+  if (doc["ble_mppt_key"].is<const char*>()) {
+    const char* k = doc["ble_mppt_key"].as<const char*>();
+    if (k && k[0] != '\0') snprintf(c.ble_mppt_key, sizeof(c.ble_mppt_key), "%s", k);
+  }
+
+  // v8 WiFi AP selection
+  copy_str(doc["wifi_bssid"], c.wifi_bssid);
+  if (doc["wifi_rssi_threshold"].is<int>())
+    c.wifi_rssi_threshold = (int8_t)doc["wifi_rssi_threshold"].as<int>();
+
+  // v9 Solar Passthrough MQTT topic
+  copy_str(doc["mqtt_solar_passthrough_topic"], c.mqtt_solar_passthrough_topic);
+
+  // v10 Shunt current aggregation mode
+  if (doc["shunt_current_mode"].is<uint8_t>()) {
+    uint8_t raw = doc["shunt_current_mode"].as<uint8_t>();
+    if (raw <= 2) c.shunt_current_mode = static_cast<Config::ShuntCurrentMode>(raw);
   }
 
   return true;

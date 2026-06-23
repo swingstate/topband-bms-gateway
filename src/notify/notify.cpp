@@ -5,6 +5,7 @@
 #include "net/wifi.h"
 #include "diag/alerts.h"
 #include "storage/boot_reasons.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -112,6 +113,11 @@ struct SendTaskArgs {
 static void send_task(void* arg) {
   auto* a = static_cast<SendTaskArgs*>(arg);
 
+  // Pause BLE scan for the duration of the TLS handshake so NimBLE mempools
+  // and mbedTLS buffers never compete for contiguous internal SRAM at once.
+  // No-op when BLE is off (default); always resumed below before vTaskDelete.
+  sources::ble_scanner::pause_scan();
+
   for (size_t i = 0; i < k_provider_count; ++i) {
     const notify::INotifyProvider* p = k_providers[i];
     if (!p->is_enabled(a->cfg)) continue;
@@ -122,6 +128,8 @@ static void send_task(void* arg) {
       ESP_LOGW(TAG, "notify::send [%s] failed: %s", p->id(), err);
     }
   }
+
+  sources::ble_scanner::resume_scan();
 
   // Release TLS slot so the next queued send or test can proceed.
   if (s_tls_sem) xSemaphoreGive(s_tls_sem);
@@ -522,17 +530,38 @@ struct TestTaskArgs {
 static void test_task(void* arg) {
   auto* a = static_cast<TestTaskArgs*>(arg);
 
+  // Use the configured sender name as the title so the test notification matches
+  // the format of real alert notifications.  Fall back to hostname when unset.
+  char sender_buf[48] = {};
+  bool has_sender = (a->cfg.notify_sender_name[0] != '\0');
+  if (has_sender) {
+    snprintf(sender_buf, sizeof(sender_buf), "%s", a->cfg.notify_sender_name);
+  } else {
+    net::wifi::get_hostname(sender_buf, sizeof(sender_buf));
+  }
+
   notify::NotifyMessage msg = {};
   msg.severity = notify::Severity::Info;
-  msg.title    = "TopBand BMS Gateway test";
+  msg.title    = sender_buf;
   msg.body     = "Notification test from Settings. Your gateway can reach this service.";
 
   char err[128] = {};
+  sources::ble_scanner::pause_scan();
   bool ok = a->provider->send(msg, a->cfg, err, sizeof(err));
+  sources::ble_scanner::resume_scan();
 
   if (ok) {
-    set_test_result(notify::TestStatus::Ok,
-                    "Test notification sent — check your Telegram chat.");
+    char ok_msg[128];
+    if (has_sender) {
+      snprintf(ok_msg, sizeof(ok_msg),
+               "Test sent — sender: \"%s\". Check your Telegram chat.",
+               a->cfg.notify_sender_name);
+    } else {
+      snprintf(ok_msg, sizeof(ok_msg),
+               "Test sent (sender name not set, used hostname). "
+               "Check your Telegram chat.");
+    }
+    set_test_result(notify::TestStatus::Ok, ok_msg);
     notify::mark_telegram_verified();
   } else {
     set_test_result(notify::TestStatus::Failed, err[0] ? err : "Test failed (unknown error)");
@@ -567,8 +596,8 @@ bool test(const char* provider_id,
     return true;
   }
 
-  // Build a merged config: start from form values, fall back to saved secrets
-  // when the form left sensitive fields blank (leave-blank-to-keep pattern).
+  // Build a merged config: start from form values, fall back to saved values
+  // when the form left sensitive or optional fields blank.
   Config merged = form_cfg;
   if (merged.notify_telegram_token[0] == '\0') {
     memcpy(merged.notify_telegram_token,
@@ -580,6 +609,11 @@ bool test(const char* provider_id,
            saved_cfg.notify_telegram_chat_id,
            sizeof(merged.notify_telegram_chat_id));
   }
+  // Sender name: always take from saved config so the test notification matches
+  // real alert notifications.  The test POST body does not carry this field.
+  memcpy(merged.notify_sender_name,
+         saved_cfg.notify_sender_name,
+         sizeof(merged.notify_sender_name));
 
   auto* a = static_cast<TestTaskArgs*>(malloc(sizeof(TestTaskArgs)));
   if (!a) {
@@ -638,6 +672,18 @@ bool is_degraded() {
   return s_degraded;
 }
 
+bool is_tls_busy() {
+  if (!s_tls_sem) return false;
+  // Non-destructive check: try to take with zero timeout.
+  // If we get it → it was free → give it back immediately → not busy.
+  // If we can't get it → something else holds it → busy.
+  if (xSemaphoreTake(s_tls_sem, 0) == pdTRUE) {
+    xSemaphoreGive(s_tls_sem);
+    return false;
+  }
+  return true;
+}
+
 void reset_telegram_verified() {
   portENTER_CRITICAL(&s_status_mux);
   bool was_verified = s_verified;
@@ -666,3 +712,126 @@ TelegramStatus telegram_status() {
 }
 
 }  // namespace notify
+
+// ── Dev TLS burst trigger ─────────────────────────────────────────────────────
+// Compiled only when BLE_SPIKE_DEV_BURST=1 (set in platformio.ini for spike builds).
+//
+// Purpose: reproduce the V3.0 DRAM-fragmentation failure mode — not total heap
+// exhaustion, but the largest *contiguous* block dropping below what a 16 KB TLS
+// task stack requires.  Fires N sequential notify::send() calls via the REAL TLS
+// path so the DRAM watermark in the Diag panel captures the true worst-case dip.
+//
+// Safety properties:
+// - Only started via explicit POST /api/diag/tls-burst (auth-protected, dev endpoint).
+// - Runs in its own low-priority task; cannot preempt or block the ControlTask.
+// - Does not bypass the TLS serialization semaphore; each send() waits for the
+//   previous one to complete, exactly as production traffic would.
+// - send() drops silently when TLS is degraded (crash-loop guard), so burst is
+//   automatically inert on a degraded boot.
+// - NEVER touches the safety/CAN path. All activity is in the notify layer.
+#if BLE_SPIKE_DEV_BURST
+#include "esp_heap_caps.h"
+
+static volatile bool s_burst_active = false;
+static volatile int  s_burst_fired  = 0;
+
+struct BurstTaskArgs { int n; };
+
+static void burst_task(void* arg) {
+  auto* a = static_cast<BurstTaskArgs*>(arg);
+  int n = a->n;
+  free(a);
+
+  // 4-point per-handshake diagnosis:
+  //   [1-before]     : largest free contiguous DRAM block immediately before handshake starts
+  //   [2-peak]       : minimum seen while TLS is in progress (mbedTLS stack + heap at worst)
+  //   [3-after_free] : block immediately after send_task releases TLS semaphore and exits
+  //   [4-settled]    : block after 500 ms settle (gives allocator time to coalesce freed memory)
+  //
+  // Verdict key:
+  //   delta_vs_before near 0 across all 4 handshakes → transient fragmentation only
+  //   delta_vs_before monotonically negative          → memory leak (real bug)
+  ESP_LOGI(TAG, "[dev-burst] start n=%d -- 4-point diagnosis: before|peak|after_free|settled", n);
+
+  uint32_t baseline = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  ESP_LOGI(TAG, "[dev-burst] DRAM baseline (idle, before HS 1): %lu B", (unsigned long)baseline);
+
+  for (int i = 0; i < n; i++) {
+    // Wait for TLS slot to be free from the previous handshake (max 30 s, 50 ms ticks).
+    for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    // [1] Before: sample immediately before firing the handshake.
+    uint32_t blk_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [1-before]      %lu B", i + 1, n, (unsigned long)blk_before);
+
+    notify::send(notify::Severity::Warning, "BLE-burst-dev",
+                 "[dev-burst-test] TLS coexistence diagnosis -- disregard");
+    s_burst_fired = s_burst_fired + 1;
+
+    // Yield 50 ms so send_task takes the TLS semaphore before we start polling.
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // [2] Peak (during): poll while TLS handshake is in progress; record minimum.
+    uint32_t blk_peak = UINT32_MAX;
+    for (int w = 0; w < 600 && notify::is_tls_busy(); w++) {
+      uint32_t blk = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+      if (blk < blk_peak) blk_peak = blk;
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    // Fast-path: handshake already done before first poll tick.
+    if (blk_peak == UINT32_MAX) blk_peak = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [2-peak]        %lu B", i + 1, n, (unsigned long)blk_peak);
+
+    // [3] After free: sample immediately after TLS context is destroyed and semaphore released.
+    uint32_t blk_after_free = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [3-after_free]  %lu B", i + 1, n, (unsigned long)blk_after_free);
+
+    // [4] Settled: give the allocator 500 ms to coalesce freed blocks.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    uint32_t blk_settled = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    int32_t  delta        = (int32_t)blk_settled - (int32_t)blk_before;
+    ESP_LOGI(TAG, "[dev-burst] HS %d/%d [4-settled]     %lu B  (delta_vs_before=%+ld)",
+             i + 1, n, (unsigned long)blk_settled, (long)delta);
+  }
+
+  uint32_t blk_final   = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  int32_t  delta_total = (int32_t)blk_final - (int32_t)baseline;
+  ESP_LOGI(TAG, "[dev-burst] VERDICT: n=%d fired=%d  dram_final=%lu B  delta_vs_baseline=%+ld B",
+           n, (int)s_burst_fired, (unsigned long)blk_final, (long)delta_total);
+  ESP_LOGI(TAG, "[dev-burst] VERDICT: delta near 0 -> transient fragmentation; negative -> LEAK");
+
+  s_burst_active = false;
+  vTaskDelete(nullptr);
+}
+
+namespace notify {
+
+bool dev_tls_burst_start(int n) {
+  if (n <= 0 || n > 10) return false;
+  if (s_burst_active) return false;
+  s_burst_active = true;
+
+  auto* a = static_cast<BurstTaskArgs*>(malloc(sizeof(BurstTaskArgs)));
+  if (!a) { s_burst_active = false; return false; }
+  a->n = n;
+
+  // Priority 1: below HTTP handlers (4) and notify_send tasks (2) so the burst
+  // never starves the normal notification path or the web server.
+  BaseType_t ok = xTaskCreate(burst_task, "tls_burst_dev", 4096, a, 1, nullptr);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "[dev-burst] xTaskCreate failed");
+    s_burst_active = false;
+    free(a);
+    return false;
+  }
+  return true;
+}
+
+bool dev_tls_burst_active() { return s_burst_active; }
+int  dev_tls_burst_fired()  { return s_burst_fired;  }
+
+}  // namespace notify
+
+#endif  // BLE_SPIKE_DEV_BURST
