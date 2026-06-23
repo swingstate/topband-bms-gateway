@@ -585,11 +585,11 @@ function renderSolar() {
   }
 
   const pvPower  = m.pv_power_valid ? fmt(m.pv_power_w, 0)    : null;
-  const pvVolt   = m.pv_v_valid     ? fmt(m.pv_voltage_v, 2)  : null;
-  const pvCurr   = m.pv_i_valid     ? fmt(m.pv_current_a, 1)  : null;
   const yieldKwh = m.yield_valid    ? fmt((m.yield_today_wh || 0) / 1000, 2) : null;
   const battV    = m.batt_v_valid   ? fmt(m.batt_voltage_v, 2) : null;
   const battA    = m.batt_i_valid   ? fmt(m.batt_current_a, 1) : null;
+  const battPower = (m.batt_v_valid && m.batt_i_valid)
+    ? fmt(m.batt_voltage_v * m.batt_current_a, 0) : null;
 
   const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
   const ptText = !pt.received
@@ -610,20 +610,17 @@ function renderSolar() {
         <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Last seen: ${lastSeen}</span>
       </div>
 
-      <!-- PV Input + Yield Today -->
-      <div style="display:grid;grid-template-columns:3fr 2fr;gap:12px;margin-bottom:12px">
-        <div class="card" style="padding-top:14px;padding-bottom:14px">
-          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">PV Input</div>
-          <div style="display:flex;align-items:center">
-            ${metricCell('Power', pvPower, 'W', 'var(--brand-teal)')}
-            ${vdivider()}
-            ${metricCell('Voltage', pvVolt, 'V')}
-            ${vdivider()}
-            ${metricCell('Current', pvCurr, 'A')}
+      <!-- PV Input + Yield Today (equal width, both show one large number) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">PV Input</div>
+          <div>
+            <span style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">${pvPower !== null ? pvPower : '—'}</span>
+            ${pvPower !== null ? '<span style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px">W</span>' : ''}
           </div>
         </div>
         <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
-          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Solar yield today</div>
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Yield today</div>
           <div>
             <span style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">${yieldKwh !== null ? yieldKwh : '—'}</span>
             ${yieldKwh !== null ? '<span style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px">kWh</span>' : ''}
@@ -631,11 +628,13 @@ function renderSolar() {
         </div>
       </div>
 
-      <!-- Battery Output (MPPT-side) -->
+      <!-- Output to Battery (MPPT-side) -->
       ${(m.batt_v_valid || m.batt_i_valid) ? `
       <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:12px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">Battery Output</div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">Output to Battery</div>
         <div style="display:flex;align-items:center">
+          ${metricCell('Power', battPower, 'W', 'var(--brand-teal)')}
+          ${vdivider()}
           ${metricCell('Voltage', battV, 'V')}
           ${vdivider()}
           ${metricCell('Current', battA, 'A')}

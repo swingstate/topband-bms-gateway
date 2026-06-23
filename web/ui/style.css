@@ -131,7 +131,12 @@ a { text-decoration: none; color: inherit; }
   gap: 2px;
   width: 100%;
   padding: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
 }
+.sidebar-items::-webkit-scrollbar { display: none; }
 
 .sidebar-item {
   display: flex;
@@ -1117,9 +1122,9 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   .topbar-time { display: none; }
   .status-pill { display: none !important; }
 
-  /* Dashboard metric grid: 2-column on mobile */
+  /* Dashboard metric grid: single column on portrait mobile */
   .metrics-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
     gap: 8px;
     margin-bottom: 12px;
   }
