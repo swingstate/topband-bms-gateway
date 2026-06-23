@@ -356,6 +356,8 @@ function updateLiveUI() {
     updatePackCards();
   } else if (p === '/battery') {
     updateBatteryOverviewCards();
+  } else if (p === '/solar') {
+    renderSolar();
   }
 }
 
@@ -536,10 +538,16 @@ function renderSolar() {
 
   if (!g_config || !g_config.ble_mppt_enabled) {
     root.innerHTML = `
-      <div style="max-width:520px">
-        <div class="card" style="padding:24px">
-          <p style="color:var(--text-muted);margin:0">MPPT BLE source is not enabled.
-          Enable it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</p>
+      <div style="max-width:520px;margin:0 auto">
+        <div class="card" style="padding:18px">
+          <div style="display:flex;align-items:center;gap:14px">
+            <div class="pack-status-dot offline" style="flex-shrink:0"></div>
+            <div>
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px">Not enabled</div>
+              <div style="font-size:12px;color:var(--text-muted)">MPPT BLE source is disabled.
+                Enable it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</div>
+            </div>
+          </div>
         </div>
       </div>`;
     return;
@@ -592,7 +600,7 @@ function renderSolar() {
   const ptAge = pt.received ? Math.round((Date.now() - (pt.ts_ms || 0)) / 1000) + ' s ago' : null;
 
   root.innerHTML = `
-    <div style="max-width:680px">
+    <div style="max-width:680px;margin:0 auto">
 
       <!-- Status strip -->
       <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -635,17 +643,32 @@ function renderSolar() {
       </div>` : ''}
 
       <!-- Solar Passthrough -->
-      <div class="card">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Solar Passthrough</div>
-        ${ptConfigured ? `
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Solar Passthrough</div>
+      ${ptConfigured ? `
+      <div class="card" style="padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:${ptAge !== null ? '14px' : '0'}">
+          <div class="pack-status-dot ${pt.received ? (pt.state ? 'online' : 'offline') : 'offline'}" style="flex-shrink:0"></div>
+          <div>
+            <div style="font-weight:600;font-size:14px">${pt.received ? (pt.state ? 'Active' : 'Inactive') : 'Unknown'}</div>
+            ${!pt.received ? '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">Waiting for first message…</div>' : ''}
+          </div>
+        </div>
+        ${ptAge !== null || g_config.mqtt_solar_passthrough_topic ? `
         <div class="net-kv-grid">
-          <div class="net-kv-row"><span>State</span><span>${ptText}</span></div>
           <div class="net-kv-row"><span>Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
           ${ptAge !== null ? `<div class="net-kv-row"><span>Last update</span><span>${ptAge}</span></div>` : ''}
-        </div>` : `
-        <p style="color:var(--text-muted);font-size:13px;margin:0">No topic configured.
-          Set it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; MQTT</a>.</p>`}
-      </div>
+        </div>` : ''}
+      </div>` : `
+      <div class="card" style="padding:18px">
+        <div style="display:flex;align-items:center;gap:14px">
+          <div class="pack-status-dot offline" style="flex-shrink:0"></div>
+          <div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:4px">Not configured</div>
+            <div style="font-size:12px;color:var(--text-muted)">No passthrough topic set.
+              Configure it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; MQTT</a>.</div>
+          </div>
+        </div>
+      </div>`}
 
     </div>
   `;
@@ -958,7 +981,7 @@ function renderBattery() {
     </div>` : '');
 
   root.innerHTML = `
-    <div style="max-width:860px">
+    <div style="max-width:860px;margin:0 auto">
       <!-- Status strip -->
       <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <div class="pack-status-dot offline" id="batt-strip-dot" style="flex-shrink:0"></div>
@@ -3104,7 +3127,7 @@ async function renderNetwork() {
 
   const root = document.getElementById('page-root');
   root.innerHTML = `
-    <div class="network-page" style="max-width:680px;padding:0">
+    <div class="network-page" style="padding:0">
       <div class="settings-section card" style="margin-bottom:16px;padding:16px">
         <div class="settings-section-title">Current Connection</div>
         <div id="net-status-panel">
