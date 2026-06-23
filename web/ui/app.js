@@ -456,6 +456,14 @@ function updateDashboardCards() {
   const pvCurrA     = mpptEnabled && mpptSrc.pv_i_valid      ? mpptSrc.pv_current_a  : null;
   const yieldWh     = mpptEnabled && mpptSrc.yield_valid     ? mpptSrc.yield_today_wh : null;
 
+  // Solar Passthrough — Active indicator on the Solar Power tile (Active-only, 15 s staleness).
+  const ptSrcDash = sources.solar_passthrough || {};
+  const ptActiveDash = ptSrcDash.received &&
+                       (ptSrcDash.ms_since_last || 0) <= 15000 &&
+                       ptSrcDash.state;
+  const ptPill = ptActiveDash
+    ? ' <span class="charging-pill" style="font-size:10px;padding:2px 7px;background:var(--brand-teal);color:var(--brand-aubergine)">Passthrough</span>'
+    : '';
 
   // Layout: 5 columns, 2 rows.
   // Row 1: [Solar/CellMin] [Battery Power (Total)] [SOC] [Cell Drift] [Temperature]
@@ -464,7 +472,7 @@ function updateDashboardCards() {
     label: 'Solar Power',
     value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
     unit: 'W',
-    sub: mpptEnabled ? csPill(mpptSrc.charge_state) : '—',
+    sub: mpptEnabled ? (csPill(mpptSrc.charge_state) + ptPill) : '—',
     color: 'var(--text-primary)',
     alarm: false,
     src: 'mppt',
@@ -591,13 +599,20 @@ function renderSolar() {
   const battPower = (m.batt_v_valid && m.batt_i_valid)
     ? fmt(m.batt_voltage_v * m.batt_current_a, 0) : null;
 
+  // 15 s staleness window — matches exp_aft in the OpenDTU HA-discovery message.
+  const PASSTHROUGH_STALE_MS = 15000;
   const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
-  const ptText = !pt.received
-    ? '<span style="color:var(--text-muted)">Unknown — no message received yet</span>'
-    : pt.state
-      ? '<span style="color:var(--color-success);font-weight:600">Active</span>'
-      : '<span style="color:var(--text-muted)">Inactive</span>';
-  const ptAge = pt.received ? Math.round((Date.now() - (pt.ts_ms || 0)) / 1000) + ' s ago' : null;
+  const ptAgeMs = pt.ms_since_last || 0;
+  const ptStale = pt.received && ptAgeMs > PASSTHROUGH_STALE_MS;
+  // Show "Unknown" before first message OR when stale (no recent update).
+  const ptKnown = pt.received && !ptStale;
+  const ptActive = ptKnown && pt.state;
+  const ptDotCls = ptActive ? 'online' : 'offline';
+  const ptLabel = !pt.received ? 'Unknown' : ptStale ? 'Unknown (stale)' : pt.state ? 'Active' : 'Inactive';
+  const ptSub = !pt.received ? 'Waiting for first message…'
+              : ptStale      ? `No update for ${Math.round(ptAgeMs / 1000)} s — value may be outdated`
+              : '';
+  const ptAge = pt.received ? Math.round(ptAgeMs / 1000) + ' s ago' : null;
 
   root.innerHTML = `
     <div style="max-width:680px;margin:0 auto">
@@ -645,11 +660,11 @@ function renderSolar() {
       <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Solar Passthrough</div>
       ${ptConfigured ? `
       <div class="card" style="padding:16px 18px">
-        <div style="display:flex;align-items:center;gap:14px;margin-bottom:${ptAge !== null ? '14px' : '0'}">
-          <div class="pack-status-dot ${pt.received ? (pt.state ? 'online' : 'offline') : 'offline'}" style="flex-shrink:0"></div>
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:${ptAge !== null || ptSub ? '14px' : '0'}">
+          <div class="pack-status-dot ${ptDotCls}" style="flex-shrink:0"></div>
           <div>
-            <div style="font-weight:600;font-size:14px">${pt.received ? (pt.state ? 'Active' : 'Inactive') : 'Unknown'}</div>
-            ${!pt.received ? '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">Waiting for first message…</div>' : ''}
+            <div style="font-weight:600;font-size:14px">${ptLabel}</div>
+            ${ptSub ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${ptSub}</div>` : ''}
           </div>
         </div>
         ${ptAge !== null || g_config.mqtt_solar_passthrough_topic ? `
@@ -970,11 +985,10 @@ function renderBattery() {
     <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
     <div class="card" style="padding:18px">
       <div style="display:flex;align-items:center;gap:14px">
-        <div class="pack-status-dot offline" style="flex-shrink:0"></div>
+        <div style="flex-shrink:0;width:10px;height:10px;border-radius:50%;background:var(--neutral-300)"></div>
         <div>
-          <div style="font-weight:600;font-size:14px;margin-bottom:4px">Not enabled</div>
-          <div style="font-size:12px;color:var(--text-muted)">SmartShunt BLE source is disabled.
-            Configure it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px">SmartShunt &mdash; coming in v3.2</div>
+          <div style="font-size:12px;color:var(--text-muted)">Battery-monitor integration (SOC, precise current, consumed Ah) is planned for the next release.</div>
         </div>
       </div>
     </div>` : '');
@@ -2860,10 +2874,14 @@ function renderSettingsBle() {
 
       <!-- ── SmartShunt ────────────────────────────────────────────────────── -->
       <div class="settings-section">
-        <div class="settings-section-title">SmartShunt (battery monitor)</div>
-        <div class="form-group" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} style="width:auto">
-          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source</label>
+        <div class="settings-section-title">SmartShunt (battery monitor) <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">planned for v3.2</span></div>
+        <div style="padding:12px 16px;background:color-mix(in srgb,var(--neutral-300) 30%,var(--bg-card));border-radius:6px;font-size:12px;color:var(--text-muted);margin-bottom:12px">
+          SmartShunt integration (SOC, precise current, consumed Ah) is planned for v3.2. The fields below are
+          preserved for migration; the BLE stack is not initialised until a shunt is enabled.
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;opacity:.5">
+          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} disabled style="width:auto">
+          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source (v3.2)</label>
         </div>
         <div class="form-group">
           <label>BLE MAC Address</label>

@@ -180,6 +180,8 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.maint_target_voltage = doc["maint_target_voltage"];
   if (doc["auto_balance_enabled"].is<bool>())
     c.auto_balance_enabled = doc["auto_balance_enabled"];
+  if (doc["auto_balance_last_ts"].is<uint32_t>())
+    c.auto_balance_last_ts = doc["auto_balance_last_ts"].as<uint32_t>();
   copy_str(doc["wifi_ssid"], c.wifi_ssid);
   copy_str(doc["ntp_server"], c.ntp_server);
   if (doc["timezone_offset_h"].is<int8_t>())
@@ -224,6 +226,8 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.ui_poll_diag_ms = doc["ui_poll_diag_ms"];
   if (doc["ui_poll_alerts_ms"].is<uint16_t>())
     c.ui_poll_alerts_ms = doc["ui_poll_alerts_ms"];
+  if (doc["last_reset_ts"].is<uint32_t>())
+    c.last_reset_ts = doc["last_reset_ts"].as<uint32_t>();
   if (doc["serial_debug_enabled"].is<bool>())
     c.serial_debug_enabled = doc["serial_debug_enabled"];
   if (doc["spy_persist_default"].is<bool>())

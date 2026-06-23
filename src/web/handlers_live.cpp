@@ -227,14 +227,16 @@ esp_err_t handle_live(httpd_req_t* req) {
 
     // Solar Passthrough (OpenDTU MQTT, display-only)
     // received=true once the configured topic delivers its first message.
-    // UI shows "unknown" until received; "active"/"inactive" after.
+    // UI shows "unknown" until received or when stale; "active"/"inactive" after.
+    // ms_since_last: milliseconds since last message (0 when not yet received).
     JsonObject jp = src["solar_passthrough"].to<JsonObject>();
     bool pt_state = false;
     uint32_t pt_ts = 0;
     bool pt_received = mqtt::publisher::get_solar_passthrough(pt_state, pt_ts);
-    jp["received"] = pt_received;
-    jp["state"]    = pt_state;
-    jp["ts_ms"]    = pt_ts;
+    uint32_t pt_age_ms = (pt_received && now_ms >= pt_ts) ? (now_ms - pt_ts) : 0;
+    jp["received"]     = pt_received;
+    jp["state"]        = pt_state;
+    jp["ms_since_last"] = pt_age_ms;
   }
 
   // Estimate size then allocate. PSRAM preferred: this JSON can be 5-20 KB and
