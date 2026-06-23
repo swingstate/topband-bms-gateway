@@ -23,7 +23,7 @@
   let DEMO_ALERTS = [
     {
       severity: 'INFO', severity_n: 0,
-      message: 'System started: TopBand BMS Gateway v3.0.0-preview.1',
+      message: 'System started: TopBand BMS Gateway v3.0.0',
       source: 'boot',
       ts_epoch: NOW_EPOCH - UPTIME_BASE,
       uptime_s: 0,
@@ -252,7 +252,7 @@
   /* ── Health ──────────────────────────────────────────────────────────────── */
   function makeHealthData() {
     return {
-      version:      '3.0.0-preview.1',
+      version:      '3.0.0',
       build:        'develop-c307a01 2026-06-16',
       ui_version:   'h3b-1',
       uptime_s:     UPTIME_BASE + g_tick * 2,
@@ -426,7 +426,7 @@
     var t = g_tick;
     return {
       system: {
-        fw:                  '3.0.0-preview.1',
+        fw:                  '3.0.0',
         build:               'develop-c307a01 2026-06-16',
         uptime_s:            UPTIME_BASE + t * 2,
         reset_reason:        'Power on',
@@ -495,7 +495,7 @@
       },
       alerts_count: DEMO_ALERTS.length,
       log_ring: [
-        '[    0.000] I boot: TopBand BMS Gateway v3.0.0-preview.1 starting',
+        '[    0.000] I boot: TopBand BMS Gateway v3.0.0 starting',
         '[    0.012] I storage: NVS config loaded, schema v6',
         '[    0.034] I wifi: connecting to SSID "HomeNetwork"',
         '[    1.203] I wifi: connected — IP 192.168.1.42, GW 192.168.1.1',

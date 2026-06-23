@@ -4,13 +4,13 @@ ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to Victron, Pyl
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-3.0.0--preview.1-blue)
+![Version](https://img.shields.io/badge/version-3.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange)
 
 > **V3.0 is a ground-up rewrite** of the single-file V2 Arduino sketch. The firmware is now a modular ESP-IDF codebase running natively on ESP32-S3. First install from V2 requires a USB reflash with the factory image; OTA updates work normally between V3.x releases.
 
-> **📥 Latest preview release: [v3.0.0-preview.1](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.0.0-preview.1)** — firmware & flashing instructions. *(Pre-release; thus not shown as "Latest" on the repo page.)*
+> **📥 Latest release: [v3.0.0](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.0.0)** — firmware & flashing instructions.
 
 ## Architecture
 
@@ -72,10 +72,10 @@ Download the release files from the [Releases page](../../releases).
 
 ```bash
 # macOS / Linux
-esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.0.0-preview.1.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.0.0.bin
 
 # Windows (adjust COM port)
-esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.0.0-preview.1.bin
+esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.0.0.bin
 ```
 
 If upgrading from V2.67.x, erase the flash first (new partition layout):
@@ -84,7 +84,7 @@ If upgrading from V2.67.x, erase the flash first (new partition layout):
 esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX erase_flash
 ```
 
-**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-v3.0.0-preview.1.bin`. The device reboots, runs a 5-minute self-test, and rolls back automatically if the self-test fails.
+**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-v3.0.0.bin`. The device reboots, runs a 5-minute self-test, and rolls back automatically if the self-test fails.
 
 > Upgrading from V2.67.x to V3.0 via OTA is not supported. Use the USB factory image. Back up your V2 settings first (General → Maintenance → Export settings in V2), then restore them after V3 first boot.
 

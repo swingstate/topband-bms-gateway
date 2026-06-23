@@ -5,10 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [3.0.0-preview.1] - 2026-06-15
+## [3.0.0] - 2026-06-23
 
-First public tagged release of the V3.0 rewrite. All V3.0 features from the
-`[3.0.0]` entry below are included. This entry documents incremental fixes and
+First stable release of the V3.0 rewrite. All V3.0 features from the
+`[3.0.0-dev]` entry below are included. This entry documents incremental fixes and
 additions merged after the base V3.0 code-complete milestone.
 
 ### Fixed
@@ -40,7 +40,7 @@ additions merged after the base V3.0 code-complete milestone.
   cache fix: last-received SYSPARAM values are held between polls so the UI never
   shows stale zeros during a missed poll cycle.
 
-## [3.0.0] - 2026-06-04
+## [3.0.0-dev] - 2026-06-04
 
 Ground-up rewrite of the firmware from a single-file Arduino sketch (6364 lines)
 to a modular ESP-IDF application targeting the ESP32-S3. No code was carried over
