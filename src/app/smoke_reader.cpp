@@ -5,6 +5,7 @@
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
 #include "can/tx.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,10 +14,10 @@ static const char* TAG = "smoke";
 
 static void smoke_reader_task(void* /*param*/) {
   ESP_LOGI(TAG, "Smoke reader task started on Core 1");
-  // BmsSystemSnapshot is ~4.5 KB — too large for the task stack.
-  // Static storage is safe because smoke_reader_task is a singleton.
-  static BmsSystemSnapshot snap;
-  static SafetyState safety;
+  // BmsSystemSnapshot (~4.6 KB) moved to PSRAM BSS — CPU/task-context only,
+  // no ISR, no DMA. Same pattern as history_task.cpp:29 (proven).
+  static EXT_RAM_BSS_ATTR BmsSystemSnapshot snap;
+  static SafetyState safety;  // small; keep in DRAM
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(100));

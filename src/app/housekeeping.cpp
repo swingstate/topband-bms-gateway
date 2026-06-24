@@ -11,6 +11,7 @@
 #include "storage/boot_reasons.h"
 #include "sources/registry.h"
 #include "sources/mppt_source.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -20,14 +21,14 @@
 
 static const char* TAG = "housekeep";
 
-// Large working buffers as module-level statics: BmsSystemSnapshot is ~8 KB,
-// MqttPublishRequest is ~1 KB. Declaring them as locals in the task function
-// causes GCC (-Os) to reserve the full frame at function entry, overflowing
-// the 6144-byte stack even when the mqtt_enabled guard short-circuits the loop.
-// HousekeepingTask is single-instance so there is no aliasing risk.
-static BmsSystemSnapshot  s_snap;
-static SafetyState        s_safety;
-static MqttPublishRequest s_req;
+// Large working buffers as module-level statics in PSRAM BSS: BmsSystemSnapshot
+// is ~4.6 KB, MqttPublishRequest is ~1.2 KB. CPU/task-context only — no ISR,
+// no DMA. Same pattern as history_task.cpp:29 (proven).  HousekeepingTask is
+// single-instance so there is no aliasing risk.
+// EXT_RAM_BSS_ATTR: moves these from DRAM BSS to PSRAM (~5.8 KB DRAM freed).
+static EXT_RAM_BSS_ATTR BmsSystemSnapshot  s_snap;
+static SafetyState                         s_safety;  // hot-path internal: keep in DRAM
+static EXT_RAM_BSS_ATTR MqttPublishRequest s_req;
 
 // Individual system IndivTopic values — 20 × 72 bytes = 1440 bytes.
 // Previously a stack-local inside housekeeping_task_entry; with interrupt save
