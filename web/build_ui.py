@@ -5,11 +5,14 @@ build finds it ready (avoiding a race with CMake's CUSTOM_COMMAND).
 
 Plain tar (no gzip) so the firmware extracts directly with microtar.
 
-The UI_VERSION string is read from src/storage/ui_provisioner.h so the
-firmware constant and the tarball always agree.
+UI_VERSION in src/storage/ui_provisioner.h is kept in sync with a
+content-hash of web/ui/ source files (excluding ui_version.txt itself).
+The file is only written when the hash actually changes, so repeated
+builds with no UI changes leave the git tree clean.
 """
 
 import gzip
+import hashlib
 import re
 import subprocess
 import tarfile
@@ -45,26 +48,65 @@ def read_ui_version():
     return "unknown"
 
 
-def auto_increment_ui_version():
-    """Bump the dev.N suffix in ui_provisioner.h on every build.
+def compute_ui_content_hash():
+    """SHA-256 over all UI source files, stable sorted order.
 
-    Ensures every pio run embeds a fresh version so the device can detect
-    that new UI assets need to be extracted from the tar.
-    Pattern matched: *-dev.N  →  *-dev.N+1
+    Excludes ui_version.txt (derived output) to avoid a chicken-and-egg
+    cycle where updating the version would change the hash on the next run.
+    """
+    h = hashlib.sha256()
+    for src in sorted(UI_DIR.rglob("*")):
+        if src.is_file() and src.name != "ui_version.txt":
+            rel = src.relative_to(UI_DIR).as_posix()
+            h.update(rel.encode())
+            h.update(b"\0")
+            h.update(src.read_bytes())
+            h.update(b"\0")
+    return h.hexdigest()[:8]
+
+
+def sync_ui_version():
+    """Write ui_provisioner.h only when UI content actually changed.
+
+    Uses a content-hash suffix (e.g. 3.1.0-dev.a3f9c2b1) instead of an
+    opaque counter so repeated no-op builds leave the tracked file unmodified.
+    Release versions (no -dev. suffix) are left untouched.
     """
     try:
         text = PROV_HEADER.read_text(encoding="utf-8")
-        def _bump(m):
-            return m.group(0).replace(
-                f'.{m.group(1)}"', f'.{int(m.group(1)) + 1}"'
-            )
-        new_text, n = re.subn(
-            r'UI_VERSION\s*=\s*"[^"]*-dev\.(\d+)"', _bump, text
+        m = re.search(r'UI_VERSION\s*=\s*"([^"]+)"', text)
+        if not m:
+            print("[build_ui] Warning: UI_VERSION not found in ui_provisioner.h",
+                  file=sys.stderr)
+            return
+
+        current = m.group(1)
+
+        # Release versions are set manually — don't touch them.
+        dev_m = re.match(r'^(.+)-dev\.\S+$', current)
+        if not dev_m:
+            print(f"[build_ui] Release version {current!r} — skipping hash sync")
+            return
+
+        base = dev_m.group(1)
+        content_hash = compute_ui_content_hash()
+        new_version = f"{base}-dev.{content_hash}"
+
+        if new_version == current:
+            print(f"[build_ui] UI unchanged (hash={content_hash}) — "
+                  f"version stays {current!r}")
+            return
+
+        new_text = re.sub(
+            r'(UI_VERSION\s*=\s*")[^"]+(")',
+            lambda mo: f'{mo.group(1)}{new_version}{mo.group(2)}',
+            text
         )
-        if n:
-            PROV_HEADER.write_text(new_text, encoding="utf-8")
+        PROV_HEADER.write_text(new_text, encoding="utf-8")
+        print(f"[build_ui] UI content changed → {current!r} → {new_version!r}")
+
     except OSError as exc:
-        print(f"[build_ui] Warning: could not auto-increment UI version: {exc}",
+        print(f"[build_ui] Warning: could not sync UI version: {exc}",
               file=sys.stderr)
 
 
@@ -154,6 +196,6 @@ def pre_generate_embed_s(raw_tar_bytes):
         print(f"[build_ui] Warning: .S generation exception: {exc}", file=sys.stderr)
 
 
-auto_increment_ui_version()
+sync_ui_version()
 raw = build_tarball()
 pre_generate_embed_s(raw)
