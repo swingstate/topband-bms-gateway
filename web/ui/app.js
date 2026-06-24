@@ -643,10 +643,10 @@ function renderSolar() {
         </div>
       </div>
 
-      <!-- Output to Battery (MPPT-side) -->
+      <!-- MPPT Charger Output (MPPT output-terminal measurements) -->
       ${(m.batt_v_valid || m.batt_i_valid) ? `
-      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:12px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">Output to Battery</div>
+      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:${ptActive ? '8px' : '12px'}">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">MPPT Charger Output</div>
         <div style="display:flex;align-items:center">
           ${metricCell('Power', battPower, 'W', 'var(--brand-teal)')}
           ${vdivider()}
@@ -654,10 +654,14 @@ function renderSolar() {
           ${vdivider()}
           ${metricCell('Current', battA, 'A')}
         </div>
-      </div>` : ''}
+      </div>
+      ${ptActive ? `<div style="font-size:12px;color:var(--text-muted);padding:0 4px 12px;line-height:1.5">Passthrough active — solar energy is fed directly into the system (not stored in the battery).</div>` : ''}` : ''}
 
       <!-- Solar Passthrough -->
-      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Solar Passthrough</div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Solar Passthrough</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;opacity:.75">Only relevant for setups controlled by OpenDTU-onBattery.</div>
+      </div>
       ${ptConfigured ? `
       <div class="card" style="padding:16px 18px">
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:${ptAge !== null || ptSub ? '14px' : '0'}">
@@ -3865,8 +3869,8 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('Last seen', fmtAge(mppt.last_seen_s))}
         ${kvRow('PV input power', fmtF(mppt.pv_power_w, 1) + ' W')}
-        ${kvRow('Battery voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
-        ${kvRow('Battery current', fmtF(mppt.batt_current_a, 2) + ' A')}
+        ${kvRow('Charger output voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
+        ${kvRow('Charger output current', fmtF(mppt.batt_current_a, 2) + ' A')}
         ${kvRow('Charger state', mppt.seen ? (csLabels[mppt.charge_state] || ('State ' + mppt.charge_state)) : '—')}
         ${kvRow('Yield today', mppt.yield_today_wh != null ? (mppt.yield_today_wh / 1000).toFixed(2) + ' kWh' : '—')}
       </div></div>` : `<div style="margin-top:8px;color:var(--text-muted);font-size:12px">MPPT disabled</div>`}

@@ -279,24 +279,24 @@ static void housekeeping_task_entry(void* /*arg*/) {
         }
 
         if (stale || !d.batt_v_valid) {
-          post_solar("/solar/batt_voltage", "unavailable");
+          post_solar("/solar/output_voltage", "unavailable");
         } else {
           snprintf(sv, sizeof(sv), "%.2f", d.batt_voltage_v);
-          post_solar("/solar/batt_voltage", sv);
+          post_solar("/solar/output_voltage", sv);
         }
 
         if (stale || !d.batt_i_valid) {
-          post_solar("/solar/batt_current", "unavailable");
+          post_solar("/solar/output_current", "unavailable");
         } else {
           snprintf(sv, sizeof(sv), "%.2f", d.batt_current_a);
-          post_solar("/solar/batt_current", sv);
+          post_solar("/solar/output_current", sv);
         }
 
         if (stale || !d.batt_v_valid || !d.batt_i_valid) {
-          post_solar("/solar/batt_power", "unavailable");
+          post_solar("/solar/output_power", "unavailable");
         } else {
           snprintf(sv, sizeof(sv), "%.1f", d.batt_voltage_v * d.batt_current_a);
-          post_solar("/solar/batt_power", sv);
+          post_solar("/solar/output_power", sv);
         }
 
         if (stale || !d.yield_valid) {
