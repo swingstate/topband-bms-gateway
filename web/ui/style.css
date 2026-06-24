@@ -473,6 +473,7 @@ a { text-decoration: none; color: inherit; }
 }
 
 .pack-card { padding: 14px 16px; }
+.battery-overview-card { padding: 14px 16px; }
 
 .pack-header {
   display: flex;

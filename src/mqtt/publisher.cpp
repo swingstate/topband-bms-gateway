@@ -359,9 +359,11 @@ bool start(const Config& cfg) {
   esp_mqtt_client_register_event(s_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID),
                                    mqtt_event_handler, nullptr);
 
-  // Spawn MqttTask on Core 1, priority 3 (architecture §3.2)
+  // Spawn MqttTask on Core 1, priority 3 (architecture §3.2).
+  // 8192 B: 884 B Config snapshot + HA-discovery helpers (640-700 B char[] locals under
+  // 16-pack × 15-cell load) left only 256 B HWM at 6144 — one exception frame from overflow.
   BaseType_t r = xTaskCreatePinnedToCore(
-      mqtt_task_entry, "mqtt", 6144, nullptr, 3, &s_task_handle, /*core*/ 1);
+      mqtt_task_entry, "mqtt", 8192, nullptr, 3, &s_task_handle, /*core*/ 1);
   if (r != pdPASS) {
     ESP_LOGE(TAG, "xTaskCreatePinnedToCore failed");
     esp_mqtt_client_destroy(s_client);

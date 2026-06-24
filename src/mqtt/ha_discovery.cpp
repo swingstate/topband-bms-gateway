@@ -55,6 +55,23 @@ static const EntityDef SYSTEM_ENTITIES[] = {
 };
 static constexpr size_t N_SYSTEM = sizeof(SYSTEM_ENTITIES) / sizeof(SYSTEM_ENTITIES[0]);
 
+// Solar / MPPT entities (Victron SmartSolar BLE, gated on cfg.ble_mppt_enabled).
+// Only the fields reliably present on the owner's hardware are published:
+// pv_power, output_voltage, output_current, output_power, yield_today, charger_state.
+// PV-side voltage and current show 0xFFFF/0x7FFF sentinels on the Waveshare target
+// and are intentionally omitted.
+// "output_*" names the MPPT's output terminal — not "battery" — because with
+// Solar-Passthrough the energy may go directly to the load, not the battery.
+static const EntityDef SOLAR_ENTITIES[] = {
+  { "solar_pv_power",       "/solar/pv_power",       "Victron MPPT \xe2\x80\x94 PV Power",                    "power",   "W",   "measurement",      "mdi:solar-power"         },
+  { "solar_output_voltage", "/solar/output_voltage", "Victron MPPT \xe2\x80\x94 Charger Output Voltage",      "voltage", "V",   "measurement",      nullptr                   },
+  { "solar_output_current", "/solar/output_current", "Victron MPPT \xe2\x80\x94 Charger Output Current",      "current", "A",   "measurement",      nullptr                   },
+  { "solar_output_power",   "/solar/output_power",   "Victron MPPT \xe2\x80\x94 Charger Output Power",        "power",   "W",   "measurement",      nullptr                   },
+  { "solar_yield_today",    "/solar/yield_today",    "Victron MPPT \xe2\x80\x94 Yield Today",                 "energy",  "kWh", "total_increasing", "mdi:solar-power"         },
+  { "solar_charger_state",  "/solar/charger_state",  "Victron MPPT \xe2\x80\x94 Charger State",               nullptr,   nullptr, nullptr,          "mdi:battery-charging"    },
+};
+static constexpr size_t N_SOLAR = sizeof(SOLAR_ENTITIES) / sizeof(SOLAR_ENTITIES[0]);
+
 // Per-pack entity suffixes appended as "pack_{n}_{key}"
 // Published at PerCell level (state_topic = JSON cells topic, needs value_template).
 struct PackEntityDef {
@@ -405,6 +422,31 @@ void publish_all(const Config& cfg,
     }
   }
 
+  // Solar MPPT entities: publish when BLE MPPT is enabled; tombstone when disabled
+  // so HA removes stale solar sensors after the user disables MPPT.
+  // Also tombstone old solar_batt_* names (renamed dev.34→dev.35) regardless of
+  // enabled state so they don't linger as ghosts in HA after upgrade.
+  static const char* OLD_SOLAR_BATT_KEYS[] = {
+    "solar_batt_voltage", "solar_batt_current", "solar_batt_power",
+  };
+  for (const char* old_key : OLD_SOLAR_BATT_KEYS) {
+    char disc_topic[160];
+    if (mqtt::topics::build_ha_discovery(device_uid, old_key, disc_topic, sizeof(disc_topic))) {
+      enqueue_disc(disc_topic, nullptr, 0);
+    }
+  }
+  for (size_t i = 0; i < N_SOLAR; ++i) {
+    if (cfg.ble_mppt_enabled) {
+      publish_system_entity(SOLAR_ENTITIES[i], device_uid, effective_base);
+    } else {
+      char disc_topic[160];
+      if (mqtt::topics::build_ha_discovery(device_uid, SOLAR_ENTITIES[i].key,
+                                            disc_topic, sizeof(disc_topic))) {
+        enqueue_disc(disc_topic, nullptr, 0);
+      }
+    }
+  }
+
   ESP_LOGI(TAG, "HA discovery enqueued (%zu+ items)", N_SYSTEM);
 }
 
@@ -438,6 +480,8 @@ void publish_cleanup_if_needed(const char* device_uid) {
     "soc_avg", "soh_avg", "pack_voltage_avg", "pack_current_total",
     "pack_power_w", "temp_avg", "temp_max", "cell_v_drift",
     "cvl_v", "ccl_a", "dcl_a", "bms_count_online",
+    // Renamed dev.34→dev.35: solar_batt_* → solar_output_*
+    "solar_batt_voltage", "solar_batt_current", "solar_batt_power",
   };
   for (const char* key : STALE_KEYS) {
     char disc_topic[160];

@@ -31,11 +31,6 @@
 
 static const char* TAG = "web_diag";
 
-// Low-water mark for the largest free contiguous DRAM block since boot.
-// Updated on every /api/diag poll. UINT32_MAX sentinel means "not yet sampled".
-// DIAGNOSTIC INSTRUMENT ONLY — this value is never used as a runtime gate.
-// Separation is intentional: a stale watermark must never block a live send.
-static uint32_t s_dram_largest_min = UINT32_MAX;
 
 // ── HStream (shared pattern from handlers_history.cpp) ───────────────────────
 
@@ -144,12 +139,6 @@ esp_err_t handle_diag(httpd_req_t* req) {
   uint32_t dram_largest     = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-
-  // Update contiguous-block low-water mark. Diagnostic only — displayed in ble_spike{}
-  // below so the owner can see the worst-case fragmentation seen since boot.
-  // Not a runtime gate: the runtime allows TLS to try regardless of this value.
-  if (dram_largest < s_dram_largest_min) s_dram_largest_min = dram_largest;
-  uint32_t dram_largest_min_ever = (s_dram_largest_min == UINT32_MAX) ? 0u : s_dram_largest_min;
 
   hs_str(s, "{");
 
@@ -287,35 +276,14 @@ esp_err_t handle_diag(httpd_req_t* req) {
   }
   hs_str(s, "}");
 
-  // ── ble_spike — V3.1 coexistence gate metrics ────────────────────────────
-  // DEV/SPIKE TOOLING — to be removed or folded into the real dashboard in Phase C.
-  // This section is the primary verification surface for the owner during the ≥30 min
-  // coexistence stress test. The pass/fail gate is min_dram_ever (already in system{})
-  // combined with zero WiFi/MQTT/WDT events while BLE scans.
+  // ── ble_status — BLE scanner, MPPT, and Shunt status ────────────────────
   {
-    bool ble_on   = sources::ble_scanner::is_active();
-    bool tls_busy = notify::is_tls_busy();
+    bool ble_on = sources::ble_scanner::is_active();
 
-    hs_str(s, ",\"ble_spike\":{");
+    hs_str(s, ",\"ble_status\":{");
     hs_str(s, "\"ble_active\":"); hs_bool(s, ble_on);
     hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
-    hs_str(s, ",\"tls_in_progress\":"); hs_bool(s, tls_busy);
-
-    // Coexistence diagnostic metrics (all read-only, Phase A instrumentation).
-    // wifi_disconnects: every STA disconnect since boot. Compare BLE-on vs BLE-off
-    //   sessions — an elevated count with BLE active confirms radio starvation
-    //   pushing the WiFi link out of association.
-    // handler_last_ms / handler_max_ms: /api/live wall-clock latency. A single
-    //   request >200 ms (one BLE scan window) confirms httpd task starvation on
-    //   Core 0.
-    // ble_gap_events: total BLE_GAP_EVENT_DISC events received. With
-    //   filter_duplicates=0, this is ALL nearby BLE advertisements, not only
-    //   Victron. High rate = dense BLE environment amplifying Core 0 NimBLE host
-    //   task CPU load even during otherwise-quiet 1800 ms inter-scan gaps.
     hs_str(s, ",\"wifi_disconnects\":"); hs_uint(s, net::wifi::get_disconnect_count());
-    // Associated BSSID + RSSI — directly visible to operator so sticky-client diagnosis
-    // no longer requires a separate tool. Comparing bssid across sessions reveals which
-    // AP the ESP actually attached to.
     { std::string bssid = net::wifi::get_bssid();
       hs_str(s, ",\"wifi_bssid\":"); hs_json_str(s, bssid.empty() ? "" : bssid.c_str()); }
     hs_str(s, ",\"wifi_rssi\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)net::wifi::get_rssi()); hs_str(s,t); }
@@ -325,22 +293,6 @@ esp_err_t handle_diag(httpd_req_t* req) {
     hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());
     hs_str(s, ",\"ble_victron_advs\":"); hs_uint(s, sources::ble_scanner::victron_adv_count());
     hs_str(s, ",\"ble_mppt_advs\":"); hs_uint(s, sources::ble_scanner::mppt_adv_count());
-
-    // Contiguous DRAM block tracking — diagnostic only, not a runtime gate.
-    // Values below ~20 KB indicate fragmentation that may impede a TLS handshake.
-    hs_str(s, ",\"dram_largest_block_now\":"); hs_uint(s, dram_largest);
-    hs_str(s, ",\"dram_largest_block_min_ever\":"); hs_uint(s, dram_largest_min_ever);
-
-    // Dev TLS burst trigger state (only meaningful when BLE_SPIKE_DEV_BURST=1).
-#if BLE_SPIKE_DEV_BURST
-    hs_str(s, ",\"burst_enabled\":true");
-    hs_str(s, ",\"burst_active\":"); hs_bool(s, notify::dev_tls_burst_active());
-    hs_str(s, ",\"burst_fired\":"); hs_uint(s, (uint32_t)notify::dev_tls_burst_fired());
-#else
-    hs_str(s, ",\"burst_enabled\":false");
-    hs_str(s, ",\"burst_active\":false");
-    hs_str(s, ",\"burst_fired\":0");
-#endif
 
     // BMS total current (for side-by-side comparison with shunt current).
     {
@@ -413,12 +365,8 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, "}");
     }
 
-    // ── ble_debug — per-advertisement filter funnel ───────────────────────────
-    // Shows the last ≤8 Victron advertisements with per-stage pass/fail flags.
-    // configured_mac: the MPPT MAC as the firmware actually compares it internally
-    //   (network order, matches what you see in VictronConnect / the config page).
-    // Counters: victron_total → mppt_type_match → mppt_mac_match → mppt_decrypt_ok
-    //   identify which filter stage is rejecting packets.
+    // Per-advertisement filter funnel: configured_mac, stage counters, and
+    // a ring of the last ≤8 Victron advertisements with per-stage pass/fail flags.
     {
       sources::ble_scanner::AdvDebugState dbg{};
       sources::ble_scanner::get_adv_debug(dbg);

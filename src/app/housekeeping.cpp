@@ -9,6 +9,9 @@
 #include "storage/alerts_store.h"
 #include "storage/energy_store.h"
 #include "storage/boot_reasons.h"
+#include "sources/registry.h"
+#include "sources/mppt_source.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -18,14 +21,14 @@
 
 static const char* TAG = "housekeep";
 
-// Large working buffers as module-level statics: BmsSystemSnapshot is ~8 KB,
-// MqttPublishRequest is ~1 KB. Declaring them as locals in the task function
-// causes GCC (-Os) to reserve the full frame at function entry, overflowing
-// the 6144-byte stack even when the mqtt_enabled guard short-circuits the loop.
-// HousekeepingTask is single-instance so there is no aliasing risk.
-static BmsSystemSnapshot  s_snap;
-static SafetyState        s_safety;
-static MqttPublishRequest s_req;
+// Large working buffers as module-level statics in PSRAM BSS: BmsSystemSnapshot
+// is ~4.6 KB, MqttPublishRequest is ~1.2 KB. CPU/task-context only — no ISR,
+// no DMA. Same pattern as history_task.cpp:29 (proven).  HousekeepingTask is
+// single-instance so there is no aliasing risk.
+// EXT_RAM_BSS_ATTR: moves these from DRAM BSS to PSRAM (~5.8 KB DRAM freed).
+static EXT_RAM_BSS_ATTR BmsSystemSnapshot  s_snap;
+static SafetyState                         s_safety;  // hot-path internal: keep in DRAM
+static EXT_RAM_BSS_ATTR MqttPublishRequest s_req;
 
 // Individual system IndivTopic values — 20 × 72 bytes = 1440 bytes.
 // Previously a stack-local inside housekeeping_task_entry; with interrupt save
@@ -241,6 +244,86 @@ static void housekeeping_task_entry(void* /*arg*/) {
       if (n > 0) {
         s_req.payload_len = (uint16_t)n;
         post_mqtt(s_req);
+      }
+    }
+
+    // ── Solar MPPT IndivTopics every 10 ticks (10 s) ─────────────────────────
+    // Published only when BLE MPPT is enabled. When the source is stale (> 30 s)
+    // or a field has a Victron sentinel, publish "unavailable" so HA shows the
+    // sensor as unavailable rather than the last decoded value.
+    if (cfg.ble_mppt_enabled && (s_tick % 10 == 0)) {
+      sources::MpptSource* mppt = sources::mppt_source();
+      if (mppt && mppt->enabled()) {
+        sources::MpptSource::DiagSnap d = mppt->diag_snap();
+        bool stale = !d.seen || (mppt->ms_since_last_seen((uint32_t)(esp_timer_get_time() / 1000LL))
+                                  > 30000u);   // matches MpptSource::STALE_MS
+
+        auto post_solar = [&](const char* suffix, const char* value) {
+          s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
+          s_req.pack_id  = 0xFF;
+          s_req.retained = true;
+          snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix), "%s", suffix);
+          size_t vlen = strlen(value);
+          memcpy(s_req.payload, value, vlen + 1);
+          s_req.payload_len = (uint16_t)vlen;
+          post_mqtt(s_req);
+        };
+
+        static char sv[32];
+
+        if (stale || !d.pv_power_valid) {
+          post_solar("/solar/pv_power", "unavailable");
+        } else {
+          snprintf(sv, sizeof(sv), "%.1f", d.pv_power_w);
+          post_solar("/solar/pv_power", sv);
+        }
+
+        if (stale || !d.batt_v_valid) {
+          post_solar("/solar/output_voltage", "unavailable");
+        } else {
+          snprintf(sv, sizeof(sv), "%.2f", d.batt_voltage_v);
+          post_solar("/solar/output_voltage", sv);
+        }
+
+        if (stale || !d.batt_i_valid) {
+          post_solar("/solar/output_current", "unavailable");
+        } else {
+          snprintf(sv, sizeof(sv), "%.2f", d.batt_current_a);
+          post_solar("/solar/output_current", sv);
+        }
+
+        if (stale || !d.batt_v_valid || !d.batt_i_valid) {
+          post_solar("/solar/output_power", "unavailable");
+        } else {
+          snprintf(sv, sizeof(sv), "%.1f", d.batt_voltage_v * d.batt_current_a);
+          post_solar("/solar/output_power", sv);
+        }
+
+        if (stale || !d.yield_valid) {
+          post_solar("/solar/yield_today", "unavailable");
+        } else {
+          snprintf(sv, sizeof(sv), "%.3f", d.yield_today_wh / 1000.0f);
+          post_solar("/solar/yield_today", sv);
+        }
+
+        if (stale) {
+          post_solar("/solar/charger_state", "unavailable");
+        } else {
+          static const char* CS_LABELS[] = {
+            "Off", "Low power", "Fault", "Bulk", "Absorption", "Float",
+            "Storage", "Equalize",
+          };
+          if (d.charge_state < 8) {
+            post_solar("/solar/charger_state", CS_LABELS[d.charge_state]);
+          } else if (d.charge_state == 252) {
+            post_solar("/solar/charger_state", "ESS");
+          } else if (d.charge_state == 255) {
+            post_solar("/solar/charger_state", "unavailable");
+          } else {
+            snprintf(sv, sizeof(sv), "State %u", (unsigned)d.charge_state);
+            post_solar("/solar/charger_state", sv);
+          }
+        }
       }
     }
 

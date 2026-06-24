@@ -643,10 +643,10 @@ function renderSolar() {
         </div>
       </div>
 
-      <!-- Output to Battery (MPPT-side) -->
+      <!-- MPPT Charger Output (MPPT output-terminal measurements) -->
       ${(m.batt_v_valid || m.batt_i_valid) ? `
-      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:12px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">Output to Battery</div>
+      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:${ptActive ? '8px' : '12px'}">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">MPPT Charger Output</div>
         <div style="display:flex;align-items:center">
           ${metricCell('Power', battPower, 'W', 'var(--brand-teal)')}
           ${vdivider()}
@@ -654,10 +654,14 @@ function renderSolar() {
           ${vdivider()}
           ${metricCell('Current', battA, 'A')}
         </div>
-      </div>` : ''}
+      </div>
+      ${ptActive ? `<div style="font-size:12px;color:var(--text-muted);padding:0 4px 12px;line-height:1.5">Passthrough active — solar energy is fed directly into the system (not stored in the battery).</div>` : ''}` : ''}
 
       <!-- Solar Passthrough -->
-      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Solar Passthrough</div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Solar Passthrough</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;opacity:.75">Only relevant for setups controlled by OpenDTU-onBattery.</div>
+      </div>
       ${ptConfigured ? `
       <div class="card" style="padding:16px 18px">
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:${ptAge !== null || ptSub ? '14px' : '0'}">
@@ -1000,7 +1004,6 @@ function renderBattery() {
         <div class="pack-status-dot offline" id="batt-strip-dot" style="flex-shrink:0"></div>
         <span style="font-weight:600;font-size:14px" id="batt-strip-text">—</span>
         <span id="batt-strip-pill"></span>
-        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="batt-strip-soc"></span>
       </div>
       <!-- Aggregate metrics -->
       <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
@@ -1074,10 +1077,8 @@ function updateBatteryOverviewCards() {
   setEl('batt-strip-text', `${online}/${total} packs online`);
   const pillEl = document.getElementById('batt-strip-pill');
   if (pillEl) pillEl.innerHTML = safety.pack_current_total !== undefined ? chargePill(safety.pack_current_total) : '';
-  const socAvg = safety.soc_avg;
-  setEl('batt-strip-soc', socAvg !== undefined ? `Avg SOC ${fmt(socAvg, 0)}%` : '');
-
   // ── Aggregate metric boxes ──
+  const socAvg = safety.soc_avg;
   const soc  = socAvg !== undefined ? socAvg : null;
   const volt = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
   const cur  = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
@@ -3841,84 +3842,46 @@ function renderDiagData(d) {
     </div>
 
     ${(function() {
-      // ── V3.1 BLE spike monitor (dev tooling — removed/folded in Phase C) ───
-      const ble = d.ble_spike;
+      const ble = d.ble_status;
       if (!ble) return '';
       const mppt  = ble.mppt  || {};
       const shunt = ble.shunt || {};
-      const sys   = d.system  || {};
-      const fmtAge = s => (s < 0 ? '—' : s + ' s ago');
+      const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
+      const fmtAge = s => (s < 0 ? 'never' : s + ' s ago');
       const fmtF   = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
-      const fmtB   = v => (v == null || v === 0) ? '— (not sampled yet)' : Number(v).toLocaleString() + ' B';
 
-      // Gate color for contiguous block low-water mark.
-      // >= 40 KB: PASS (green). 16-40 KB: thin pass = FAIL (orange). < 16 KB: HARD FAIL (red).
-      const GATE_PASS = 40 * 1024;
-      const GATE_HARD = 16 * 1024;
-      const minBlk = ble.dram_largest_block_min_ever || 0;
-      const gateColor = minBlk === 0 ? 'inherit'
-                      : minBlk >= GATE_PASS ? 'var(--success,#2e7d32)'
-                      : minBlk >= GATE_HARD ? '#e65100'
-                      : 'var(--danger,#c62828)';
-      const gateLabel = minBlk === 0 ? '— (poll to sample)'
-                      : minBlk >= GATE_PASS
-                        ? Number(minBlk).toLocaleString() + ' B  --  PASS (>= 40 KB)'
-                        : minBlk >= GATE_HARD
-                          ? Number(minBlk).toLocaleString() + ' B  --  THIN PASS = FAIL (16-40 KB)'
-                          : Number(minBlk).toLocaleString() + ' B  --  HARD FAIL (< 16 KB)';
-
-      const tlsLabel = ble.burst_active
-        ? 'YES — burst active'
-        : ble.tls_in_progress ? 'YES' : 'no';
-
-      return `<div class="diag-section" style="border-left:3px solid var(--accent,#0078d4)">
-      <h3>BLE Spike Monitor <span style="font-size:11px;font-weight:normal;color:var(--text-muted)">[dev — Phase A + gate-hardening]</span></h3>
-
+      return `<div class="diag-section">
+      <h3>BLE / MPPT / Shunt</h3>
       <div class="diag-kv-grid">
-        ${kvRow('BLE active', ble.ble_active ? 'YES' : 'no')}
+        ${kvRow('BLE active', ble.ble_active ? 'yes' : 'no')}
         ${kvRow('BLE stack', ble.stack || '—')}
-        ${kvRow('TLS in progress', tlsLabel)}
-        ${kvRow('DRAM free now', fmtB(sys.dram_free))}
-        ${kvRow('DRAM min ever (free)', fmtB(sys.dram_min))}
-        ${kvRow('Largest contiguous now', fmtB(ble.dram_largest_block_now))}
-        ${kvRow('BLE adv total / Victron / MPPT(0x01)',
+        ${kvRow('Advertisements (total / Victron / MPPT)',
                 `${(ble.ble_gap_events||0).toLocaleString()} / ${(ble.ble_victron_advs||0).toLocaleString()} / ${(ble.ble_mppt_advs||0).toLocaleString()}`)}
+        ${kvRow('WiFi disconnects', ble.wifi_disconnects||0)}
+        ${kvRow('WiFi BSSID', ble.wifi_bssid || '—')}
+        ${kvRow('WiFi RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' : '—')}
+        ${kvRow('BSSID pin', ble.wifi_bssid_pin_active ? 'active' : 'off')}
+        ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms')}
+        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
       </div>
-      <div class="diag-kv-grid" style="margin-top:4px">
-        <div class="diag-kv"><span><strong>Largest contiguous, min ever (TRUE GATE)</strong></span><span style="font-weight:700;color:${gateColor}">${escHtml(gateLabel)}</span></div>
-        <div class="diag-kv" style="grid-column:1/-1;font-size:11px;color:var(--text-muted)">Gate: >= 40 KB = PASS &nbsp;|&nbsp; 16-40 KB = thin pass (treat as FAIL) &nbsp;|&nbsp; &lt; 16 KB = HARD FAIL</div>
-      </div>
 
-      ${ble.burst_enabled ? `<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-secondary" onclick="devTlsBurst(4)"
-                ${ble.burst_active ? 'disabled' : ''}>
-          ${ble.burst_active ? 'Burst running...' : 'Fire TLS burst (n=4)'}
-        </button>
-        <span style="font-size:11px;color:var(--text-muted)">Fires 4 sequential TLS handshakes. Watch "largest contiguous, min ever" drop. Sends real Telegram messages if configured.</span>
-        ${ble.burst_fired > 0 ? `<span style="font-size:11px">Total burst sends this boot: ${ble.burst_fired}</span>` : ''}
-      </div>` : ''}
-
-      <div style="margin-top:8px">${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}</div>
-
-      ${mppt.enabled ? `<div style="margin-top:8px"><strong>MPPT</strong>
+      ${mppt.enabled ? `<div style="margin-top:10px"><strong>MPPT (Victron SmartSolar)</strong>
       <div class="diag-kv-grid">
-        ${kvRow('Type-0x01 advs seen', (ble.ble_mppt_advs||0).toLocaleString()
-          + ((ble.ble_mppt_advs||0) === 0 ? ' — device not seen (wrong MAC? out of range?)' : ''))}
-        ${kvRow('Last adv', fmtAge(mppt.last_seen_s))}
-        ${kvRow('PV power', fmtF(mppt.pv_power_w, 0) + ' W')}
-        ${kvRow('PV voltage', fmtF(mppt.pv_voltage_v, 2) + ' V')}
-        ${kvRow('PV current', fmtF(mppt.pv_current_a, 2) + ' A')}
-        ${kvRow('Batt voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
-        ${kvRow('Batt current', fmtF(mppt.batt_current_a, 2) + ' A')}
-      </div></div>` : '<div style="margin-top:6px;color:var(--text-muted);font-size:12px">MPPT disabled</div>'}
-      ${shunt.enabled ? `<div style="margin-top:8px"><strong>Shunt vs BMS current (core win)</strong>
+        ${kvRow('Last seen', fmtAge(mppt.last_seen_s))}
+        ${kvRow('PV input power', fmtF(mppt.pv_power_w, 1) + ' W')}
+        ${kvRow('Charger output voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
+        ${kvRow('Charger output current', fmtF(mppt.batt_current_a, 2) + ' A')}
+        ${kvRow('Charger state', mppt.seen ? (csLabels[mppt.charge_state] || ('State ' + mppt.charge_state)) : '—')}
+        ${kvRow('Yield today', mppt.yield_today_wh != null ? (mppt.yield_today_wh / 1000).toFixed(2) + ' kWh' : '—')}
+      </div></div>` : `<div style="margin-top:8px;color:var(--text-muted);font-size:12px">MPPT disabled</div>`}
+
+      ${shunt.enabled ? `<div style="margin-top:10px"><strong>Shunt (SmartShunt)</strong>
       <div class="diag-kv-grid">
-        ${kvRow('Last adv', fmtAge(shunt.last_seen_s))}
-        ${kvRow('Shunt current', fmtF(shunt.current_a, 3) + ' A')}
-        ${kvRow('BMS current', fmtF(ble.bms_current_a, 3) + ' A')}
-        ${kvRow('Shunt voltage', fmtF(shunt.voltage_v, 2) + ' V')}
-        ${kvRow('Shunt SOC', fmtF(shunt.soc_pct, 1) + ' %')}
-      </div></div>` : '<div style="margin-top:6px;color:var(--text-muted);font-size:12px">Shunt disabled</div>'}
+        ${kvRow('Last seen', fmtAge(shunt.last_seen_s))}
+        ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
+        ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
+        ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
+      </div></div>` : `<div style="margin-top:8px;color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}
     </div>`;
     })()}
 
@@ -4007,28 +3970,6 @@ document.addEventListener('click', e => {
   e.preventDefault();
   navigate(a.getAttribute('href'));
 });
-
-/* ── Dev TLS burst trigger (V3.1 Phase A gate-hardening) ───────────────────── */
-// Fires N sequential TLS handshakes via POST /api/diag/tls-burst?n=N.
-// Only functional when BLE_SPIKE_DEV_BURST=1 (endpoint not registered otherwise).
-async function devTlsBurst(n) {
-  try {
-    const r = await apiFetch('/api/diag/tls-burst?n=' + n, { method: 'POST' });
-    if (!r) return;
-    if (r.status === 409) {
-      alert('Burst already active — wait for it to finish.');
-      return;
-    }
-    if (!r.ok) {
-      const body = await r.text().catch(() => '');
-      alert('Burst start failed: ' + body);
-    }
-    // Success: burst is running. The Diag panel auto-refreshes every 5s and shows
-    // burst_active=true and the updated contiguous-block low-water mark.
-  } catch (e) {
-    alert('Burst request failed: ' + e);
-  }
-}
 
 /* ── Logout ─────────────────────────────────────────────────────────────────── */
 async function doLogout() {
