@@ -65,20 +65,7 @@ CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 # ── Main task stack ───────────────────────────────────────────────────────────
 # Default 3584 B is too small when esp-littlefs rename-over-existing triggers
 # lfs_remove internally, which can overflow the stack during UI provisioning.
-# Trim from 8192 to 6144: used-peak is 3408 B (measured HWM); 6144 leaves
-# 2736 B margin (1.8× used-peak).  Boot path is the worst case and is already
-# captured in that HWM.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
-
-# ── esp_timer task stack ───────────────────────────────────────────────────────
-# IDF default is 3584 B; used-peak measured at 628 B.
-# Trim to 2560: leaves 1932 B headroom (4× used-peak).
-# Audit: this project registers ZERO esp_timer callbacks of its own — only
-# n_get_time() (read-only esp_timer_get_time()) is used.  All callbacks that
-# run on the esp_timer task belong to IDF internals (WiFi keepalive, MQTT
-# reconnect timer).  Those are small and their stack usage is included in the
-# measured 628 B HWM.  2560 B is conservative at 4× that peak.
-CONFIG_ESP_TIMER_TASK_STACK_SIZE=2560
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # ── FreeRTOS ──────────────────────────────────────────────────────────────────
 # 1000 Hz tick so vTaskDelay(pdMS_TO_TICKS(1)) gives 1 ms resolution.

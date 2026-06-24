@@ -340,10 +340,8 @@ bool start(const Config& cfg) {
   mcfg.network.reconnect_timeout_ms = 5000;
   // Internal MQTT task must run below httpd (pri 4) to avoid starving HTTP
   // handlers. Default is CONFIG_MQTT_TASK_PRIORITY = 5, which preempts httpd.
-  // Stack trimmed 6144→5120: measured HWM 2504 B, leaves 2616 B (2.0× peak).
-  // Reconnect/broker-outage paths can be deeper; 5120 is conservative.
   mcfg.task.priority   = 3;
-  mcfg.task.stack_size = 5120;
+  mcfg.task.stack_size = 6144;
 
   if (cfg.mqtt_user[0] != '\0') {
     mcfg.credentials.username = cfg.mqtt_user;
