@@ -832,9 +832,18 @@ async function loadSolarChart() {
   let d;
   try {
     const r = await apiFetch('/api/solar-day');
-    if (!r || !r.ok) { plotEl.innerHTML = `<p class="chart-empty">No data</p>`; return; }
+    if (!r || !r.ok) {
+      plotEl.innerHTML = `<p class="chart-empty">No data</p>`;
+      // Retry in 5 min in case the endpoint becomes reachable.
+      g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
+      return;
+    }
     d = await r.json();
-  } catch (_) { plotEl.innerHTML = `<p class="chart-empty">No data</p>`; return; }
+  } catch (_) {
+    plotEl.innerHTML = `<p class="chart-empty">No data</p>`;
+    g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
+    return;
+  }
 
   const pts     = d.points || [];
   const count   = pts.length;
@@ -845,6 +854,9 @@ async function loadSolarChart() {
 
   if (count === 0 || t0 === 0) {
     plotEl.innerHTML = `<p class="chart-empty">No solar data for today yet</p>`;
+    // Ring is empty (fresh boot or no MPPT data yet). Retry every 5 min so the
+    // chart appears automatically once the first sample is recorded.
+    g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
     return;
   }
 
@@ -973,9 +985,11 @@ async function loadSolarChart() {
 }
 
 async function refreshSolarChartData() {
-  if (!g_solar_chart) return;
   const plotEl = document.getElementById('solar-chart-plot');
-  if (!plotEl) return;
+  if (!plotEl) return;  // solar page no longer active
+  // Chart doesn't exist yet (no data at last load): try a full rebuild.
+  // loadSolarChart() resets g_solar_chart_timer so we get a fresh 5-min interval.
+  if (!g_solar_chart) { await loadSolarChart(); return; }
 
   let d;
   try {
