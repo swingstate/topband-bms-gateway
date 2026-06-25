@@ -674,15 +674,12 @@ function renderSolar() {
       </div>
       ${ptConfigured ? `
       <div class="card" style="padding:16px 18px" id="solar-pt-card">
-        <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px" id="solar-pt-header">
-          <div class="pack-status-dot offline" id="solar-pt-dot" style="flex-shrink:0"></div>
-          <div>
-            <div style="font-weight:600;font-size:14px" id="solar-pt-label">—</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:2px" id="solar-pt-sub"></div>
-          </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px" id="solar-pt-header">
+          <span id="solar-pt-pill"></span>
+          <span id="solar-pt-desc" style="font-size:12px;color:var(--text-muted);line-height:1.45;display:none">Solar energy is fed directly into the system, bypassing the battery.</span>
         </div>
         <div class="net-kv-grid">
-          <div class="net-kv-row"><span>Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
+          <div class="net-kv-row"><span>MQTT Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
           <div class="net-kv-row" id="solar-pt-age-row" style="display:none"><span>Last update</span><span id="solar-pt-age">—</span></div>
         </div>
       </div>` : `
@@ -799,25 +796,21 @@ function updateSolarValues() {
 
   // ── Passthrough card values (only when ptConfigured, i.e. element IDs exist) ─
   if (ptConfigured) {
-    const ptLabel = !pt.received ? 'Unknown' : ptStale ? 'Unknown (stale)' : pt.state ? 'Active' : 'Inactive';
-    const ptSub   = !pt.received ? 'Waiting for first message…'
-                  : ptStale      ? `No update for ${Math.round(ptAgeMs / 1000)} s — value may be outdated`
-                  : '';
-    const ptAge   = pt.received ? Math.round(ptAgeMs / 1000) + ' s ago' : null;
+    const ptPillEl = document.getElementById('solar-pt-pill');
+    const ptDescEl = document.getElementById('solar-pt-desc');
+    const ptAgeEl  = document.getElementById('solar-pt-age');
+    const ptAgeRow = document.getElementById('solar-pt-age-row');
 
-    const ptDotEl    = document.getElementById('solar-pt-dot');
-    const ptLabelEl  = document.getElementById('solar-pt-label');
-    const ptSubEl    = document.getElementById('solar-pt-sub');
-    const ptAgeEl    = document.getElementById('solar-pt-age');
-    const ptAgeRow   = document.getElementById('solar-pt-age-row');
-    const ptHeaderEl = document.getElementById('solar-pt-header');
+    const pillHtml = ptActive
+      ? '<span class="charging-pill pill-charging" style="font-size:11px;padding:2px 8px">ACTIVE</span>'
+      : (!pt.received || ptStale)
+        ? '<span class="charging-pill pill-idle" style="font-size:11px;padding:2px 8px;opacity:.7">UNKNOWN</span>'
+        : '<span class="charging-pill pill-idle" style="font-size:11px;padding:2px 8px">INACTIVE</span>';
 
-    if (ptDotEl)    ptDotEl.className    = 'pack-status-dot ' + (ptActive ? 'online' : 'offline');
-    if (ptLabelEl)  ptLabelEl.textContent = ptLabel;
-    if (ptSubEl)  { ptSubEl.textContent = ptSub; ptSubEl.style.display = ptSub ? '' : 'none'; }
-    if (ptAgeEl)    ptAgeEl.textContent  = ptAge !== null ? ptAge : '—';
-    if (ptAgeRow)   ptAgeRow.style.display = pt.received ? '' : 'none';
-    if (ptHeaderEl) ptHeaderEl.style.marginBottom = (ptAge !== null || ptSub) ? '14px' : '0';
+    if (ptPillEl) ptPillEl.innerHTML = pillHtml;
+    if (ptDescEl) ptDescEl.style.display = ptActive ? '' : 'none';
+    if (ptAgeEl)  ptAgeEl.textContent = pt.received ? Math.round(ptAgeMs / 1000) + ' s ago' : '—';
+    if (ptAgeRow) ptAgeRow.style.display = pt.received ? '' : 'none';
   }
 }
 
@@ -833,162 +826,93 @@ async function loadSolarChart() {
   try {
     const r = await apiFetch('/api/solar-day');
     if (!r || !r.ok) {
-      plotEl.innerHTML = `<p class="chart-empty">No data</p>`;
-      // Retry in 5 min in case the endpoint becomes reachable.
+      plotEl.innerHTML = '<p class="chart-empty">No data</p>';
       g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
       return;
     }
     d = await r.json();
   } catch (_) {
-    plotEl.innerHTML = `<p class="chart-empty">No data</p>`;
+    plotEl.innerHTML = '<p class="chart-empty">No data</p>';
     g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
     return;
   }
 
-  const pts     = d.points || [];
-  const count   = pts.length;
-  const res     = d.resolution_s || 300;
-  const t0      = d.t0_epoch || 0;
-  const midnight = d.midnight_epoch || t0;
-  const nowTs   = d.now_ts_s || Math.round(Date.now() / 1000);
+  const pts   = d.points || [];
+  const nowTs = d.now_ts_s || Math.round(Date.now() / 1000);
 
-  if (count === 0 || t0 === 0) {
-    plotEl.innerHTML = `<p class="chart-empty">No solar data for today yet</p>`;
-    // Ring is empty (fresh boot or no MPPT data yet). Retry every 5 min so the
-    // chart appears automatically once the first sample is recorded.
+  if (pts.length === 0 || (d.t0_epoch || 0) === 0) {
+    const msg = (nowTs === 0)
+      ? 'Waiting for NTP time sync…'
+      : 'No solar data yet — first point in ~5 min';
+    plotEl.innerHTML = `<p class="chart-empty">${msg}</p>`;
+    // Retry every 30 s until first point arrives (normal 5-min cadence then takes over).
+    g_solar_chart_timer = setInterval(refreshSolarChartData, 30 * 1000);
+    return;
+  }
+
+  const parsed = buildSolarChartData(d);
+  if (!parsed || plotEl.offsetWidth === 0) {
+    plotEl.innerHTML = '<p class="chart-empty">No data</p>';
     g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
     return;
   }
 
-  // Build x/y arrays. X starts at midnight; data is sparse from t0_epoch.
-  // Pad with a null point at midnight to anchor the x-axis left edge there,
-  // then emit real data points. uPlot skips nulls (spanGaps: false).
-  const xs = [];
-  const ys = [];
+  g_solar_now_ts  = parsed.nowTs;
+  g_solar_peak_w  = parsed.peakW;
+  g_solar_peak_ts = parsed.peakTs;
 
-  if (midnight < t0) {
-    xs.push(midnight);
-    ys.push(null);
-  }
-
-  let peakW = 0;
-  let peakTs = 0;
-  for (let i = 0; i < count; i++) {
-    const ts = t0 + i * res;
-    const v  = pts[i];
-    xs.push(ts);
-    ys.push((v !== null && v !== undefined) ? v : null);
-    if (v != null && v > peakW) { peakW = v; peakTs = ts; }
-  }
-  // Anchor right edge at "now" with null so x-axis extends to current time.
-  if (nowTs > xs[xs.length - 1]) {
-    xs.push(nowTs);
-    ys.push(null);
-  }
-
-  const data = [xs, ys];
-
-  // Store in module-level vars so the draw hook reads them on every redraw,
-  // including after refreshSolarChartData() calls setData().
-  g_solar_now_ts  = nowTs;
-  g_solar_peak_w  = peakW;
-  g_solar_peak_ts = peakTs;
-
-  const cs = getComputedStyle(document.documentElement);
-  const fgMuted    = cs.getPropertyValue('--text-muted').trim()    || '#8A7E69';
-  const gridColor  = cs.getPropertyValue('--border-subtle').trim() || '#D4CDB9';
-  const tealStroke = '#76D2D9';
-  const tealFill   = 'rgba(118, 210, 217, 0.15)';
-
-  const opts = {
-    width:   plotEl.offsetWidth || 580,
-    height:  200,
-    padding: [10, 0, 0, 0],
-    series: [
-      {},
-      {
-        label:    'PV Power',
-        stroke:   tealStroke,
-        fill:     tealFill,
-        width:    2,
-        spanGaps: false,
-        value:    (u, v) => v != null ? v.toFixed(0) + ' W' : '—',
-      },
-    ],
-    axes: [
-      {
-        stroke: fgMuted,
-        grid:   { stroke: gridColor, width: 0.5 },
-        ticks:  { stroke: gridColor, width: 0.5 },
-        values: (u, ts) => ts.map(t => {
-          const dt = new Date(t * 1000);
-          return String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
-        }),
-      },
-      {
-        scale: 'y',
-        stroke: tealStroke,
-        grid:   { stroke: gridColor, width: 0.5 },
-        ticks:  { stroke: gridColor, width: 0.5 },
-        size:   56,
-        gap:    4,
-        values: (u, vs) => vs.map(v => v != null ? v + ' W' : ''),
-      },
-    ],
-    scales: { x: { time: true }, y: { auto: true, min: 0 } },
-    cursor: { drag: { x: false, y: false } },
-    legend: { show: false },
-    hooks: {
-      draw: [(u) => {
-        const ctx  = u.ctx;
-        const bbox = u.bbox;
-
-        // "Now" vertical line — reads g_solar_now_ts updated by refreshSolarChartData().
-        const nowPx = u.valToPos(g_solar_now_ts, 'x', true);
-        if (nowPx >= bbox.left && nowPx <= bbox.left + bbox.width) {
+  // Use the same renderer as the dashboard charts (makeChartOpts), then apply
+  // solar-specific overrides: taller chart, filled area, y-scale pinned at 0,
+  // no legend, draw hooks for the "now" marker and peak annotation.
+  const def  = SERIES_DEFS.solar;
+  const opts = makeChartOpts(plotEl.offsetWidth, def);
+  opts.height    = 200;
+  opts.padding   = [10, 0, 0, 0];
+  opts.legend    = { show: false };
+  opts.axes[1].size = 56;
+  opts.axes[1].gap  = 4;
+  opts.scales.y  = { auto: true, min: 0 };
+  opts.hooks = {
+    draw: [(u) => {
+      const ctx = u.ctx, bbox = u.bbox;
+      const nowPx = u.valToPos(g_solar_now_ts, 'x', true);
+      if (nowPx >= bbox.left && nowPx <= bbox.left + bbox.width) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(nowPx, bbox.top);
+        ctx.lineTo(nowPx, bbox.top + bbox.height);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (g_solar_peak_w > 0) {
+        const peakPx = u.valToPos(g_solar_peak_ts, 'x', true);
+        const peakPy = u.valToPos(g_solar_peak_w,  'y', true);
+        if (peakPx >= bbox.left && peakPx <= bbox.left + bbox.width) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-          ctx.lineWidth   = 1;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          ctx.moveTo(nowPx, bbox.top);
-          ctx.lineTo(nowPx, bbox.top + bbox.height);
-          ctx.stroke();
+          ctx.font         = '11px sans-serif';
+          ctx.fillStyle    = def.color;
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(`${g_solar_peak_w} W`, peakPx, Math.max(peakPy - 4, bbox.top + 14));
           ctx.restore();
         }
-
-        // Peak annotation — reads g_solar_peak_w / g_solar_peak_ts.
-        if (g_solar_peak_w > 0) {
-          const peakPx = u.valToPos(g_solar_peak_ts, 'x', true);
-          const peakPy = u.valToPos(g_solar_peak_w,  'y', true);
-          if (peakPx >= bbox.left && peakPx <= bbox.left + bbox.width) {
-            ctx.save();
-            ctx.font         = '11px sans-serif';
-            ctx.fillStyle    = tealStroke;
-            ctx.textAlign    = 'center';
-            ctx.textBaseline = 'bottom';
-            ctx.fillText(`${g_solar_peak_w} W`, peakPx, Math.max(peakPy - 4, bbox.top + 14));
-            ctx.restore();
-          }
-        }
-      }],
-    },
+      }
+    }],
   };
 
   const titleEl = document.getElementById('solar-chart-title');
-  if (titleEl) titleEl.textContent = `Solar Today — ${count} pts @ ${res / 60} min`;
+  if (titleEl) titleEl.textContent = 'SOLAR TODAY';
 
-  g_solar_chart = new uPlot(opts, data, plotEl);
-
-  // Refresh chart data every 5 min using setData() — no chart destruction needed.
+  g_solar_chart = new uPlot(opts, parsed.data, plotEl);
   g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
 }
 
 async function refreshSolarChartData() {
   const plotEl = document.getElementById('solar-chart-plot');
-  if (!plotEl) return;  // solar page no longer active
-  // Chart doesn't exist yet (no data at last load): try a full rebuild.
-  // loadSolarChart() resets g_solar_chart_timer so we get a fresh 5-min interval.
+  if (!plotEl) return;
   if (!g_solar_chart) { await loadSolarChart(); return; }
 
   let d;
@@ -998,39 +922,14 @@ async function refreshSolarChartData() {
     d = await r.json();
   } catch (_) { return; }
 
-  const pts   = d.points || [];
-  const count = pts.length;
-  const res   = d.resolution_s || 300;
-  const t0    = d.t0_epoch || 0;
-  const midnight = d.midnight_epoch || t0;
-  const nowTs = d.now_ts_s || Math.round(Date.now() / 1000);
+  const parsed = buildSolarChartData(d);
+  if (!parsed) return;
 
-  if (count === 0 || t0 === 0) return;
+  g_solar_now_ts  = parsed.nowTs;
+  g_solar_peak_w  = parsed.peakW;
+  g_solar_peak_ts = parsed.peakTs;
 
-  const xs = [];
-  const ys = [];
-  if (midnight < t0) { xs.push(midnight); ys.push(null); }
-
-  let peakW = 0;
-  let peakTs = 0;
-  for (let i = 0; i < count; i++) {
-    const ts = t0 + i * res;
-    const v  = pts[i];
-    xs.push(ts);
-    ys.push((v !== null && v !== undefined) ? v : null);
-    if (v != null && v > peakW) { peakW = v; peakTs = ts; }
-  }
-  if (nowTs > xs[xs.length - 1]) { xs.push(nowTs); ys.push(null); }
-
-  // Update module-level vars so the draw hook reads them on the next redraw triggered by setData.
-  g_solar_now_ts  = nowTs;
-  g_solar_peak_w  = peakW;
-  g_solar_peak_ts = peakTs;
-
-  g_solar_chart.setData([xs, ys]);
-
-  const titleEl = document.getElementById('solar-chart-title');
-  if (titleEl) titleEl.textContent = `Solar Today — ${count} pts @ ${res / 60} min`;
+  g_solar_chart.setData(parsed.data);
 }
 
 
@@ -1156,6 +1055,7 @@ const SERIES_DEFS = {
   voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V' },
   temp:    { label: 'Temp',       color: '#E89C5C', dec: 1, unit: '°C' },
   drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV' },
+  solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
 
 function getChartConfig() {
@@ -1183,6 +1083,30 @@ function buildUplotData(ser) {
   return [xs, ser.points];
 }
 
+// Transform /api/solar-day JSON into the [xs, ys] format shared with buildUplotData.
+// Returns {data, nowTs, peakW, peakTs, count, res} or null when the ring is empty.
+function buildSolarChartData(d) {
+  const pts     = d.points || [];
+  const count   = pts.length;
+  const res     = d.resolution_s || 300;
+  const t0      = d.t0_epoch || 0;
+  const midnight = d.midnight_epoch || t0;
+  const nowTs   = d.now_ts_s || Math.round(Date.now() / 1000);
+  if (count === 0 || t0 === 0) return null;
+  const xs = [], ys = [];
+  if (midnight < t0) { xs.push(midnight); ys.push(null); }
+  let peakW = 0, peakTs = 0;
+  for (let i = 0; i < count; i++) {
+    const ts = t0 + i * res;
+    const v  = pts[i];
+    xs.push(ts);
+    ys.push((v !== null && v !== undefined) ? v : null);
+    if (v != null && v > peakW) { peakW = v; peakTs = ts; }
+  }
+  if (nowTs > xs[xs.length - 1]) { xs.push(nowTs); ys.push(null); }
+  return { data: [xs, ys], nowTs, peakW, peakTs, count, res };
+}
+
 function makeChartOpts(width, def) {
   const cs = getComputedStyle(document.documentElement);
   const fgMuted   = cs.getPropertyValue('--text-muted').trim()   || '#8A7E69';
@@ -1196,6 +1120,7 @@ function makeChartOpts(width, def) {
       {
         label: def.label,
         stroke: def.color,
+        ...(def.fill ? {fill: def.fill} : {}),
         width: 2,
         spanGaps: false,
         value: (u, v) => v != null ? v.toFixed(def.dec) + ' ' + def.unit : '—',
