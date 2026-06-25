@@ -220,6 +220,11 @@ async function fetchConfigOnce() {
     if (r && r.ok) {
       g_config = await r.json();
       updateSolarNavVisibility();
+      // Solar page may have rendered before config loaded (g_config was null → early return).
+      // Re-render now so loadSolarChart() fires on entry, not on the next poll tick.
+      if (window.location.pathname === '/solar' && g_solar_page_state !== 'enabled') {
+        renderSolar();
+      }
     }
   } catch (e) { /* thresholds unavailable until config loads */ }
 }
@@ -822,37 +827,18 @@ async function loadSolarChart() {
   if (g_solar_chart) { try { g_solar_chart.destroy(); } catch (_) {} g_solar_chart = null; }
   if (g_solar_chart_timer) { clearInterval(g_solar_chart_timer); g_solar_chart_timer = null; }
 
-  let d;
+  let d = null;
   try {
     const r = await apiFetch('/api/solar-day');
-    if (!r || !r.ok) {
-      plotEl.innerHTML = '<p class="chart-empty">No data</p>';
-      g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
-      return;
-    }
-    d = await r.json();
-  } catch (_) {
-    plotEl.innerHTML = '<p class="chart-empty">No data</p>';
-    g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
-    return;
-  }
+    if (r && r.ok) d = await r.json();
+  } catch (_) {}
 
-  const pts   = d.points || [];
-  const nowTs = d.now_ts_s || Math.round(Date.now() / 1000);
+  const parsed = d ? buildSolarChartData(d) : null;
 
-  if (pts.length === 0 || (d.t0_epoch || 0) === 0) {
-    const msg = (nowTs === 0)
-      ? 'Waiting for NTP time sync…'
-      : 'No solar data yet — first point in ~5 min';
+  if (!parsed) {
+    const nowTs = (d && d.now_ts_s) || 0;
+    const msg = nowTs === 0 ? 'Waiting for NTP time sync…' : 'No solar data yet — first point in ~5 min';
     plotEl.innerHTML = `<p class="chart-empty">${msg}</p>`;
-    // Retry every 30 s until first point arrives (normal 5-min cadence then takes over).
-    g_solar_chart_timer = setInterval(refreshSolarChartData, 30 * 1000);
-    return;
-  }
-
-  const parsed = buildSolarChartData(d);
-  if (!parsed || plotEl.offsetWidth === 0) {
-    plotEl.innerHTML = '<p class="chart-empty">No data</p>';
     g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
     return;
   }
@@ -861,52 +847,52 @@ async function loadSolarChart() {
   g_solar_peak_w  = parsed.peakW;
   g_solar_peak_ts = parsed.peakTs;
 
-  // Use the same renderer as the dashboard charts (makeChartOpts), then apply
-  // solar-specific overrides: taller chart, filled area, y-scale pinned at 0,
-  // no legend, draw hooks for the "now" marker and peak annotation.
-  const def  = SERIES_DEFS.solar;
-  const opts = makeChartOpts(plotEl.offsetWidth, def);
-  opts.height    = 200;
-  opts.padding   = [10, 0, 0, 0];
-  opts.legend    = { show: false };
-  opts.axes[1].size = 56;
-  opts.axes[1].gap  = 4;
-  opts.scales.y  = { auto: true, min: 0 };
-  opts.hooks = {
-    draw: [(u) => {
-      const ctx = u.ctx, bbox = u.bbox;
-      const nowPx = u.valToPos(g_solar_now_ts, 'x', true);
-      if (nowPx >= bbox.left && nowPx <= bbox.left + bbox.width) {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.lineWidth   = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(nowPx, bbox.top);
-        ctx.lineTo(nowPx, bbox.top + bbox.height);
-        ctx.stroke();
-        ctx.restore();
-      }
-      if (g_solar_peak_w > 0) {
-        const peakPx = u.valToPos(g_solar_peak_ts, 'x', true);
-        const peakPy = u.valToPos(g_solar_peak_w,  'y', true);
-        if (peakPx >= bbox.left && peakPx <= bbox.left + bbox.width) {
-          ctx.save();
-          ctx.font         = '11px sans-serif';
-          ctx.fillStyle    = def.color;
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'bottom';
-          ctx.fillText(`${g_solar_peak_w} W`, peakPx, Math.max(peakPy - 4, bbox.top + 14));
-          ctx.restore();
-        }
-      }
-    }],
-  };
-
   const titleEl = document.getElementById('solar-chart-title');
   if (titleEl) titleEl.textContent = 'SOLAR TODAY';
 
-  g_solar_chart = new uPlot(opts, parsed.data, plotEl);
+  // buildOrUpdateChart is the same function dashboard charts use; solar passes a
+  // customizeOpts callback for the taller canvas, y-min=0, no legend, and draw hooks.
+  const result = buildOrUpdateChart(plotEl, 'solar', parsed.data, null, null, (opts) => {
+    opts.height      = 200;
+    opts.padding     = [10, 0, 0, 0];
+    opts.legend      = { show: false };
+    opts.axes[1].size = 56;
+    opts.axes[1].gap  = 4;
+    opts.scales.x    = { time: true, range: [parsed.midnight, parsed.midnight + 86400] };
+    opts.scales.y    = { auto: true, min: 0 };
+    opts.hooks = {
+      draw: [(u) => {
+        const ctx = u.ctx, bbox = u.bbox;
+        const nowPx = u.valToPos(g_solar_now_ts, 'x', true);
+        if (nowPx >= bbox.left && nowPx <= bbox.left + bbox.width) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth   = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(nowPx, bbox.top);
+          ctx.lineTo(nowPx, bbox.top + bbox.height);
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (g_solar_peak_w > 0) {
+          const peakPx = u.valToPos(g_solar_peak_ts, 'x', true);
+          const peakPy = u.valToPos(g_solar_peak_w,  'y', true);
+          if (peakPx >= bbox.left && peakPx <= bbox.left + bbox.width) {
+            ctx.save();
+            ctx.font         = '11px sans-serif';
+            ctx.fillStyle    = SERIES_DEFS.solar.color;
+            ctx.textAlign    = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(`${g_solar_peak_w} W`, peakPx, Math.max(peakPy - 4, bbox.top + 14));
+            ctx.restore();
+          }
+        }
+      }],
+    };
+  });
+
+  g_solar_chart = result.chart;
   g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
 }
 
@@ -1104,7 +1090,7 @@ function buildSolarChartData(d) {
     if (v != null && v > peakW) { peakW = v; peakTs = ts; }
   }
   if (nowTs > xs[xs.length - 1]) { xs.push(nowTs); ys.push(null); }
-  return { data: [xs, ys], nowTs, peakW, peakTs, count, res };
+  return { data: [xs, ys], nowTs, midnight, peakW, peakTs, count, res };
 }
 
 function makeChartOpts(width, def) {
@@ -1123,6 +1109,7 @@ function makeChartOpts(width, def) {
         ...(def.fill ? {fill: def.fill} : {}),
         width: 2,
         spanGaps: false,
+        points: { show: false },
         value: (u, v) => v != null ? v.toFixed(def.dec) + ' ' + def.unit : '—',
       },
     ],
@@ -1154,6 +1141,27 @@ function makeChartOpts(width, def) {
   };
 }
 
+// Shared uPlot chart builder — dashboard charts AND solar chart both call this.
+// data: pre-built [xs, ys] (from buildUplotData or buildSolarChartData.data), or null.
+// chart/chartKey: existing uPlot instance and the series key it was built with, or null/''.
+// customizeOpts: optional function(opts) called before construction for series-specific overrides.
+// Returns { chart, key }.
+function buildOrUpdateChart(plotEl, key, data, chart, chartKey, customizeOpts) {
+  if (data && plotEl.offsetWidth > 0) {
+    if (chart && chartKey === key) {
+      chart.setData(data);
+      return { chart, key };
+    }
+    if (chart) { try { chart.destroy(); } catch (_) {} }
+    const opts = makeChartOpts(plotEl.offsetWidth, SERIES_DEFS[key]);
+    if (customizeOpts) customizeOpts(opts);
+    return { chart: new uPlot(opts, data, plotEl), key };
+  }
+  if (!data) plotEl.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
+  if (chart) { try { chart.destroy(); } catch (_) {} }
+  return { chart: null, key: null };
+}
+
 async function loadCharts() {
   if (typeof uPlot === 'undefined') return;
   if (!document.getElementById('chart-a-plot')) return;
@@ -1171,34 +1179,18 @@ async function loadCharts() {
       fetched[s] = (d && d.series && d.series[0]) || null;
     }
 
-    // Update a chart in-place via setData() when the series key is unchanged;
-    // otherwise destroy the old chart and create a new one with correct opts.
-    const updateOrRebuild = (plotId, titleId, key, existing, existingKey) => {
+    const doUpdate = (plotId, titleId, key, existing, existingKey) => {
       const plotEl = document.getElementById(plotId);
       if (!plotEl) return { chart: null, key: null };
-      const def     = SERIES_DEFS[key];
-      const data    = buildUplotData(fetched[key] || null);
       const titleEl = document.getElementById(titleId);
-      if (titleEl) titleEl.textContent = `${def.label} — last 2 h`;
-
-      if (data && plotEl.offsetWidth > 0) {
-        if (existing && existingKey === key) {
-          // Same series — update data without rebuilding the chart DOM.
-          existing.setData(data);
-          return { chart: existing, key };
-        }
-        if (existing) { try { existing.destroy(); } catch (_) {} }
-        return { chart: new uPlot(makeChartOpts(plotEl.offsetWidth, def), data, plotEl), key };
-      }
-      if (!data) plotEl.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
-      if (existing) { try { existing.destroy(); } catch (_) {} }
-      return { chart: null, key: null };
+      if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
+      return buildOrUpdateChart(plotEl, key, buildUplotData(fetched[key] || null), existing, existingKey, null);
     };
 
-    const ra = updateOrRebuild('chart-a-plot', 'chart-a-title', cfg.a, g_chart_a, g_chart_a_key);
+    const ra = doUpdate('chart-a-plot', 'chart-a-title', cfg.a, g_chart_a, g_chart_a_key);
     g_chart_a = ra.chart; g_chart_a_key = ra.key;
 
-    const rb = updateOrRebuild('chart-b-plot', 'chart-b-title', cfg.b, g_chart_b, g_chart_b_key);
+    const rb = doUpdate('chart-b-plot', 'chart-b-title', cfg.b, g_chart_b, g_chart_b_key);
     g_chart_b = rb.chart; g_chart_b_key = rb.key;
   } catch (_) { /* charts unavailable — silently ignore */ }
 }

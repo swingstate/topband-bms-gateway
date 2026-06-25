@@ -4,6 +4,8 @@
 #include "bus/snapshot_bus.h"
 #include "bus/types.h"
 #include "net/ntp.h"
+#include "app/solar_day_ring.h"
+#include "sources/registry.h"
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
@@ -140,58 +142,76 @@ static void history_task_entry(void* /*arg*/) {
     vTaskDelayUntil(&tick, pdMS_TO_TICKS(FINE_INTERVAL_MS));
 
     // ── Read snapshot (safe: s_snap is BSS, not stack) ───────────────────────
-    bool has_snap = bus::snapshot_bus::read(s_snap);
-    if (!has_snap || s_snap.pack_count_online == 0) {
-      // No data yet — still count the tick for coarse-cadence tracking.
-      s_fine_in_window++;
-      if (s_fine_in_window >= FINE_PER_COARSE) s_fine_in_window = 0;
-      continue;
+    uint32_t now_s  = net::ntp::now_unix_s();
+    bool has_snap   = bus::snapshot_bus::read(s_snap);
+    bool has_bms    = has_snap && s_snap.pack_count_online > 0;
+
+    // ── Build fine point when BMS data is available ───────────────────────────
+    if (has_bms) {
+      HistoryFinePoint fp = make_fine_point(s_snap);
+
+      // Compute t_offset_s: offset from epoch_base stored in fine ring header.
+      uint32_t base = storage::history_store::fine_epoch_base();
+      if (base == 0 && now_s != 0) {
+        // First NTP-valid sample: anchor the ring's epoch_base.
+        storage::history_store::set_fine_epoch_base(now_s);
+        base = now_s;
+      }
+      fp.t_offset_s = (base != 0 && now_s >= base)
+                      ? (uint16_t)std::min<uint32_t>(now_s - base, 0xFFFFu)
+                      : 0;
+
+      storage::history_store::append_fine(fp);
+      s_fine_total++;
+
+      // Store in rolling window for downsampling.
+      s_fine_window[s_fine_in_window % FINE_PER_COARSE] = fp;
+
+      ESP_LOGD(TAG, "fine sample #%u: power=%d V=%d SOC=%d T=%d",
+               (unsigned)s_fine_total,
+               (int)fp.power_w, (int)fp.voltage_x100,
+               (int)fp.soc_x10, (int)fp.temp_x10);
     }
 
-    // ── Build fine point (drift_mv embedded in struct) ───────────────────────
-    HistoryFinePoint fp = make_fine_point(s_snap);
-
-    // Compute t_offset_s: offset from epoch_base stored in fine ring header.
-    uint32_t now_s = net::ntp::now_unix_s();
-    uint32_t base  = storage::history_store::fine_epoch_base();
-    if (base == 0 && now_s != 0) {
-      // First NTP-valid sample: anchor the ring's epoch_base.
-      storage::history_store::set_fine_epoch_base(now_s);
-      base = now_s;
-    }
-    fp.t_offset_s = (base != 0 && now_s >= base)
-                    ? (uint16_t)std::min<uint32_t>(now_s - base, 0xFFFFu)
-                    : 0;
-
-    storage::history_store::append_fine(fp);
-    s_fine_total++;
-
-    // Store in rolling window for downsampling.
-    s_fine_window[s_fine_in_window % FINE_PER_COARSE] = fp;
     s_fine_in_window++;
 
-    ESP_LOGD(TAG, "fine sample #%u: power=%d V=%d SOC=%d T=%d",
-             (unsigned)s_fine_total,
-             (int)fp.power_w, (int)fp.voltage_x100,
-             (int)fp.soc_x10, (int)fp.temp_x10);
-
-    // ── Every FINE_PER_COARSE fine samples → produce coarse + flush ───────────
+    // ── Every FINE_PER_COARSE ticks → coarse point (BMS) + solar ring ────────
+    // Solar ring is populated at every coarse boundary even without BMS data so
+    // the day chart works when no RS485 packs are connected.
     if (s_fine_in_window >= FINE_PER_COARSE) {
       s_fine_in_window = 0;
 
-      // Anchor time: use the end of the 5-min window (now_s), rounded down to 5min.
+      // Anchor time: use end of the 5-min window, rounded down to 5 min.
       uint32_t coarse_ts = (now_s != 0) ? (now_s / HISTORY_COARSE_RESOLUTION_S)
                                             * HISTORY_COARSE_RESOLUTION_S
                                         : 0;
-      HistoryCoarsePoint cp = make_coarse_point(s_fine_window, FINE_PER_COARSE, coarse_ts);
-      storage::history_store::append_coarse(cp);
-      storage::history_store::flush();
 
-      // Also persist energy counters every 5 min.
-      storage::energy_store::persist();
+      if (has_bms) {
+        HistoryCoarsePoint cp = make_coarse_point(s_fine_window, FINE_PER_COARSE, coarse_ts);
+        storage::history_store::append_coarse(cp);
+        storage::history_store::flush();
 
-      ESP_LOGI(TAG, "coarse sample: power_avg=%d soc_avg=%d ts=%u — persisted to LFS",
-               (int)cp.power_avg, (int)cp.soc_avg, (unsigned)coarse_ts);
+        // Also persist energy counters every 5 min.
+        storage::energy_store::persist();
+
+        ESP_LOGI(TAG, "coarse sample: power_avg=%d soc_avg=%d ts=%u — persisted to LFS",
+                 (int)cp.power_avg, (int)cp.soc_avg, (unsigned)coarse_ts);
+      }
+
+      // Sample MPPT PV power into the solar day ring (PSRAM-only, same cadence).
+      // Runs even without BMS data — solar data is independent of RS485 packs.
+      // Skipped when NTP is unsynced (t_epoch==0) or MPPT is disabled.
+      {
+        sources::MpptSource* mppt = sources::mppt_source();
+        if (mppt && mppt->enabled()) {
+          sources::MpptSource::DiagSnap d = mppt->diag_snap();
+          app::solar_day_ring::append(coarse_ts, d.pv_power_w,
+                                      d.seen && d.pv_power_valid);
+        }
+      }
+      // Persist solar ring to LittleFS so it survives reboots. PSRAM is
+      // volatile; without this, the chart is blank after every restart.
+      app::solar_day_ring::save();
     }
   }
 }
