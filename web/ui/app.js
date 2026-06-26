@@ -4126,7 +4126,6 @@ function renderDiagData(d) {
         ${kvRow('Stack', ble.stack || '—')}
         ${kvRow('Advertisements (total / Victron / MPPT)',
                 `${(ble.ble_gap_events||0).toLocaleString()} / ${(ble.ble_victron_advs||0).toLocaleString()} / ${(ble.ble_mppt_advs||0).toLocaleString()}`)}
-        ${kvRow('BSSID pin', ble.wifi_bssid_pin_active ? 'active' : 'off')}
       </div>
     </div>
 
@@ -4137,7 +4136,7 @@ function renderDiagData(d) {
         ${kvRow('BSSID', ble.wifi_bssid || '—')}
         ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' : '—')}
         ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms')}
-        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
+        ${kvRow('BSSID lock', ble.wifi_bssid_pin_active ? 'active' : 'off')}
       </div>
     </div>
 
@@ -4156,6 +4155,9 @@ function renderDiagData(d) {
 
     <div class="diag-section">
       <h3>Shunt</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
+      </div>
       ${shunt.enabled ? `
       <div class="diag-kv-grid">
         ${kvRow('Last seen', fmtAge(shunt.last_seen_s))}
