@@ -117,6 +117,7 @@ bool start_httpd(const Config& /*cfg*/) {
   // ── History endpoints (Phase H2) ─────────────────────────────────────────
   reg_auth(g_server, "/api/history",            HTTP_GET, handle_history);
   reg_auth(g_server, "/api/history/export.csv", HTTP_GET, handle_history_export);
+  reg_auth(g_server, "/api/solar-day",          HTTP_GET, handle_solar_day);
 
   // ── Diag and alerts endpoints (Phase H3a) ─────────────────────────────────
   reg_auth(g_server, "/api/diag",              HTTP_GET, handle_diag);

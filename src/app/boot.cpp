@@ -22,6 +22,7 @@
 #include "app/smoke_reader.h"
 #include "app/housekeeping.h"
 #include "app/history_task.h"
+#include "app/solar_day_ring.h"
 #include "app/self_test.h"
 #include "mqtt/publisher.h"
 #include "mqtt/ha_discovery.h"
@@ -250,6 +251,9 @@ void run_boot() {
     ESP_LOGI(TAG, "history_store=%s energy_store=%s alerts_store=%s",
              hist_ok ? "ok" : "FAIL", ener_ok ? "ok" : "FAIL",
              alerts_ok ? "ok" : "FAIL");
+    // Restore solar day ring from LittleFS before the HTTP server starts so
+    // /api/solar-day returns data immediately on first request after reboot.
+    app::solar_day_ring::load();
   }
 
   // ── Step 9: Main HTTP server (STA mode only) ──────────────────────────────

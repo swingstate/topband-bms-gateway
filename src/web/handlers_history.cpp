@@ -1,5 +1,6 @@
 #include "handlers_history.h"
 #include "storage/history_store.h"
+#include "app/solar_day_ring.h"
 #include "net/ntp.h"
 #include "bus/types.h"
 #include "esp_log.h"
@@ -48,6 +49,8 @@ static bool series_requested(const char* list, const char* target) {
 // HttpTask; never DMA. Requires CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y.
 static EXT_RAM_BSS_ATTR HistoryFinePoint   s_fine_buf[HISTORY_FINE_CAPACITY];
 static EXT_RAM_BSS_ATTR HistoryCoarsePoint s_coarse_buf[HISTORY_COARSE_CAPACITY];
+// Solar day read buffer: 288 × 8 B = 2304 B in PSRAM.
+static EXT_RAM_BSS_ATTR SolarDayPoint      s_solar_buf[SOLAR_DAY_CAPACITY];
 
 // ── Zero-heap streaming JSON writer ──────────────────────────────────────────
 // Writes JSON directly to the HTTP chunked response using a 2 KB stack buffer.
@@ -187,6 +190,41 @@ esp_err_t handle_history(httpd_req_t* req) {
   hs_flush(s);
   if (s.err == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);
   else ESP_LOGD(TAG, "client disconnected during /api/history");
+  return s.err;
+}
+
+esp_err_t handle_solar_day(httpd_req_t* req) {
+  size_t   n        = app::solar_day_ring::read(s_solar_buf, SOLAR_DAY_CAPACITY);
+  uint32_t now_s    = net::ntp::now_unix_s();
+  uint32_t midnight = app::solar_day_ring::midnight_epoch();
+  uint32_t t0       = app::solar_day_ring::t0_epoch();
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+
+  HStream s = { req, {}, 0, ESP_OK };
+
+  hs_str(s, "{\"now_ts_s\":"); hs_uint(s, now_s);
+  hs_str(s, ",\"midnight_epoch\":"); hs_uint(s, midnight);
+  hs_str(s, ",\"t0_epoch\":"); hs_uint(s, t0);
+  hs_str(s, ",\"resolution_s\":"); hs_uint(s, SOLAR_DAY_RESOLUTION_S);
+  hs_str(s, ",\"count\":"); hs_uint(s, (uint32_t)n);
+  hs_str(s, ",\"points\":[");
+
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) hs_str(s, ",");
+    const SolarDayPoint& pt = s_solar_buf[i];
+    if (pt.pv_power_w == 0xFFFFu) {
+      hs_str(s, "null");  // MPPT not valid for this slot
+    } else {
+      hs_uint(s, pt.pv_power_w);
+    }
+  }
+
+  hs_str(s, "]}");
+  hs_flush(s);
+  if (s.err == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);
+  else ESP_LOGD(TAG, "client disconnected during /api/solar-day");
   return s.err;
 }
 

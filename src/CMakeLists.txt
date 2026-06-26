@@ -10,6 +10,7 @@ idf_component_register(
     "app/boot.cpp"
     "app/smoke_reader.cpp"
     "app/history_task.cpp"
+    "app/solar_day_ring.cpp"
     "app/self_test.cpp"
     "storage/config.cpp"
     "storage/nvs_store.cpp"

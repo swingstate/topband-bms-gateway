@@ -99,6 +99,17 @@ function navigate(path) {
   }
   // Stop battery detail polling when navigating away.
   if (!path.startsWith('/battery/')) stopBatteryDetailPoll();
+  // Destroy solar chart and cancel its refresh timer when leaving the solar page.
+  if (path !== '/solar') {
+    if (g_solar_chart) { try { g_solar_chart.destroy(); } catch (_) {} g_solar_chart = null; }
+    if (g_solar_chart_timer) { clearInterval(g_solar_chart_timer); g_solar_chart_timer = null; }
+    g_solar_page_state = null;
+  }
+  // Drop dashboard chart references when leaving the dashboard (their DOM is about to be replaced).
+  if (path !== '/' && path !== '/dashboard') {
+    if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; g_chart_a_key = null; }
+    if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; g_chart_b_key = null; }
+  }
   history.pushState({}, '', path);
   renderPage(path);
   updateSidebarActive(path);
@@ -192,6 +203,15 @@ let g_live = null;
 let g_poll_interval = null;
 let g_chart_a = null;
 let g_chart_b = null;
+let g_chart_a_key = null;   // series key last used to build g_chart_a
+let g_chart_b_key = null;   // series key last used to build g_chart_b
+let g_solar_chart = null;
+let g_solar_chart_timer = null;     // 5-min refresh timer for solar day chart
+let g_solar_now_ts    = 0;          // "now" marker timestamp — read by uPlot draw hook
+let g_solar_peak_w    = 0;          // peak PV watt value — read by uPlot draw hook
+let g_solar_peak_ts   = 0;          // timestamp of peak — read by uPlot draw hook
+let g_solar_page_state = null;      // 'disabled' | 'enabled' — what's currently rendered
+let g_solar_pt_configured = false;  // ptConfigured state of the currently-rendered page
 
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
@@ -200,6 +220,11 @@ async function fetchConfigOnce() {
     if (r && r.ok) {
       g_config = await r.json();
       updateSolarNavVisibility();
+      // Solar page may have rendered before config loaded (g_config was null → early return).
+      // Re-render now so loadSolarChart() fires on entry, not on the next poll tick.
+      if (window.location.pathname === '/solar' && g_solar_page_state !== 'enabled') {
+        renderSolar();
+      }
     }
   } catch (e) { /* thresholds unavailable until config loads */ }
 }
@@ -357,7 +382,7 @@ function updateLiveUI() {
   } else if (p === '/battery') {
     updateBatteryOverviewCards();
   } else if (p === '/solar') {
-    renderSolar();
+    updateSolarValues();
   }
 }
 
@@ -519,30 +544,53 @@ function updateDashboardCards() {
     { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
   ];
 
-  grid.innerHTML = '';
-  cards.forEach(c => {
-    const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
-    // Omit inline color when in alarm state so the CSS .alarm rule can control the value color.
-    const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
-    const srcBadge = c.src ? `<span class="card-src card-src-${c.src}">${c.src.toUpperCase()}</span>` : '';
-    card.innerHTML = `
-      <div class="metric-label">${c.label}</div>
-      <div class="metric-value" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
-      <div class="metric-footer">
-        <span class="metric-sub">${c.sub}</span>
-        ${srcBadge}
-      </div>
-    `;
-    grid.appendChild(card);
+  // Build card structure once (or when count / col-1 label changes — MPPT toggled).
+  // Then update values in-place on subsequent polls to avoid metric-tile flicker.
+  const existing = grid.querySelectorAll('.metric-card');
+  const col1Label = cards[0].label;
+  const needsBuild = existing.length !== cards.length
+    || (existing[0] && existing[0].querySelector('.metric-label').textContent !== col1Label);
+
+  if (needsBuild) {
+    grid.innerHTML = '';
+    cards.forEach((c, i) => {
+      const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
+      card.id = `mc-${i}`;
+      const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
+      const srcBadge = c.src ? `<span class="card-src card-src-${c.src}" id="mc-${i}-src">${c.src.toUpperCase()}</span>` : '';
+      card.innerHTML = `
+        <div class="metric-label">${c.label}</div>
+        <div class="metric-value" id="mc-${i}-val" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
+        <div class="metric-footer">
+          <span class="metric-sub" id="mc-${i}-sub">${c.sub}</span>
+          ${srcBadge}
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+    return;
+  }
+
+  // In-place update — only touch text/style, no DOM node creation.
+  cards.forEach((c, i) => {
+    const card = document.getElementById(`mc-${i}`);
+    if (!card) return;
+    card.className = 'card metric-card' + (c.alarm ? ' alarm' : '');
+    const valEl = document.getElementById(`mc-${i}-val`);
+    if (valEl) {
+      valEl.style.color = c.alarm ? '' : c.color;
+      valEl.innerHTML = c.value + `<span class="metric-unit">${c.unit}</span>`;
+    }
+    const subEl = document.getElementById(`mc-${i}-sub`);
+    if (subEl) subEl.innerHTML = c.sub;
   });
 }
 
 /* ── Solar detail page ───────────────────────────────────────────────────────── */
+// renderSolar() builds the page structure ONCE with stable element IDs.
+// updateSolarValues() handles all 2-second live updates without touching the structure.
 function renderSolar() {
   const root = document.getElementById('page-root');
-  const sources = (g_live && g_live.sources) || {};
-  const m = sources.mppt || {};
-  const pt = sources.solar_passthrough || {};
 
   if (!g_config || !g_config.ble_mppt_enabled) {
     root.innerHTML = `
@@ -558,104 +606,71 @@ function renderSolar() {
           </div>
         </div>
       </div>`;
+    g_solar_page_state = 'disabled';
     return;
   }
 
-  const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
-  const cs = m.charge_state;
-  const csText = m.seen ? (csLabels[cs] || `State ${cs}`) : '—';
-  const csPillCls = (cs === 3 || cs === 4) ? 'pill-charging'
-                  : (cs === 5 || cs === 6) ? 'pill-idle'
-                  : (cs === 2) ? 'pill-discharging' : 'pill-idle';
-
-  const seen = !!m.seen;
-  const staleMs = m.ms_since_last_seen || 0;
-  const stale = seen && staleMs > 30000;
-  const lastSeen = seen ? Math.round(staleMs / 1000) + ' s ago' : '—';
-  const dotCls = seen && !stale ? 'online' : 'offline';
-  const statusText = seen && !stale ? 'Receiving data' : seen ? 'Stale' : 'No data';
-
-  function metricCell(label, value, unit, accent) {
-    const color = accent ? `color:${accent}` : 'color:var(--text-primary)';
-    const valHtml = (value !== null && value !== undefined)
-      ? `<span style="font-size:28px;font-weight:700;line-height:1;${color}">${value}</span>`
-        + `<span style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px">${unit}</span>`
-      : `<span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span>`;
-    return `
-      <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
-        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
-        <div>${valHtml}</div>
-      </div>`;
-  }
-
-  function vdivider() {
-    return `<div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>`;
-  }
-
-  const pvPower  = m.pv_power_valid ? fmt(m.pv_power_w, 0)    : null;
-  const yieldKwh = m.yield_valid    ? fmt((m.yield_today_wh || 0) / 1000, 2) : null;
-  const battV    = m.batt_v_valid   ? fmt(m.batt_voltage_v, 2) : null;
-  const battA    = m.batt_i_valid   ? fmt(m.batt_current_a, 1) : null;
-  const battPower = (m.batt_v_valid && m.batt_i_valid)
-    ? fmt(m.batt_voltage_v * m.batt_current_a, 0) : null;
-
-  // 15 s staleness window — matches exp_aft in the OpenDTU HA-discovery message.
-  const PASSTHROUGH_STALE_MS = 15000;
   const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
-  const ptAgeMs = pt.ms_since_last || 0;
-  const ptStale = pt.received && ptAgeMs > PASSTHROUGH_STALE_MS;
-  // Show "Unknown" before first message OR when stale (no recent update).
-  const ptKnown = pt.received && !ptStale;
-  const ptActive = ptKnown && pt.state;
-  const ptDotCls = ptActive ? 'online' : 'offline';
-  const ptLabel = !pt.received ? 'Unknown' : ptStale ? 'Unknown (stale)' : pt.state ? 'Active' : 'Inactive';
-  const ptSub = !pt.received ? 'Waiting for first message…'
-              : ptStale      ? `No update for ${Math.round(ptAgeMs / 1000)} s — value may be outdated`
-              : '';
-  const ptAge = pt.received ? Math.round(ptAgeMs / 1000) + ' s ago' : null;
+  g_solar_page_state = 'enabled';
+  g_solar_pt_configured = ptConfigured;
 
   root.innerHTML = `
-    <div style="max-width:680px;margin:0 auto">
+    <div style="max-width:680px;margin:0 auto" id="solar-page-root">
 
-      <!-- Status strip -->
+      <!-- Status strip — values updated in-place by updateSolarValues() -->
       <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div class="pack-status-dot ${dotCls}" style="flex-shrink:0"></div>
-        <span style="font-weight:600;font-size:14px">${statusText}</span>
-        ${seen ? `<span class="charging-pill ${csPillCls}" style="margin:0">${csText}</span>` : ''}
-        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Last seen: ${lastSeen}</span>
+        <div class="pack-status-dot offline" id="solar-status-dot" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px" id="solar-status-text">—</span>
+        <span id="solar-charge-pill"></span>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="solar-last-seen">—</span>
       </div>
 
-      <!-- PV Input + Yield Today (equal width, both show one large number) -->
+      <!-- PV Input + Yield Today -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
         <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
           <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">PV Input</div>
           <div>
-            <span style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">${pvPower !== null ? pvPower : '—'}</span>
-            ${pvPower !== null ? '<span style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px">W</span>' : ''}
+            <span id="solar-pv-power" style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">—</span>
+            <span id="solar-pv-unit" style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px;display:none">W</span>
           </div>
         </div>
         <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
           <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Yield today</div>
           <div>
-            <span style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">${yieldKwh !== null ? yieldKwh : '—'}</span>
-            ${yieldKwh !== null ? '<span style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px">kWh</span>' : ''}
+            <span id="solar-yield-kwh" style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">—</span>
+            <span id="solar-yield-unit" style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px;display:none">kWh</span>
           </div>
         </div>
       </div>
 
-      <!-- MPPT Charger Output (MPPT output-terminal measurements) -->
-      ${(m.batt_v_valid || m.batt_i_valid) ? `
-      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:${ptActive ? '8px' : '12px'}">
+      <!-- Solar Today chart (built once, data refreshed every 5 min via setData) -->
+      <div class="card" style="padding:14px 16px 10px;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px" id="solar-chart-title">Solar Today</div>
+        <div id="solar-chart-plot"></div>
+      </div>
+
+      <!-- MPPT Charger Output (always in DOM, shown when batt data is valid) -->
+      <div id="solar-output-section" class="card" style="display:none;padding-top:14px;padding-bottom:14px;margin-bottom:12px">
         <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">MPPT Charger Output</div>
         <div style="display:flex;align-items:center">
-          ${metricCell('Power', battPower, 'W', 'var(--brand-teal)')}
-          ${vdivider()}
-          ${metricCell('Voltage', battV, 'V')}
-          ${vdivider()}
-          ${metricCell('Current', battA, 'A')}
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Power</div>
+            <div id="solar-output-power"><span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span></div>
+          </div>
+          <div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Voltage</div>
+            <div id="solar-output-volt"><span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span></div>
+          </div>
+          <div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Current</div>
+            <div id="solar-output-curr"><span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span></div>
+          </div>
         </div>
       </div>
-      ${ptActive ? `<div style="font-size:12px;color:var(--text-muted);padding:0 4px 12px;line-height:1.5">Passthrough active — solar energy is fed directly into the system (not stored in the battery).</div>` : ''}` : ''}
+      <!-- Passthrough active note (shown alongside charger output when ptActive) -->
+      <div id="solar-pt-note" style="display:none;font-size:12px;color:var(--text-muted);padding:0 4px 12px;line-height:1.5">Passthrough active — solar energy is fed directly into the system (not stored in the battery).</div>
 
       <!-- Solar Passthrough -->
       <div style="margin-bottom:8px">
@@ -663,19 +678,15 @@ function renderSolar() {
         <div style="font-size:11px;color:var(--text-muted);margin-top:3px;opacity:.75">Only relevant for setups controlled by OpenDTU-onBattery.</div>
       </div>
       ${ptConfigured ? `
-      <div class="card" style="padding:16px 18px">
-        <div style="display:flex;align-items:center;gap:14px;margin-bottom:${ptAge !== null || ptSub ? '14px' : '0'}">
-          <div class="pack-status-dot ${ptDotCls}" style="flex-shrink:0"></div>
-          <div>
-            <div style="font-weight:600;font-size:14px">${ptLabel}</div>
-            ${ptSub ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${ptSub}</div>` : ''}
-          </div>
+      <div class="card" style="padding:16px 18px" id="solar-pt-card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px" id="solar-pt-header">
+          <span id="solar-pt-pill"></span>
+          <span id="solar-pt-desc" style="font-size:12px;color:var(--text-muted);line-height:1.45;display:none">Solar energy is fed directly into the system, bypassing the battery.</span>
         </div>
-        ${ptAge !== null || g_config.mqtt_solar_passthrough_topic ? `
         <div class="net-kv-grid">
-          <div class="net-kv-row"><span>Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
-          ${ptAge !== null ? `<div class="net-kv-row"><span>Last update</span><span>${ptAge}</span></div>` : ''}
-        </div>` : ''}
+          <div class="net-kv-row"><span>MQTT Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
+          <div class="net-kv-row" id="solar-pt-age-row" style="display:none"><span>Last update</span><span id="solar-pt-age">—</span></div>
+        </div>
       </div>` : `
       <div class="card" style="padding:18px">
         <div style="display:flex;align-items:center;gap:14px">
@@ -690,6 +701,221 @@ function renderSolar() {
 
     </div>
   `;
+
+  updateSolarValues();
+  loadSolarChart();
+}
+
+/* ── Solar in-place value updater (called on every 2-second live poll) ────────── */
+function updateSolarValues() {
+  const sources = (g_live && g_live.sources) || {};
+  const m  = sources.mppt || {};
+  const pt = sources.solar_passthrough || {};
+
+  const mpptEnabled  = !!(g_config && g_config.ble_mppt_enabled);
+  const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
+
+  // Rebuild DOM if structural state changed (MPPT toggled, passthrough configured/not, or fresh nav).
+  if (!mpptEnabled || g_solar_page_state !== 'enabled' || ptConfigured !== g_solar_pt_configured
+      || !document.getElementById('solar-page-root')) {
+    renderSolar();
+    return;
+  }
+
+  // ── Status strip ─────────────────────────────────────────────────────────────
+  const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
+  const cs      = m.charge_state;
+  const seen    = !!m.seen;
+  const staleMs = m.ms_since_last_seen || 0;
+  const stale   = seen && staleMs > 30000;
+
+  const dotEl = document.getElementById('solar-status-dot');
+  if (dotEl) dotEl.className = 'pack-status-dot ' + (seen && !stale ? 'online' : 'offline');
+
+  const textEl = document.getElementById('solar-status-text');
+  if (textEl) textEl.textContent = seen && !stale ? 'Receiving data' : seen ? 'Stale' : 'No data';
+
+  const pillEl = document.getElementById('solar-charge-pill');
+  if (pillEl) {
+    if (seen) {
+      const csText    = csLabels[cs] !== undefined ? csLabels[cs] : `State ${cs}`;
+      const csPillCls = (cs === 3 || cs === 4) ? 'pill-charging'
+                      : (cs === 5 || cs === 6) ? 'pill-idle'
+                      : (cs === 2) ? 'pill-discharging' : 'pill-idle';
+      pillEl.innerHTML = `<span class="charging-pill ${csPillCls}" style="margin:0">${csText}</span>`;
+    } else {
+      pillEl.innerHTML = '';
+    }
+  }
+
+  const lastSeenEl = document.getElementById('solar-last-seen');
+  if (lastSeenEl) lastSeenEl.textContent = 'Last seen: ' + (seen ? Math.round(staleMs / 1000) + ' s ago' : '—');
+
+  // ── PV Input + Yield ─────────────────────────────────────────────────────────
+  const pvPower  = m.pv_power_valid ? fmt(m.pv_power_w, 0) : null;
+  const yieldKwh = m.yield_valid    ? fmt((m.yield_today_wh || 0) / 1000, 2) : null;
+
+  const pvPowerEl = document.getElementById('solar-pv-power');
+  const pvUnitEl  = document.getElementById('solar-pv-unit');
+  if (pvPowerEl) pvPowerEl.textContent = pvPower !== null ? pvPower : '—';
+  if (pvUnitEl)  pvUnitEl.style.display = pvPower !== null ? '' : 'none';
+
+  const yieldEl  = document.getElementById('solar-yield-kwh');
+  const yieldUEl = document.getElementById('solar-yield-unit');
+  if (yieldEl)  yieldEl.textContent = yieldKwh !== null ? yieldKwh : '—';
+  if (yieldUEl) yieldUEl.style.display = yieldKwh !== null ? '' : 'none';
+
+  // ── MPPT Charger Output ───────────────────────────────────────────────────────
+  const showOutput = !!(m.batt_v_valid || m.batt_i_valid);
+  const outSection = document.getElementById('solar-output-section');
+  if (outSection) outSection.style.display = showOutput ? '' : 'none';
+
+  if (showOutput) {
+    const battV     = m.batt_v_valid ? fmt(m.batt_voltage_v, 2) : null;
+    const battA     = m.batt_i_valid ? fmt(m.batt_current_a, 1) : null;
+    const battPower = (m.batt_v_valid && m.batt_i_valid) ? fmt(m.batt_voltage_v * m.batt_current_a, 0) : null;
+
+    function setSolarOutCell(id, value, unit, accent) {
+      const cel = document.getElementById(id);
+      if (!cel) return;
+      if (value !== null) {
+        cel.innerHTML = `<span style="font-size:28px;font-weight:700;line-height:1;color:${accent || 'var(--text-primary)'}">` +
+          value + `</span><span style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px">${unit}</span>`;
+      } else {
+        cel.innerHTML = '<span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span>';
+      }
+    }
+    setSolarOutCell('solar-output-power', battPower, 'W', 'var(--brand-teal)');
+    setSolarOutCell('solar-output-volt',  battV,     'V', null);
+    setSolarOutCell('solar-output-curr',  battA,     'A', null);
+  }
+
+  // ── Passthrough note ─────────────────────────────────────────────────────────
+  const PASSTHROUGH_STALE_MS = 15000;
+  const ptAgeMs  = pt.ms_since_last || 0;
+  const ptStale  = pt.received && ptAgeMs > PASSTHROUGH_STALE_MS;
+  const ptActive = pt.received && !ptStale && pt.state;
+
+  const ptNoteEl = document.getElementById('solar-pt-note');
+  if (ptNoteEl) ptNoteEl.style.display = (showOutput && ptActive) ? '' : 'none';
+
+  // ── Passthrough card values (only when ptConfigured, i.e. element IDs exist) ─
+  if (ptConfigured) {
+    const ptPillEl = document.getElementById('solar-pt-pill');
+    const ptDescEl = document.getElementById('solar-pt-desc');
+    const ptAgeEl  = document.getElementById('solar-pt-age');
+    const ptAgeRow = document.getElementById('solar-pt-age-row');
+
+    const pillHtml = ptActive
+      ? '<span class="charging-pill pill-charging" style="font-size:11px;padding:2px 8px">ACTIVE</span>'
+      : (!pt.received || ptStale)
+        ? '<span class="charging-pill pill-idle" style="font-size:11px;padding:2px 8px;opacity:.7">UNKNOWN</span>'
+        : '<span class="charging-pill pill-idle" style="font-size:11px;padding:2px 8px">INACTIVE</span>';
+
+    if (ptPillEl) ptPillEl.innerHTML = pillHtml;
+    if (ptDescEl) ptDescEl.style.display = ptActive ? '' : 'none';
+    if (ptAgeEl)  ptAgeEl.textContent = pt.received ? Math.round(ptAgeMs / 1000) + ' s ago' : '—';
+    if (ptAgeRow) ptAgeRow.style.display = pt.received ? '' : 'none';
+  }
+}
+
+async function loadSolarChart() {
+  if (typeof uPlot === 'undefined') return;
+  const plotEl = document.getElementById('solar-chart-plot');
+  if (!plotEl) return;
+
+  if (g_solar_chart) { try { g_solar_chart.destroy(); } catch (_) {} g_solar_chart = null; }
+  if (g_solar_chart_timer) { clearInterval(g_solar_chart_timer); g_solar_chart_timer = null; }
+
+  let d = null;
+  try {
+    const r = await apiFetch('/api/solar-day');
+    if (r && r.ok) d = await r.json();
+  } catch (_) {}
+
+  const parsed = d ? buildSolarChartData(d) : null;
+
+  if (!parsed) {
+    const nowTs = (d && d.now_ts_s) || 0;
+    const msg = nowTs === 0 ? 'Waiting for NTP time sync…' : 'No solar data yet — first point in ~5 min';
+    plotEl.innerHTML = `<p class="chart-empty">${msg}</p>`;
+    g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
+    return;
+  }
+
+  g_solar_now_ts  = parsed.nowTs;
+  g_solar_peak_w  = parsed.peakW;
+  g_solar_peak_ts = parsed.peakTs;
+
+  const titleEl = document.getElementById('solar-chart-title');
+  if (titleEl) titleEl.textContent = 'SOLAR TODAY';
+
+  // buildOrUpdateChart is the same function dashboard charts use; solar passes a
+  // customizeOpts callback for the taller canvas, y-min=0, no legend, and draw hooks.
+  const result = buildOrUpdateChart(plotEl, 'solar', parsed.data, null, null, (opts) => {
+    opts.height      = 200;
+    opts.padding     = [10, 0, 0, 0];
+    opts.legend      = { show: false };
+    opts.axes[1].size = 56;
+    opts.axes[1].gap  = 4;
+    opts.scales.x    = { time: true, range: [parsed.midnight, parsed.midnight + 86400] };
+    opts.scales.y    = { range: (u, dataMin, dataMax) => [0, (dataMax == null ? 1 : dataMax) * 1.1] };
+    opts.hooks = {
+      draw: [(u) => {
+        const ctx = u.ctx, bbox = u.bbox;
+        const nowPx = u.valToPos(g_solar_now_ts, 'x', true);
+        if (nowPx >= bbox.left && nowPx <= bbox.left + bbox.width) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth   = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(nowPx, bbox.top);
+          ctx.lineTo(nowPx, bbox.top + bbox.height);
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (g_solar_peak_w > 0) {
+          const peakPx = u.valToPos(g_solar_peak_ts, 'x', true);
+          const peakPy = u.valToPos(g_solar_peak_w,  'y', true);
+          if (peakPx >= bbox.left && peakPx <= bbox.left + bbox.width) {
+            ctx.save();
+            ctx.font         = '11px sans-serif';
+            ctx.fillStyle    = SERIES_DEFS.solar.color;
+            ctx.textAlign    = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(`${g_solar_peak_w} W`, peakPx, Math.max(peakPy - 4, bbox.top + 14));
+            ctx.restore();
+          }
+        }
+      }],
+    };
+  });
+
+  g_solar_chart = result.chart;
+  g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
+}
+
+async function refreshSolarChartData() {
+  const plotEl = document.getElementById('solar-chart-plot');
+  if (!plotEl) return;
+  if (!g_solar_chart) { await loadSolarChart(); return; }
+
+  let d;
+  try {
+    const r = await apiFetch('/api/solar-day');
+    if (!r || !r.ok) return;
+    d = await r.json();
+  } catch (_) { return; }
+
+  const parsed = buildSolarChartData(d);
+  if (!parsed) return;
+
+  g_solar_now_ts  = parsed.nowTs;
+  g_solar_peak_w  = parsed.peakW;
+  g_solar_peak_ts = parsed.peakTs;
+
+  g_solar_chart.setData(parsed.data);
 }
 
 
@@ -815,6 +1041,7 @@ const SERIES_DEFS = {
   voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V' },
   temp:    { label: 'Temp',       color: '#E89C5C', dec: 1, unit: '°C' },
   drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV' },
+  solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
 
 function getChartConfig() {
@@ -842,6 +1069,30 @@ function buildUplotData(ser) {
   return [xs, ser.points];
 }
 
+// Transform /api/solar-day JSON into the [xs, ys] format shared with buildUplotData.
+// Returns {data, nowTs, peakW, peakTs, count, res} or null when the ring is empty.
+function buildSolarChartData(d) {
+  const pts     = d.points || [];
+  const count   = pts.length;
+  const res     = d.resolution_s || 300;
+  const t0      = d.t0_epoch || 0;
+  const midnight = d.midnight_epoch || t0;
+  const nowTs   = d.now_ts_s || Math.round(Date.now() / 1000);
+  if (count === 0 || t0 === 0) return null;
+  const xs = [], ys = [];
+  if (midnight < t0) { xs.push(midnight); ys.push(null); }
+  let peakW = 0, peakTs = 0;
+  for (let i = 0; i < count; i++) {
+    const ts = t0 + i * res;
+    const v  = pts[i];
+    xs.push(ts);
+    ys.push((v !== null && v !== undefined) ? v : null);
+    if (v != null && v > peakW) { peakW = v; peakTs = ts; }
+  }
+  if (nowTs > xs[xs.length - 1]) { xs.push(nowTs); ys.push(null); }
+  return { data: [xs, ys], nowTs, midnight, peakW, peakTs, count, res };
+}
+
 function makeChartOpts(width, def) {
   const cs = getComputedStyle(document.documentElement);
   const fgMuted   = cs.getPropertyValue('--text-muted').trim()   || '#8A7E69';
@@ -855,8 +1106,10 @@ function makeChartOpts(width, def) {
       {
         label: def.label,
         stroke: def.color,
+        ...(def.fill ? {fill: def.fill} : {}),
         width: 2,
         spanGaps: false,
+        points: { show: false },
         value: (u, v) => v != null ? v.toFixed(def.dec) + ' ' + def.unit : '—',
       },
     ],
@@ -888,12 +1141,30 @@ function makeChartOpts(width, def) {
   };
 }
 
+// Shared uPlot chart builder — dashboard charts AND solar chart both call this.
+// data: pre-built [xs, ys] (from buildUplotData or buildSolarChartData.data), or null.
+// chart/chartKey: existing uPlot instance and the series key it was built with, or null/''.
+// customizeOpts: optional function(opts) called before construction for series-specific overrides.
+// Returns { chart, key }.
+function buildOrUpdateChart(plotEl, key, data, chart, chartKey, customizeOpts) {
+  if (data && plotEl.offsetWidth > 0) {
+    if (chart && chartKey === key) {
+      chart.setData(data);
+      return { chart, key };
+    }
+    if (chart) { try { chart.destroy(); } catch (_) {} }
+    const opts = makeChartOpts(plotEl.offsetWidth, SERIES_DEFS[key]);
+    if (customizeOpts) customizeOpts(opts);
+    return { chart: new uPlot(opts, data, plotEl), key };
+  }
+  if (!data) plotEl.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
+  if (chart) { try { chart.destroy(); } catch (_) {} }
+  return { chart: null, key: null };
+}
+
 async function loadCharts() {
   if (typeof uPlot === 'undefined') return;
   if (!document.getElementById('chart-a-plot')) return;
-
-  if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; }
-  if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; }
 
   const cfg    = getChartConfig();
   const needed = [...new Set([cfg.a, cfg.b])];
@@ -908,22 +1179,19 @@ async function loadCharts() {
       fetched[s] = (d && d.series && d.series[0]) || null;
     }
 
-    const renderChart = (plotId, titleId, key) => {
-      const el = document.getElementById(plotId);
-      if (!el) return null;
-      const def  = SERIES_DEFS[key];
-      const data = buildUplotData(fetched[key] || null);
+    const doUpdate = (plotId, titleId, key, existing, existingKey) => {
+      const plotEl = document.getElementById(plotId);
+      if (!plotEl) return { chart: null, key: null };
       const titleEl = document.getElementById(titleId);
-      if (titleEl) titleEl.textContent = `${def.label} — last 2 h`;
-      if (data && el.offsetWidth > 0) {
-        return new uPlot(makeChartOpts(el.offsetWidth, def), data, el);
-      }
-      if (!data) el.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
-      return null;
+      if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
+      return buildOrUpdateChart(plotEl, key, buildUplotData(fetched[key] || null), existing, existingKey, null);
     };
 
-    g_chart_a = renderChart('chart-a-plot', 'chart-a-title', cfg.a);
-    g_chart_b = renderChart('chart-b-plot', 'chart-b-title', cfg.b);
+    const ra = doUpdate('chart-a-plot', 'chart-a-title', cfg.a, g_chart_a, g_chart_a_key);
+    g_chart_a = ra.chart; g_chart_a_key = ra.key;
+
+    const rb = doUpdate('chart-b-plot', 'chart-b-title', cfg.b, g_chart_b, g_chart_b_key);
+    g_chart_b = rb.chart; g_chart_b_key = rb.key;
   } catch (_) { /* charts unavailable — silently ignore */ }
 }
 
@@ -3850,22 +4118,31 @@ function renderDiagData(d) {
       const fmtAge = s => (s < 0 ? 'never' : s + ' s ago');
       const fmtF   = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
 
-      return `<div class="diag-section">
-      <h3>BLE / MPPT / Shunt</h3>
+      return `
+    <div class="diag-section">
+      <h3>Bluetooth LE</h3>
       <div class="diag-kv-grid">
-        ${kvRow('BLE active', ble.ble_active ? 'yes' : 'no')}
-        ${kvRow('BLE stack', ble.stack || '—')}
+        ${kvRow('Active', ble.ble_active ? 'yes' : 'no')}
+        ${kvRow('Stack', ble.stack || '—')}
         ${kvRow('Advertisements (total / Victron / MPPT)',
                 `${(ble.ble_gap_events||0).toLocaleString()} / ${(ble.ble_victron_advs||0).toLocaleString()} / ${(ble.ble_mppt_advs||0).toLocaleString()}`)}
-        ${kvRow('WiFi disconnects', ble.wifi_disconnects||0)}
-        ${kvRow('WiFi BSSID', ble.wifi_bssid || '—')}
-        ${kvRow('WiFi RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' : '—')}
-        ${kvRow('BSSID pin', ble.wifi_bssid_pin_active ? 'active' : 'off')}
-        ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms')}
-        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
       </div>
+    </div>
 
-      ${mppt.enabled ? `<div style="margin-top:10px"><strong>MPPT (Victron SmartSolar)</strong>
+    <div class="diag-section">
+      <h3>WiFi</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Disconnects', ble.wifi_disconnects||0)}
+        ${kvRow('BSSID', ble.wifi_bssid || '—')}
+        ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' : '—')}
+        ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms')}
+        ${kvRow('BSSID lock', ble.wifi_bssid_pin_active ? 'active' : 'off')}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>MPPT</h3>
+      ${mppt.enabled ? `
       <div class="diag-kv-grid">
         ${kvRow('Last seen', fmtAge(mppt.last_seen_s))}
         ${kvRow('PV input power', fmtF(mppt.pv_power_w, 1) + ' W')}
@@ -3873,15 +4150,21 @@ function renderDiagData(d) {
         ${kvRow('Charger output current', fmtF(mppt.batt_current_a, 2) + ' A')}
         ${kvRow('Charger state', mppt.seen ? (csLabels[mppt.charge_state] || ('State ' + mppt.charge_state)) : '—')}
         ${kvRow('Yield today', mppt.yield_today_wh != null ? (mppt.yield_today_wh / 1000).toFixed(2) + ' kWh' : '—')}
-      </div></div>` : `<div style="margin-top:8px;color:var(--text-muted);font-size:12px">MPPT disabled</div>`}
+      </div>` : `<div style="color:var(--text-muted);font-size:12px">MPPT disabled</div>`}
+    </div>
 
-      ${shunt.enabled ? `<div style="margin-top:10px"><strong>Shunt (SmartShunt)</strong>
+    <div class="diag-section">
+      <h3>Shunt</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
+      </div>
+      ${shunt.enabled ? `
       <div class="diag-kv-grid">
         ${kvRow('Last seen', fmtAge(shunt.last_seen_s))}
         ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
         ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
         ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
-      </div></div>` : `<div style="margin-top:8px;color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}
+      </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}
     </div>`;
     })()}
 
