@@ -859,7 +859,7 @@ async function loadSolarChart() {
     opts.axes[1].size = 56;
     opts.axes[1].gap  = 4;
     opts.scales.x    = { time: true, range: [parsed.midnight, parsed.midnight + 86400] };
-    opts.scales.y    = { auto: true, min: 0 };
+    opts.scales.y    = { range: (u, dataMin, dataMax) => [0, (dataMax == null ? 1 : dataMax) * 1.1] };
     opts.hooks = {
       draw: [(u) => {
         const ctx = u.ctx, bbox = u.bbox;
