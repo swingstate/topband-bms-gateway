@@ -58,6 +58,8 @@ scratch/
 web/littlefs_ui.tar
 web/littlefs_ui.tar.gz
 web/ui/ui_version.txt
+# Generated header — never tracked; build_ui.py creates it before compilation.
+src/storage/ui_provisioner.h
 
 # ─── Dependency managers ───
 node_modules/
