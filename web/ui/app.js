@@ -678,9 +678,6 @@ function renderSolar() {
           </div>
         </div>
       </div>
-      <!-- Passthrough active note (shown alongside charger output when ptActive) -->
-      <div id="solar-pt-note" style="display:none;font-size:12px;color:var(--text-muted);padding:0 4px 12px;line-height:1.5">Passthrough active — solar energy is fed directly into the system (not stored in the battery).</div>
-
       <!-- Solar Passthrough -->
       <div style="margin-bottom:8px">
         <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Solar Passthrough</div>
@@ -4058,6 +4055,7 @@ function renderDiagData(d) {
         ${kvRow('DRAM largest block', (sys.dram_largest_block||0).toLocaleString() + ' B')}
         ${kvRow('PSRAM free', (sys.psram_free||0).toLocaleString() + ' B')}
         ${kvRow('PSRAM largest block', (sys.psram_largest_block||0).toLocaleString() + ' B')}
+        ${kvRow('CPU temp', sys.cpu_temp_c != null ? sys.cpu_temp_c.toFixed(1) + ' °C' : '—')}
         ${kvRow('Build', sys.build || '—')}
       </div>
     </div>
