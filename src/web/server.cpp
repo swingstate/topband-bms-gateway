@@ -9,6 +9,7 @@
 #include "handlers_ota.h"
 #include "handlers_notify.h"
 #include "handlers_net_diag.h"
+#include "handlers_drift.h"
 #include "handlers_static.h"
 #include "app/self_test.h"
 #include "esp_log.h"
@@ -48,7 +49,7 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static constexpr int AUTH_CTX_MAX = 35;
+static constexpr int AUTH_CTX_MAX = 36;
 static AuthCtx g_auth_ctx[AUTH_CTX_MAX];
 static int     g_auth_ctx_count = 0;
 
@@ -118,6 +119,7 @@ bool start_httpd(const Config& /*cfg*/) {
   reg_auth(g_server, "/api/history",            HTTP_GET, handle_history);
   reg_auth(g_server, "/api/history/export.csv", HTTP_GET, handle_history_export);
   reg_auth(g_server, "/api/solar-day",          HTTP_GET, handle_solar_day);
+  reg_auth(g_server, "/api/drift",              HTTP_GET, handle_drift);
 
   // ── Diag and alerts endpoints (Phase H3a) ─────────────────────────────────
   reg_auth(g_server, "/api/diag",              HTTP_GET, handle_diag);

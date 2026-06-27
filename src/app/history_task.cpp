@@ -5,6 +5,7 @@
 #include "bus/types.h"
 #include "net/ntp.h"
 #include "app/solar_day_ring.h"
+#include "app/drift_ring.h"
 #include "sources/registry.h"
 #include "esp_log.h"
 #include "esp_attr.h"
@@ -193,6 +194,9 @@ static void history_task_entry(void* /*arg*/) {
 
         // Also persist energy counters every 5 min.
         storage::energy_store::persist();
+
+        // Update per-cell drift ring (PSRAM, same cadence as coarse ring).
+        app::drift_ring::update(s_snap, coarse_ts);
 
         ESP_LOGI(TAG, "coarse sample: power_avg=%d soc_avg=%d ts=%u — persisted to LFS",
                  (int)cp.power_avg, (int)cp.soc_avg, (unsigned)coarse_ts);

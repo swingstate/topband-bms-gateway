@@ -99,6 +99,11 @@ function navigate(path) {
   }
   // Stop battery detail polling when navigating away.
   if (!path.startsWith('/battery/')) stopBatteryDetailPoll();
+  // Cancel drift refresh timer when leaving the battery overview page.
+  if (path !== '/battery' && g_drift_timer) {
+    clearInterval(g_drift_timer);
+    g_drift_timer = null;
+  }
   // Destroy solar chart and cancel its refresh timer when leaving the solar page.
   if (path !== '/solar') {
     if (g_solar_chart) { try { g_solar_chart.destroy(); } catch (_) {} g_solar_chart = null; }
@@ -212,6 +217,9 @@ let g_solar_peak_w    = 0;          // peak PV watt value — read by uPlot draw
 let g_solar_peak_ts   = 0;          // timestamp of peak — read by uPlot draw hook
 let g_solar_page_state = null;      // 'disabled' | 'enabled' — what's currently rendered
 let g_solar_pt_configured = false;  // ptConfigured state of the currently-rendered page
+let g_drift_data   = null;          // latest /api/drift response
+let g_drift_timer  = null;          // 30-s refresh timer for drift section
+const g_drift_open = new Set();     // pack ids (numeric) currently expanded
 
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
@@ -381,6 +389,7 @@ function updateLiveUI() {
     updatePackCards();
   } else if (p === '/battery') {
     updateBatteryOverviewCards();
+    updateDriftNow();
   } else if (p === '/solar') {
     updateSolarValues();
   }
@@ -1291,8 +1300,24 @@ function renderBattery() {
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>
       </div>
       ${shuntCard}
+      <!-- Drift Details section -->
+      <div style="margin-top:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:2px">Drift Details</div>
+            <div style="font-size:12px;color:var(--text-muted)">Per-cell balance &amp; drift behaviour &middot; last 5 days</div>
+          </div>
+          <button class="btn" style="font-size:11px;padding:4px 10px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);border-radius:6px;cursor:pointer" onclick="driftExpandAll()">Expand all</button>
+        </div>
+        <div id="drift-section-root">
+          <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">Loading drift data…</div>
+        </div>
+      </div>
     </div>`;
   updateBatteryOverviewCards();
+  if (g_drift_timer) { clearInterval(g_drift_timer); g_drift_timer = null; }
+  loadDriftDetails();
+  g_drift_timer = setInterval(loadDriftDetails, 30000);
 }
 
 async function saveShuntMode() {
@@ -4782,3 +4807,287 @@ async function checkAuthState() {
   updateAlertBadge();
   setInterval(updateAlertBadge, 60000);
 })();
+
+/* ── Drift Details ──────────────────────────────────────────────────────────── */
+
+// Voltage scale for cell bars: LiFePO4 typical operating range.
+const DRIFT_FLOOR_MV = 3200;
+const DRIFT_CEIL_MV  = 3680;
+const DRIFT_RANGE_MV = DRIFT_CEIL_MV - DRIFT_FLOOR_MV;  // 480 mV
+
+// Guide lines at balance-reference, near-full, and OVP-approach voltages.
+const DRIFT_GUIDES = [
+  { mv: 3350, label: '3.35' },
+  { mv: 3450, label: '3.45' },
+  { mv: 3600, label: '3.60' },
+];
+
+function driftPct(mv) {
+  return Math.max(0, Math.min(100, (mv - DRIFT_FLOOR_MV) / DRIFT_RANGE_MV * 100));
+}
+
+function driftBandColor(spreadMv) {
+  if (spreadMv >= 110) return 'var(--brand-coral)';
+  if (spreadMv >= 40)  return 'var(--color-warning)';
+  return 'var(--brand-teal)';
+}
+
+function driftStatusLabel(spreadMv) {
+  if (spreadMv >= 110) return 'Imbalanced';
+  if (spreadMv >= 40)  return 'Monitor drift';
+  return 'Balanced';
+}
+
+function driftStatusCls(spreadMv) {
+  if (spreadMv >= 110) return 'drift-pill-imbalanced';
+  if (spreadMv >= 40)  return 'drift-pill-monitor';
+  return 'drift-pill-balanced';
+}
+
+function driftRateStr(rate) {
+  if (rate === null || rate === undefined || isNaN(rate)) return '—';
+  const r = Math.round(rate * 10) / 10;
+  return (r >= 0 ? '+' : '') + r.toFixed(1);
+}
+
+async function loadDriftDetails() {
+  if (!document.getElementById('drift-section-root')) return;
+  try {
+    const r = await apiFetch('/api/drift');
+    if (!r || !r.ok) return;
+    g_drift_data = await r.json();
+    renderDriftSection();
+  } catch (_) {}
+}
+
+function renderDriftSection() {
+  const root = document.getElementById('drift-section-root');
+  if (!root || !g_drift_data) return;
+
+  const packs = g_drift_data.packs || [];
+  if (packs.length === 0) {
+    root.innerHTML = '<p style="padding:16px 4px;color:var(--text-muted);font-size:13px">No online packs — drift data will appear once packs connect.</p>';
+    return;
+  }
+
+  root.innerHTML = '';
+  packs.forEach(pack => root.appendChild(buildDriftCard(pack)));
+}
+
+function buildDriftCard(pack) {
+  const spread  = pack.spread_now || 0;
+  const color   = driftBandColor(spread);
+  const rate    = driftRateStr(pack.drift_rate);
+  const isOpen  = g_drift_open.has(pack.id);
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'drift-pack-card';
+
+  // Toggle header
+  const toggle = document.createElement('div');
+  toggle.className = 'drift-toggle';
+  toggle.dataset.driftToggle = pack.id;
+  toggle.innerHTML =
+    '<span class="drift-pack-name">' + escHtml(pack.name) + '</span>' +
+    '<div class="drift-summary-items">' +
+      '<span class="drift-pill ' + driftStatusCls(spread) + '">' + driftStatusLabel(spread) + '</span>' +
+      '<span class="drift-meta"><strong>' + spread + '</strong>&thinsp;mV spread</span>' +
+      '<span class="drift-summary-sep">&middot;</span>' +
+      '<span class="drift-meta"><strong>' + rate + '</strong>&thinsp;mV/day</span>' +
+    '</div>' +
+    '<span class="drift-chevron' + (isOpen ? ' open' : '') + '">▼</span>';
+  toggle.addEventListener('click', () => toggleDriftPack(pack.id));
+  wrapper.appendChild(toggle);
+
+  // Expanded body
+  const body = document.createElement('div');
+  body.className = 'drift-body';
+  body.dataset.driftBody = pack.id;
+  body.style.display = isOpen ? '' : 'none';
+  body.innerHTML = pack.has_history
+    ? buildDriftBodyHtml(pack)
+    : buildDriftNoHistoryHtml(pack);
+  wrapper.appendChild(body);
+
+  return wrapper;
+}
+
+function buildDriftNoHistoryHtml(pack) {
+  return '<p class="drift-building">History building — 5-day band appears after the first day accrues. Live cell positions shown below.</p>' +
+    buildDriftCellRowsHtml(pack, true);
+}
+
+function buildDriftBodyHtml(pack) {
+  const spread   = pack.spread_now || 0;
+  const cells    = pack.cells || [];
+  const nc       = Math.min(pack.cell_count || cells.length, 15);
+  const trendN   = pack.n_trend || 0;
+  const tocSpread = trendN > 0 ? pack.trend[trendN - 1] : spread;
+  const rateStr  = driftRateStr(pack.drift_rate);
+
+  // KPI: cells >= 3.60 V
+  const cellsHigh = cells.slice(0, nc).filter(c => (c.now || 0) >= 3600).length;
+
+  // Worst cell: largest deviation of d5max from pack median d5max
+  let worstStr = '—';
+  const d5maxArr = cells.slice(0, nc).map(c => c.d5max || 0).filter(v => v > 0);
+  if (d5maxArr.length > 0) {
+    const mean = d5maxArr.reduce((a, b) => a + b, 0) / d5maxArr.length;
+    let maxDev = -1, worstIdx = -1;
+    cells.slice(0, nc).forEach((c, i) => {
+      if (!c.d5max) return;
+      const dev = Math.abs(c.d5max - mean);
+      if (dev > maxDev) { maxDev = dev; worstIdx = i; }
+    });
+    if (worstIdx >= 0) {
+      const nowMv = cells[worstIdx].now || 0;
+      worstStr = 'C' + (worstIdx + 1) + (nowMv ? ' · ' + nowMv + ' mV' : '');
+    }
+  }
+
+  // Fills first: sorted by d5max descending
+  const byMax = cells.slice(0, nc)
+    .map((c, i) => ({ i, v: c.d5max || 0 }))
+    .filter(x => x.v > 0)
+    .sort((a, b) => b.v - a.v);
+  const fillsFirst = byMax.length > 0 ? byMax.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ') : '—';
+
+  // Lagging: sorted by d5min ascending
+  const byMin = cells.slice(0, nc)
+    .map((c, i) => ({ i, v: c.d5min || 0 }))
+    .filter(x => x.v > 0)
+    .sort((a, b) => a.v - b.v);
+  const lagging = byMin.length > 0 ? byMin.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ') : '—';
+
+  return '<div class="drift-kpis">' +
+    driftKpi('Top spread', tocSpread, ' mV') +
+    driftKpi('Live spread', spread, ' mV') +
+    driftKpi('Drift rate', rateStr, ' mV/d') +
+    driftKpiRaw('Worst cell', '<span style="font-size:13px">' + worstStr + '</span>') +
+    driftKpiRaw('&ge;&thinsp;3.60&thinsp;V', cellsHigh + '<span class="drift-kpi-unit"> cells</span>') +
+    '</div>' +
+    '<div class="drift-callouts">' +
+      '<div class="drift-callout"><div class="drift-callout-label">Fills first</div><div class="drift-callout-val">' + fillsFirst + '</div></div>' +
+      '<div class="drift-callout"><div class="drift-callout-label">Lagging cells</div><div class="drift-callout-val">' + lagging + '</div></div>' +
+    '</div>' +
+    buildDriftCellRowsHtml(pack, false);
+}
+
+function driftKpi(label, value, unit) {
+  return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
+    '<div class="drift-kpi-value">' + value + '<span class="drift-kpi-unit">' + unit + '</span></div></div>';
+}
+
+function driftKpiRaw(label, valueHtml) {
+  return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
+    '<div class="drift-kpi-value">' + valueHtml + '</div></div>';
+}
+
+function buildDriftCellRowsHtml(pack, noHistory) {
+  const cells  = pack.cells || [];
+  const nc     = Math.min(pack.cell_count || cells.length, 15);
+  const spread = pack.spread_now || 0;
+  const color  = driftBandColor(spread);
+
+  const guideHtml = DRIFT_GUIDES.map(g =>
+    '<div class="drift-guide" style="left:' + driftPct(g.mv).toFixed(1) + '%"></div>'
+  ).join('');
+
+  let rows = '';
+  for (let ci = 0; ci < nc; ci++) {
+    const c = cells[ci] || {};
+    const nowMv  = c.now  || 0;
+    const nowPct = nowMv  ? driftPct(nowMv).toFixed(1)  : null;
+
+    const atHtml = (!noHistory && c.evMin && c.evMax) ? (() => {
+      const l = driftPct(c.evMin).toFixed(1);
+      const w = Math.max(0, driftPct(c.evMax) - driftPct(c.evMin)).toFixed(1);
+      return '<div class="drift-band-at" style="left:' + l + '%;width:' + w + '%"></div>';
+    })() : '';
+
+    const d5Html = (!noHistory && c.d5min && c.d5max) ? (() => {
+      const l = driftPct(c.d5min).toFixed(1);
+      const w = Math.max(0, driftPct(c.d5max) - driftPct(c.d5min)).toFixed(1);
+      return '<div class="drift-band-d5" style="left:' + l + '%;width:' + w + '%;background:' + color + '"></div>';
+    })() : '';
+
+    const dotHtml = nowPct !== null
+      ? '<div class="drift-dot" data-drift-dot="' + pack.id + '-' + ci +
+        '" style="left:' + nowPct + '%;background:' + color + '"></div>'
+      : '';
+
+    const numsStr = (!noHistory && c.d5min && c.d5max)
+      ? (c.d5min + '→' + c.d5max)
+      : (nowMv ? nowMv + ' mV' : '—');
+
+    rows += '<div class="drift-cell-row">' +
+      '<div class="drift-cell-lbl">C' + (ci + 1) + '</div>' +
+      '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
+      '<div class="drift-cell-nums">' + numsStr + '</div>' +
+      '</div>';
+  }
+
+  // Scale axis
+  const ticksHtml =
+    '<div class="drift-scale-tick" style="left:0%">' + (DRIFT_FLOOR_MV / 1000).toFixed(2) + '</div>' +
+    DRIFT_GUIDES.map(g =>
+      '<div class="drift-scale-tick" style="left:' + driftPct(g.mv).toFixed(1) + '%">' + g.label + '</div>'
+    ).join('') +
+    '<div class="drift-scale-tick" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
+
+  return rows +
+    '<div class="drift-scale-row">' +
+      '<div class="drift-scale-lbl-spacer"></div>' +
+      '<div class="drift-scale-axis">' + ticksHtml + '</div>' +
+      '<div class="drift-scale-nums-spacer"></div>' +
+    '</div>';
+}
+
+function toggleDriftPack(packId) {
+  const isOpen = g_drift_open.has(packId);
+  if (isOpen) g_drift_open.delete(packId);
+  else        g_drift_open.add(packId);
+
+  const body    = document.querySelector('[data-drift-body="' + packId + '"]');
+  const chevron = document.querySelector('[data-drift-toggle="' + packId + '"] .drift-chevron');
+  if (body)    body.style.display = isOpen ? 'none' : '';
+  if (chevron) chevron.className  = 'drift-chevron' + (isOpen ? '' : ' open');
+}
+
+function driftExpandAll() {
+  if (!g_drift_data) return;
+  const packs   = g_drift_data.packs || [];
+  const allOpen = packs.every(p => g_drift_open.has(p.id));
+  packs.forEach(p => {
+    if (allOpen) g_drift_open.delete(p.id);
+    else         g_drift_open.add(p.id);
+    const body    = document.querySelector('[data-drift-body="' + p.id + '"]');
+    const chevron = document.querySelector('[data-drift-toggle="' + p.id + '"] .drift-chevron');
+    if (body)    body.style.display = allOpen ? 'none' : '';
+    if (chevron) chevron.className  = 'drift-chevron' + (allOpen ? '' : ' open');
+  });
+}
+
+// Called on every 2-s live poll when on the battery page to update the "now"
+// dot positions in-place without re-fetching drift history.
+function updateDriftNow() {
+  if (!g_live || !g_drift_data) return;
+  const livePacks  = (g_live.snapshot && g_live.snapshot.packs) || [];
+  const driftPacks = g_drift_data.packs || [];
+
+  driftPacks.forEach(dp => {
+    const lp = livePacks.find(p => p.bms_id === dp.id);
+    if (!lp || !lp.cells) return;
+    const spread = Math.round((lp.cell_drift_v || 0) * 1000);
+    const color  = driftBandColor(spread);
+
+    lp.cells.forEach((v, ci) => {
+      const mv = Math.round(v * 1000);
+      if (mv < 2000 || mv > 5000) return;
+      const dotEl = document.querySelector('[data-drift-dot="' + dp.id + '-' + ci + '"]');
+      if (!dotEl) return;
+      dotEl.style.left       = driftPct(mv).toFixed(1) + '%';
+      dotEl.style.background = color;
+    });
+  });
+}

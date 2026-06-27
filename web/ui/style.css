@@ -1150,3 +1150,261 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   /* Diag table: allow horizontal scroll */
   .diag-tasks-table { font-size: 11px; }
 }
+
+/* ── Drift Details section ──────────────────────────────────────────────────── */
+
+/* Collapsible pack card */
+.drift-pack-card {
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+/* Toggle header row */
+.drift-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+.drift-toggle:hover { background: var(--bg-card-hover); }
+
+.drift-pack-name {
+  font-weight: 600;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.drift-summary-items {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.drift-summary-sep {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.drift-chevron {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+}
+.drift-chevron.open { transform: rotate(180deg); }
+
+/* Status pills */
+.drift-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.drift-pill-balanced    { background: rgba(118,210,217,0.18); color: var(--brand-teal); }
+.drift-pill-monitor     { background: rgba(232,156,92,0.18);  color: var(--color-warning); }
+.drift-pill-imbalanced  { background: rgba(226,85,72,0.18);   color: var(--brand-coral); }
+
+.drift-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.drift-meta strong { color: var(--text-primary); }
+
+/* Expanded body */
+.drift-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: 16px;
+}
+
+/* KPI tiles row */
+.drift-kpis {
+  display: flex;
+  gap: 1px;
+  background: var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.drift-kpi {
+  flex: 1;
+  background: var(--bg-card);
+  padding: 10px 8px;
+  text-align: center;
+}
+.drift-kpi-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.drift-kpi-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.drift-kpi-unit {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Callout chips */
+.drift-callouts {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.drift-callout {
+  font-size: 11px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  flex: 1;
+  min-width: 130px;
+}
+.drift-callout-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.drift-callout-val {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Per-cell row */
+.drift-cell-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.drift-cell-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  width: 22px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+/* Track: the bar area */
+.drift-track {
+  flex: 1;
+  height: 10px;
+  position: relative;
+  background: var(--bg-page);
+  border-radius: 5px;
+  min-width: 0;
+}
+
+/* Guide lines (voltage thresholds) */
+.drift-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-subtle);
+  opacity: 0.6;
+}
+
+/* All-time band (lighter, behind) */
+.drift-band-at {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 3px;
+  background: var(--neutral-300);
+  opacity: 0.5;
+}
+
+/* 5-day band */
+.drift-band-d5 {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+  opacity: 0.75;
+}
+
+/* Live "now" dot */
+.drift-dot {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  border: 1.5px solid var(--bg-card);
+}
+
+/* Numeric label */
+.drift-cell-nums {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 76px;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Scale axis labels below the tracks */
+.drift-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.drift-scale-lbl-spacer { width: 22px; flex-shrink: 0; }
+.drift-scale-axis {
+  flex: 1;
+  position: relative;
+  height: 14px;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.drift-scale-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  top: 0;
+  white-space: nowrap;
+}
+.drift-scale-nums-spacer { width: 76px; flex-shrink: 0; }
+
+/* "Building history" placeholder */
+.drift-building {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 10px 0 4px;
+  font-style: italic;
+}
+
+@media (max-width: 600px) {
+  .drift-cell-nums { width: 60px; }
+  .drift-kpi-value { font-size: 15px; }
+  .drift-summary-items { gap: 6px; }
+}
