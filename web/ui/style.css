@@ -1262,6 +1262,13 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   color: var(--text-muted);
   font-weight: 400;
 }
+.drift-kpi-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 2px;
+  font-style: italic;
+}
 
 /* Callout chips */
 .drift-callouts {

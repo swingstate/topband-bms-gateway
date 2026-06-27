@@ -1299,13 +1299,12 @@ function renderBattery() {
       <div class="packs-grid" id="battery-overview-grid">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>
       </div>
-      ${shuntCard}
       <!-- Drift Details section -->
       <div style="margin-top:24px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
           <div>
             <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:2px">Drift Details</div>
-            <div style="font-size:12px;color:var(--text-muted)">Per-cell balance &amp; drift behaviour &middot; last 5 days</div>
+            <div style="font-size:12px;color:var(--text-muted)">Per-cell balance &amp; drift behaviour &middot; extremes only (SoC &ge;90 % or &le;15 %)</div>
           </div>
           <button class="btn" style="font-size:11px;padding:4px 10px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);border-radius:6px;cursor:pointer" onclick="driftExpandAll()">Expand all</button>
         </div>
@@ -1313,6 +1312,7 @@ function renderBattery() {
           <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">Loading drift data…</div>
         </div>
       </div>
+      ${shuntCard}
     </div>`;
   updateBatteryOverviewCards();
   if (g_drift_timer) { clearInterval(g_drift_timer); g_drift_timer = null; }
@@ -4875,13 +4875,23 @@ function renderDriftSection() {
 }
 
 function buildDriftCard(pack) {
-  const spread  = pack.spread_now || 0;
-  const color   = driftBandColor(spread);
+  // Status pill and summary mV figure use extreme-region spread when available,
+  // falling back to live spread so mid-SoC flat-region noise doesn't show "Balanced".
+  const pillSpread = pack.has_toc ? (pack.toc_spread || 0) :
+                     pack.has_bod ? (pack.bod_spread || 0) :
+                     (pack.spread_now || 0);
+  const color   = driftBandColor(pillSpread);
   const rate    = driftRateStr(pack.drift_rate);
   const isOpen  = g_drift_open.has(pack.id);
 
   const wrapper = document.createElement('div');
   wrapper.className = 'drift-pack-card';
+
+  // Pill label: qualify with region source when region data exists.
+  const pillLabel = driftStatusLabel(pillSpread);
+  const spreadMeta = pack.has_toc
+    ? ('<strong>' + pillSpread + '</strong>&thinsp;mV at full')
+    : ('<strong>' + (pack.spread_now || 0) + '</strong>&thinsp;mV live');
 
   // Toggle header
   const toggle = document.createElement('div');
@@ -4890,8 +4900,8 @@ function buildDriftCard(pack) {
   toggle.innerHTML =
     '<span class="drift-pack-name">' + escHtml(pack.name) + '</span>' +
     '<div class="drift-summary-items">' +
-      '<span class="drift-pill ' + driftStatusCls(spread) + '">' + driftStatusLabel(spread) + '</span>' +
-      '<span class="drift-meta"><strong>' + spread + '</strong>&thinsp;mV spread</span>' +
+      '<span class="drift-pill ' + driftStatusCls(pillSpread) + '">' + pillLabel + '</span>' +
+      '<span class="drift-meta">' + spreadMeta + '</span>' +
       '<span class="drift-summary-sep">&middot;</span>' +
       '<span class="drift-meta"><strong>' + rate + '</strong>&thinsp;mV/day</span>' +
     '</div>' +
@@ -4918,57 +4928,75 @@ function buildDriftNoHistoryHtml(pack) {
 }
 
 function buildDriftBodyHtml(pack) {
-  const spread   = pack.spread_now || 0;
-  const cells    = pack.cells || [];
-  const nc       = Math.min(pack.cell_count || cells.length, 15);
-  const trendN   = pack.n_trend || 0;
-  const tocSpread = trendN > 0 ? pack.trend[trendN - 1] : spread;
-  const rateStr  = driftRateStr(pack.drift_rate);
+  const cells   = pack.cells || [];
+  const nc      = Math.min(pack.cell_count || cells.length, 15);
+  const rateStr = driftRateStr(pack.drift_rate);
 
   // KPI: cells >= 3.60 V
   const cellsHigh = cells.slice(0, nc).filter(c => (c.now || 0) >= 3600).length;
 
-  // Worst cell: largest deviation of d5max from pack median d5max
-  let worstStr = '—';
-  const d5maxArr = cells.slice(0, nc).map(c => c.d5max || 0).filter(v => v > 0);
-  if (d5maxArr.length > 0) {
-    const mean = d5maxArr.reduce((a, b) => a + b, 0) / d5maxArr.length;
-    let maxDev = -1, worstIdx = -1;
-    cells.slice(0, nc).forEach((c, i) => {
-      if (!c.d5max) return;
-      const dev = Math.abs(c.d5max - mean);
-      if (dev > maxDev) { maxDev = dev; worstIdx = i; }
-    });
-    if (worstIdx >= 0) {
-      const nowMv = cells[worstIdx].now || 0;
-      worstStr = 'C' + (worstIdx + 1) + (nowMv ? ' · ' + nowMv + ' mV' : '');
-    }
+  // Top-of-charge spread KPI (only when region was visited).
+  const tocSpreadStr = pack.has_toc ? (pack.toc_spread || 0) + ' mV' : '—';
+  const tocSubStr    = pack.has_toc ? '' : 'no full-charge data yet';
+
+  // Bottom-of-discharge spread KPI.
+  const bodSpreadStr = pack.has_bod ? (pack.bod_spread || 0) + ' mV' : '—';
+  const bodSubStr    = pack.has_bod ? '' : 'no low-SoC data yet';
+
+  // Drift rate (from ToC trend slope; "building history" when no ToC data yet).
+  const rateDisplay = (!pack.has_toc || pack.n_trend < 2) ? 'building' : rateStr;
+
+  // First full: cell that hits ceiling first at top-of-charge.
+  let firstFullStr = '—';
+  if (pack.has_toc && pack.first_full_mv) {
+    firstFullStr = 'C' + (pack.first_full_idx + 1) + ' · ' + pack.first_full_mv + ' mV';
   }
 
-  // Fills first: sorted by d5max descending
-  const byMax = cells.slice(0, nc)
+  // First empty: cell that empties first at bottom-of-discharge (optional).
+  let firstEmptyStr = '—';
+  if (pack.has_bod && pack.first_empty_mv) {
+    firstEmptyStr = 'C' + (pack.first_empty_idx + 1) + ' · ' + pack.first_empty_mv + ' mV';
+  }
+
+  // Fills first: cells with highest tocMax (top-of-charge), fallback to d5max.
+  const byTocMax = cells.slice(0, nc)
+    .map((c, i) => ({ i, v: c.tocMax || 0 }))
+    .filter(x => x.v > 0)
+    .sort((a, b) => b.v - a.v);
+  const byD5Max = cells.slice(0, nc)
     .map((c, i) => ({ i, v: c.d5max || 0 }))
     .filter(x => x.v > 0)
     .sort((a, b) => b.v - a.v);
-  const fillsFirst = byMax.length > 0 ? byMax.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ') : '—';
+  const fillsSrc = byTocMax.length > 0 ? byTocMax : byD5Max;
+  const fillsFirst = fillsSrc.length > 0
+    ? fillsSrc.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ')
+    : '—';
 
-  // Lagging: sorted by d5min ascending
-  const byMin = cells.slice(0, nc)
+  // Lagging / empties first: cells with lowest bodMin (bottom-of-discharge), fallback to d5min.
+  const byBodMin = cells.slice(0, nc)
+    .map((c, i) => ({ i, v: c.bodMin || 0 }))
+    .filter(x => x.v > 0)
+    .sort((a, b) => a.v - b.v);
+  const byD5Min = cells.slice(0, nc)
     .map((c, i) => ({ i, v: c.d5min || 0 }))
     .filter(x => x.v > 0)
     .sort((a, b) => a.v - b.v);
-  const lagging = byMin.length > 0 ? byMin.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ') : '—';
+  const laggingSrc = byBodMin.length > 0 ? byBodMin : byD5Min;
+  const lagging = laggingSrc.length > 0
+    ? laggingSrc.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ')
+    : '—';
 
   return '<div class="drift-kpis">' +
-    driftKpi('Top spread', tocSpread, ' mV') +
-    driftKpi('Live spread', spread, ' mV') +
-    driftKpi('Drift rate', rateStr, ' mV/d') +
-    driftKpiRaw('Worst cell', '<span style="font-size:13px">' + worstStr + '</span>') +
+    driftKpiSub('ToC spread',  tocSpreadStr, tocSubStr) +
+    driftKpiSub('BoD spread',  bodSpreadStr, bodSubStr) +
+    driftKpi('Drift rate', rateDisplay, rateDisplay === 'building' ? '' : ' mV/d') +
+    driftKpiRaw('First full',  '<span style="font-size:13px">' + firstFullStr  + '</span>') +
+    driftKpiRaw('First empty', '<span style="font-size:13px">' + firstEmptyStr + '</span>') +
     driftKpiRaw('&ge;&thinsp;3.60&thinsp;V', cellsHigh + '<span class="drift-kpi-unit"> cells</span>') +
     '</div>' +
     '<div class="drift-callouts">' +
       '<div class="drift-callout"><div class="drift-callout-label">Fills first</div><div class="drift-callout-val">' + fillsFirst + '</div></div>' +
-      '<div class="drift-callout"><div class="drift-callout-label">Lagging cells</div><div class="drift-callout-val">' + lagging + '</div></div>' +
+      '<div class="drift-callout"><div class="drift-callout-label">Empties first</div><div class="drift-callout-val">' + lagging + '</div></div>' +
     '</div>' +
     buildDriftCellRowsHtml(pack, false);
 }
@@ -4981,6 +5009,13 @@ function driftKpi(label, value, unit) {
 function driftKpiRaw(label, valueHtml) {
   return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
     '<div class="drift-kpi-value">' + valueHtml + '</div></div>';
+}
+
+// KPI with an optional muted sub-label (used for "no data yet" states).
+function driftKpiSub(label, value, sub) {
+  const subHtml = sub ? '<div class="drift-kpi-sub">' + sub + '</div>' : '';
+  return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
+    '<div class="drift-kpi-value">' + value + '</div>' + subHtml + '</div>';
 }
 
 function buildDriftCellRowsHtml(pack, noHistory) {

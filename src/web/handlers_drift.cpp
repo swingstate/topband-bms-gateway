@@ -71,7 +71,6 @@ esp_err_t handle_drift(httpd_req_t* req) {
     if (!first_pack) ds_str(s, ",");
     first_pack = false;
 
-    // Pack header.
     char name[16];
     snprintf(name, sizeof(name), "BMS %u", (unsigned)(pi + 1u));
     ds_str(s, "{\"id\":"); ds_uint(s, pi);
@@ -79,14 +78,26 @@ esp_err_t handle_drift(httpd_req_t* req) {
     ds_str(s, ",\"online\":true");
     ds_str(s, ",\"cell_count\":"); ds_uint(s, p.cell_count);
 
-    // Live pack spread (mV).
+    // Live spread (mV) — always available.
     const uint16_t spread_now =
         (p.cell_count > 0u)
         ? (uint16_t)(p.cell_drift_v * 1000.0f + 0.5f)
         : 0u;
     ds_str(s, ",\"spread_now\":"); ds_uint(s, spread_now);
 
-    // Trend array (max spread per day, oldest first including today).
+    // Region-gated spreads (only meaningful when region was visited in window).
+    ds_str(s, ",\"has_toc\":"); ds_str(s, (has_drift && dr.has_toc) ? "true" : "false");
+    ds_str(s, ",\"has_bod\":"); ds_str(s, (has_drift && dr.has_bod) ? "true" : "false");
+    ds_str(s, ",\"toc_spread\":"); ds_uint(s, has_drift ? dr.toc_spread : 0u);
+    ds_str(s, ",\"bod_spread\":"); ds_uint(s, has_drift ? dr.bod_spread : 0u);
+
+    // First full / first empty (zero when region not yet visited).
+    ds_str(s, ",\"first_full_idx\":"); ds_uint(s, has_drift ? (uint32_t)dr.first_full_idx : 0u);
+    ds_str(s, ",\"first_full_mv\":");  ds_uint(s, has_drift ? dr.first_full_mv  : 0u);
+    ds_str(s, ",\"first_empty_idx\":"); ds_uint(s, has_drift ? (uint32_t)dr.first_empty_idx : 0u);
+    ds_str(s, ",\"first_empty_mv\":");  ds_uint(s, has_drift ? dr.first_empty_mv : 0u);
+
+    // Trend: ToC spread per day, oldest-first (used for drift-rate slope).
     ds_str(s, ",\"n_trend\":"); ds_uint(s, dr.n_days);
     ds_str(s, ",\"trend\":[");
     for (uint8_t d = 0; d < dr.n_days; d++) {
@@ -95,10 +106,10 @@ esp_err_t handle_drift(httpd_req_t* req) {
     }
     ds_str(s, "]");
 
-    // Drift rate: linear least-squares slope over trend points (mV/day).
-    // Positive = spread widening (worsening), negative = narrowing (improving).
+    // Drift rate: linear least-squares slope over ToC trend points (mV/day).
+    // Positive = spread widening (worsening). Only meaningful with ToC data.
     float drift_rate = 0.0f;
-    if (dr.n_days >= 2u) {
+    if (has_drift && dr.has_toc && dr.n_days >= 2u) {
       float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f;
       const float n = (float)dr.n_days;
       for (uint8_t d = 0; d < dr.n_days; d++) {
@@ -120,7 +131,6 @@ esp_err_t handle_drift(httpd_req_t* req) {
     for (uint8_t ci = 0; ci < nc; ci++) {
       if (ci > 0) ds_str(s, ",");
 
-      // Live voltage in mV (0 if cell_v is zero/invalid).
       const float cv = p.cell_v[ci];
       const uint16_t now_mv = (cv > 0.5f)
                               ? (uint16_t)(cv * 1000.0f + 0.5f)
@@ -133,8 +143,13 @@ esp_err_t handle_drift(httpd_req_t* req) {
         ds_str(s, ",\"d5max\":"); ds_uint(s, c.d5max);
         ds_str(s, ",\"evMin\":"); ds_uint(s, c.ev_min);
         ds_str(s, ",\"evMax\":"); ds_uint(s, c.ev_max);
+        ds_str(s, ",\"tocMin\":"); ds_uint(s, c.toc_min);
+        ds_str(s, ",\"tocMax\":"); ds_uint(s, c.toc_max);
+        ds_str(s, ",\"bodMin\":"); ds_uint(s, c.bod_min);
+        ds_str(s, ",\"bodMax\":"); ds_uint(s, c.bod_max);
       } else {
         ds_str(s, ",\"d5min\":0,\"d5max\":0,\"evMin\":0,\"evMax\":0");
+        ds_str(s, ",\"tocMin\":0,\"tocMax\":0,\"bodMin\":0,\"bodMax\":0");
       }
       ds_str(s, "}");
     }
