@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [3.1.0-preview.2] - unreleased
+
+### Changed
+
+- **Drift Details: separate "now" from "at full", live status pill** (`feature/drift-live-vs-atfull`).
+  The Drift Details panel previously based the status pill (Balanced / Monitor / Imbalanced)
+  on the last full-charge (ToC) spread, causing a pack balanced right now to read "IMBALANCED
+  178 mV at full" -- contradicting the live battery cards.
+  - Status pill now always reflects the **live spread** (same value shown on battery cards),
+    so it can never contradict the present state.
+  - Collapsed summary row shows three clearly labeled values: `Live X mV · At full Y mV · Z mV/day`.
+  - Expanded KPI tiles restructured as **Now / At full / At empty / Trend** so none is mistaken
+    for another; "Now" is always first.
+  - Per-cell live "now" dot enlarged (9 px -> 12 px) with a contrasting inner ring and outer
+    shadow, making it immediately findable on every cell row against the band colour.
+  - SoC-gating of at-full / at-empty spreads is unchanged.
+
 ## [3.0.0-preview.1] - 2026-06-15
 
 First public tagged release of the V3.0 rewrite. All V3.0 features from the
