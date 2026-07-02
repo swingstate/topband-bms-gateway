@@ -10,4 +10,8 @@ namespace app::housekeeping {
 // Idempotent: calling start() a second time is a no-op and returns true.
 bool start(const Config& cfg);
 
+// Return the ESP32-S3 internal die temperature in °C, updated once per second
+// by HousekeepingTask on Core 1. Returns -128.0f if the sensor is unavailable.
+float get_cpu_temp_c();
+
 }  // namespace app::housekeeping

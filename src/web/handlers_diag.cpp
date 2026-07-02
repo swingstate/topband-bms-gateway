@@ -14,6 +14,7 @@
 #include "diag/log_ring.h"
 #include "app/version.h"
 #include "app/boot.h"
+#include "app/housekeeping.h"
 #include "notify/notify.h"
 #include "sources/registry.h"
 #include "sources/ble_scanner.h"
@@ -139,6 +140,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
   uint32_t dram_largest     = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  float    cpu_temp_c       = app::housekeeping::get_cpu_temp_c();
 
   hs_str(s, "{");
 
@@ -171,6 +173,13 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"reset_reason\":"); hs_json_str(s, reset_reason);
   hs_str(s, ",\"build\":"); hs_json_str(s, BUILD_DATE " " BUILD_TIME);
   hs_str(s, ",\"version\":"); hs_json_str(s, FW_VERSION_FULL);
+  // ESP32-S3 internal die temperature (-128.0f sentinel = unavailable).
+  if (cpu_temp_c > -100.0f) {
+    char t[16]; snprintf(t, sizeof(t), "%.1f", cpu_temp_c);
+    hs_str(s, ",\"cpu_temp_c\":"); hs_str(s, t);
+  } else {
+    hs_str(s, ",\"cpu_temp_c\":null");
+  }
   hs_str(s, "}");
 
   // ── poller ────────────────────────────────────────────────────────────────

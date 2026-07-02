@@ -678,9 +678,6 @@ function renderSolar() {
           </div>
         </div>
       </div>
-      <!-- Passthrough active note (shown alongside charger output when ptActive) -->
-      <div id="solar-pt-note" style="display:none;font-size:12px;color:var(--text-muted);padding:0 4px 12px;line-height:1.5">Passthrough active — solar energy is fed directly into the system (not stored in the battery).</div>
-
       <!-- Solar Passthrough -->
       <div style="margin-bottom:8px">
         <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Solar Passthrough</div>
@@ -4058,6 +4055,7 @@ function renderDiagData(d) {
         ${kvRow('DRAM largest block', (sys.dram_largest_block||0).toLocaleString() + ' B')}
         ${kvRow('PSRAM free', (sys.psram_free||0).toLocaleString() + ' B')}
         ${kvRow('PSRAM largest block', (sys.psram_largest_block||0).toLocaleString() + ' B')}
+        ${kvRow('CPU temp', sys.cpu_temp_c != null ? sys.cpu_temp_c.toFixed(1) + ' °C' : '—')}
         ${kvRow('Build', sys.build || '—')}
       </div>
     </div>
@@ -4875,33 +4873,30 @@ function renderDriftSection() {
 }
 
 function buildDriftCard(pack) {
-  // Status pill and summary mV figure use extreme-region spread when available,
-  // falling back to live spread so mid-SoC flat-region noise doesn't show "Balanced".
-  const pillSpread = pack.has_toc ? (pack.toc_spread || 0) :
-                     pack.has_bod ? (pack.bod_spread || 0) :
-                     (pack.spread_now || 0);
-  const color   = driftBandColor(pillSpread);
+  // Pill always reflects the live (now) spread so it matches the battery cards.
+  // Historical at-full spread is shown as separate labeled context below.
+  const liveSpread = pack.spread_now || 0;
+  const color   = driftBandColor(liveSpread);
   const rate    = driftRateStr(pack.drift_rate);
   const isOpen  = g_drift_open.has(pack.id);
 
   const wrapper = document.createElement('div');
   wrapper.className = 'drift-pack-card';
 
-  // Pill label: qualify with region source when region data exists.
-  const pillLabel = driftStatusLabel(pillSpread);
-  const spreadMeta = pack.has_toc
-    ? ('<strong>' + pillSpread + '</strong>&thinsp;mV at full')
-    : ('<strong>' + (pack.spread_now || 0) + '</strong>&thinsp;mV live');
+  const pillLabel  = driftStatusLabel(liveSpread);
+  const atFullStr  = pack.has_toc ? (pack.toc_spread || 0) + '&thinsp;mV' : '—';
 
-  // Toggle header
+  // Toggle header: Live pill + three clearly labeled metrics
   const toggle = document.createElement('div');
   toggle.className = 'drift-toggle';
   toggle.dataset.driftToggle = pack.id;
   toggle.innerHTML =
     '<span class="drift-pack-name">' + escHtml(pack.name) + '</span>' +
     '<div class="drift-summary-items">' +
-      '<span class="drift-pill ' + driftStatusCls(pillSpread) + '">' + pillLabel + '</span>' +
-      '<span class="drift-meta">' + spreadMeta + '</span>' +
+      '<span class="drift-pill ' + driftStatusCls(liveSpread) + '">' + pillLabel + '</span>' +
+      '<span class="drift-meta">Live&thinsp;<strong>' + liveSpread + '</strong>&thinsp;mV</span>' +
+      '<span class="drift-summary-sep">&middot;</span>' +
+      '<span class="drift-meta">At full&thinsp;<strong>' + atFullStr + '</strong></span>' +
       '<span class="drift-summary-sep">&middot;</span>' +
       '<span class="drift-meta"><strong>' + rate + '</strong>&thinsp;mV/day</span>' +
     '</div>' +
@@ -4935,15 +4930,18 @@ function buildDriftBodyHtml(pack) {
   // KPI: cells >= 3.60 V
   const cellsHigh = cells.slice(0, nc).filter(c => (c.now || 0) >= 3600).length;
 
-  // Top-of-charge spread KPI (only when region was visited).
+  // Live spread (now) — always available.
+  const liveSpreadStr = (pack.spread_now || 0) + ' mV';
+
+  // At-full spread (only when high-SoC region was visited in the 5-day window).
   const tocSpreadStr = pack.has_toc ? (pack.toc_spread || 0) + ' mV' : '—';
   const tocSubStr    = pack.has_toc ? '' : 'no full-charge data yet';
 
-  // Bottom-of-discharge spread KPI.
+  // At-empty spread (only when low-SoC region was visited).
   const bodSpreadStr = pack.has_bod ? (pack.bod_spread || 0) + ' mV' : '—';
   const bodSubStr    = pack.has_bod ? '' : 'no low-SoC data yet';
 
-  // Drift rate (from ToC trend slope; "building history" when no ToC data yet).
+  // Trend rate (from ToC slope; "building" when no ToC data yet).
   const rateDisplay = (!pack.has_toc || pack.n_trend < 2) ? 'building' : rateStr;
 
   // First full: cell that hits ceiling first at top-of-charge.
@@ -4987,9 +4985,10 @@ function buildDriftBodyHtml(pack) {
     : '—';
 
   return '<div class="drift-kpis">' +
-    driftKpiSub('ToC spread',  tocSpreadStr, tocSubStr) +
-    driftKpiSub('BoD spread',  bodSpreadStr, bodSubStr) +
-    driftKpi('Drift rate', rateDisplay, rateDisplay === 'building' ? '' : ' mV/d') +
+    driftKpiSub('Now',        liveSpreadStr, '') +
+    driftKpiSub('At full',    tocSpreadStr,  tocSubStr) +
+    driftKpiSub('At empty',   bodSpreadStr,  bodSubStr) +
+    driftKpi('Trend', rateDisplay, rateDisplay === 'building' ? '' : ' mV/d') +
     driftKpiRaw('First full',  '<span style="font-size:13px">' + firstFullStr  + '</span>') +
     driftKpiRaw('First empty', '<span style="font-size:13px">' + firstEmptyStr + '</span>') +
     driftKpiRaw('&ge;&thinsp;3.60&thinsp;V', cellsHigh + '<span class="drift-kpi-unit"> cells</span>') +

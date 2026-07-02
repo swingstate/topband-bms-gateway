@@ -1355,16 +1355,18 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   opacity: 0.75;
 }
 
-/* Live "now" dot */
+/* Live "now" dot — larger with a contrasting inner ring + outer shadow so it's
+   findable against both the band colour and the track background. */
 .drift-dot {
   position: absolute;
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
   z-index: 2;
-  border: 1.5px solid var(--bg-card);
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 0 0 1.5px rgba(0,0,0,0.4);
 }
 
 /* Numeric label */

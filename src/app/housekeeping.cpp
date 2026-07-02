@@ -11,6 +11,7 @@
 #include "storage/boot_reasons.h"
 #include "sources/registry.h"
 #include "sources/mppt_source.h"
+#include "driver/temperature_sensor.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -20,6 +21,11 @@
 #include <cstdio>
 
 static const char* TAG = "housekeep";
+
+// ESP32-S3 internal die temperature sensor handle. Installed once before the
+// loop. Sentinel value -128.0f means not available.
+static temperature_sensor_handle_t s_tsens     = nullptr;
+static volatile float              s_cpu_temp_c = -128.0f;
 
 // Large working buffers as module-level statics in PSRAM BSS: BmsSystemSnapshot
 // is ~4.6 KB, MqttPublishRequest is ~1.2 KB. CPU/task-context only — no ISR,
@@ -88,6 +94,22 @@ static uint32_t s_tick        = 0;   // monotonic 1 Hz counter
 static void housekeeping_task_entry(void* /*arg*/) {
   ESP_LOGI(TAG, "HousekeepingTask started on Core 1");
 
+  // Install the ESP32-S3 internal temperature sensor once, on this Core 1 task.
+  // Range -10..80 °C covers normal electronics operating conditions.
+  {
+    temperature_sensor_config_t tsens_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    if (temperature_sensor_install(&tsens_cfg, &s_tsens) == ESP_OK) {
+      if (temperature_sensor_enable(s_tsens) != ESP_OK) {
+        ESP_LOGW(TAG, "temperature_sensor_enable failed — CPU temp unavailable");
+        temperature_sensor_uninstall(s_tsens);
+        s_tsens = nullptr;
+      }
+    } else {
+      ESP_LOGW(TAG, "temperature_sensor_install failed — CPU temp unavailable");
+      s_tsens = nullptr;
+    }
+  }
+
   uint32_t last_cells_ms[16]   = {};
   uint32_t last_alert_flush_ms = 0;
   bool     ring_cleared        = false;  // one-shot at ≥ 30 s uptime
@@ -101,6 +123,14 @@ static void housekeeping_task_entry(void* /*arg*/) {
     uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
     uint64_t ts_ms    = (uint64_t)(esp_timer_get_time() / 1000);
     s_tick++;
+
+    // Read ESP32-S3 die temperature once per 1 Hz tick (diag page refreshes every 5 s).
+    if (s_tsens) {
+      float t;
+      if (temperature_sensor_get_celsius(s_tsens, &t) == ESP_OK) {
+        s_cpu_temp_c = t;
+      }
+    }
 
     const Config& cfg = app::get_config();
 
@@ -443,6 +473,10 @@ bool start(const Config& /*cfg*/) {
     return false;
   }
   return true;
+}
+
+float get_cpu_temp_c() {
+  return s_cpu_temp_c;
 }
 
 }  // namespace app::housekeeping
