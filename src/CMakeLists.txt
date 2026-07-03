@@ -23,6 +23,7 @@ idf_component_register(
     "storage/alerts_store.cpp"
     "diag/log_ring.cpp"
     "diag/alerts.cpp"
+    "diag/coredump_probe.cpp"
     "bus/queues.cpp"
     "bus/snapshot_bus.cpp"
     "bms/protocol.cpp"

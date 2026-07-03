@@ -10,6 +10,7 @@
 #include "storage/alerts_store.h"
 #include "diag/log_ring.h"
 #include "diag/alerts.h"
+#include "diag/coredump_probe.h"
 #include "bus/queues.h"
 #include "bus/snapshot_bus.h"
 #include "bms/poller.h"
@@ -260,6 +261,16 @@ void run_boot() {
     app::drift_ring::load();
   }
 
+  // ── Step 8.9: Coredump probe (one-time, cached) ───────────────────────────
+  // Must run BEFORE the HTTP server so /api/diag only ever reads the cached
+  // result. Parses the summary once; erases unusable (foreign-format) dumps.
+  // May take seconds on the single boot after a coredump format change.
+  {
+    ESP_LOGI(TAG, "Probing coredump partition (one-time; slow if a stale dump exists)");
+    const diag::coredump::ProbeResult& cd = diag::coredump::probe();
+    ESP_LOGI(TAG, "Coredump probe: present=%d", (int)cd.present);
+  }
+
   // ── Step 9: Main HTTP server (STA mode only) ──────────────────────────────
   if (sta_connected) {
     web::auth::init();
@@ -339,10 +350,10 @@ void run_boot() {
 #endif
 
   // ── Step 11.5: Coredump presence check ───────────────────────────────────
-  // Emit a CRITICAL alert if the previous boot left a coredump in flash so
-  // the operator sees it on the diag page without manually polling the endpoint.
-  // Per docs/diag-mqtt-crash-review.md Finding 9.
-  if (esp_core_dump_image_check() == ESP_OK) {
+  // Emit a CRITICAL alert if the previous boot left a USABLE coredump in
+  // flash (cached probe from step 8.9; erased foreign-format dumps no longer
+  // raise a false alert). Per docs/diag-mqtt-crash-review.md Finding 9.
+  if (diag::coredump::probe().present) {
     diag::alerts::emit(diag::alerts::Severity::Critical, "boot",
                        "Previous panic detected — details on the Diagnostics page");
   }
