@@ -3979,8 +3979,27 @@ function loadMoreAlerts() {
 
 /* ── Diag page ──────────────────────────────────────────────────────────────── */
 
-function kvRow(k, v) {
-  return `<div class="diag-kv"><span>${escHtml(String(k))}</span><span>${escHtml(String(v))}</span></div>`;
+function kvRow(k, v, title) {
+  const t = title ? ' title="' + escHtml(String(title)) + '"' : '';
+  return `<div class="diag-kv"${t}><span>${escHtml(String(k))}</span><span>${escHtml(String(v))}</span></div>`;
+}
+
+// Storage sizes as MB, working memory as KB; raw bytes stay in the tooltip.
+function fmtKb(b) { return ((b || 0) / 1024).toFixed(1) + ' KB'; }
+function fmtMb(b) { return ((b || 0) / 1048576).toFixed(1) + ' MB'; }
+
+// Age in seconds -> human-readable above 2 minutes.
+function fmtAgeS(s) {
+  if (s == null || s < 0) return 'never';
+  if (s < 120) return s + ' s ago';
+  return formatUptime(s) + ' ago';
+}
+
+function rssiQuality(rssi) {
+  if (rssi == null) return '';
+  if (rssi >= -60) return ' (good)';
+  if (rssi >= -75) return ' (fair)';
+  return ' (weak)';
 }
 
 function renderDiagData(d) {
@@ -4000,8 +4019,16 @@ function renderDiagData(d) {
   const lfs = d.littlefs || {};
   const ene = d.energy || {};
   const his = d.history || {};
+  const ble = d.ble_status || {};
 
   const tasks = (d.tasks || []).slice().sort((a, b) => (a.stack_hwm||0) - (b.stack_hwm||0));
+
+  // Device time from the diag payload (F4: now_ts_s is current device time).
+  let deviceTime = '—';
+  if (ntp.now_ts_s) {
+    const dt = new Date(ntp.now_ts_s * 1000);
+    deviceTime = dt.toLocaleString();
+  }
 
   root.innerHTML = `
     <div class="diag-section">
@@ -4010,13 +4037,15 @@ function renderDiagData(d) {
         ${kvRow('Firmware', sys.fw || '—')}
         ${kvRow('Uptime', formatUptime(sys.uptime_s))}
         ${kvRow('Reset reason', sys.reset_reason || '—')}
-        ${kvRow('Free heap (all)', (sys.free_heap||0).toLocaleString() + ' B')}
-        ${kvRow('DRAM free', (sys.dram_free||0).toLocaleString() + ' B')}
-        ${kvRow('DRAM min ever', (sys.dram_min||0).toLocaleString() + ' B')}
-        ${kvRow('DRAM largest block', (sys.dram_largest_block||0).toLocaleString() + ' B')}
-        ${kvRow('PSRAM free', (sys.psram_free||0).toLocaleString() + ' B')}
-        ${kvRow('PSRAM largest block', (sys.psram_largest_block||0).toLocaleString() + ' B')}
+        ${kvRow('Free heap (all)', fmtKb(sys.free_heap), (sys.free_heap||0) + ' B')}
+        ${kvRow('DRAM free', fmtKb(sys.dram_free), (sys.dram_free||0) + ' B')}
+        ${kvRow('DRAM min ever', fmtKb(sys.dram_min), (sys.dram_min||0) + ' B')}
+        ${kvRow('DRAM largest block', fmtKb(sys.dram_largest_block), (sys.dram_largest_block||0) + ' B')}
+        ${kvRow('PSRAM free', fmtMb(sys.psram_free), (sys.psram_free||0) + ' B')}
+        ${kvRow('PSRAM largest block', fmtMb(sys.psram_largest_block), (sys.psram_largest_block||0) + ' B')}
         ${kvRow('CPU temp', sys.cpu_temp_c != null ? sys.cpu_temp_c.toFixed(1) + ' °C' : '—')}
+        ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms',
+                '> 200 ms while BLE is active indicates CPU starvation of the HTTP task')}
         ${kvRow('Build', sys.build || '—')}
       </div>
     </div>
@@ -4026,7 +4055,7 @@ function renderDiagData(d) {
       <table class="diag-tasks-table">
         <thead><tr><th>Name</th><th>Stack HWM</th><th>Core</th><th>Priority</th></tr></thead>
         <tbody>
-          ${tasks.map(t => `<tr>
+          ${tasks.map(t => `<tr${(t.stack_hwm||0) < 512 ? ' class="diag-task-low"' : ''}>
             <td>${escHtml(t.name||'?')}</td>
             <td>${(t.stack_hwm||0).toLocaleString()} B</td>
             <td>${t.core >= 0 ? t.core : 'any'}</td>
@@ -4046,9 +4075,13 @@ function renderDiagData(d) {
         ${kvRow('RS485 ok', pol.rs485_ok||0)}
         ${kvRow('RS485 timeouts', pol.rs485_timeouts||0)}
         ${kvRow('RS485 parse err', pol.rs485_parse_err||0)}
-        ${kvRow('Alarm polls ok', pol.alarm_polls_ok||0)}
-        ${kvRow('Alarm polls err', pol.alarm_polls_err||0)}
-        ${kvRow('Wrong-address frames', pol.wrong_addr||0)}
+        ${kvRow('Alarm polls (ok / err)', (pol.alarm_polls_ok||0) + ' / ' + (pol.alarm_polls_err||0))}
+        ${kvRow('Sysparam polls (ok / err)', (pol.sysparam_polls_ok||0) + ' / ' + (pol.sysparam_polls_err||0),
+                'Sysparam freshness drives the Auto battery-config modes')}
+        ${kvRow('Wrong-address frames', pol.wrong_addr||0,
+                'Checksum-valid frames from a different pack than polled; discarded')}
+        ${kvRow('Snapshot bus (pub / read / retry)',
+                (sn.publishes||0) + ' / ' + (sn.reads||0) + ' / ' + (sn.retries||0))}
       </div>
     </div>
 
@@ -4057,7 +4090,6 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('TX ok', can.tx_ok||0)}
         ${kvRow('TX fail', can.tx_fail||0)}
-        ${kvRow('TX fail streak max', can.tx_fail_streak_max||0)}
         ${kvRow('Heartbeats', can.heartbeats||0)}
         ${kvRow('Express sends', can.express_sends||0)}
         ${kvRow('Bus-off count', can.bus_off_count||0)}
@@ -4066,15 +4098,22 @@ function renderDiagData(d) {
     </div>
 
     <div class="diag-section">
-      <h3>Snapshot Bus / MQTT / NTP</h3>
+      <h3>MQTT</h3>
       <div class="diag-kv-grid">
-        ${kvRow('SB publishes', sn.publishes||0)}
-        ${kvRow('SB reads', sn.reads||0)}
-        ${kvRow('SB retries', sn.retries||0)}
-        ${kvRow('MQTT state', mq.state||'—')}
-        ${kvRow('MQTT publish ok', mq.publish_ok||0)}
-        ${kvRow('MQTT publish fail', mq.publish_fail||0)}
-        ${kvRow('MQTT drops', mq.publish_drops||0)}
+        ${kvRow('Enabled', mq.enabled ? 'yes' : 'no')}
+        ${kvRow('State', mq.state||'—')}
+        ${kvRow('Base topic', mq.effective_base || '—')}
+        ${kvRow('Publish ok', mq.publish_ok||0)}
+        ${kvRow('Publish fail', mq.publish_fail||0)}
+        ${kvRow('Drops', mq.publish_drops||0)}
+        ${kvRow('Publish max', (mq.publish_max_ms||0) + ' ms')}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>Time</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Device time', deviceTime)}
         ${kvRow('NTP synced', ntp.synced ? 'yes' : 'no')}
         ${kvRow('NTP server', ntp.server||'—')}
       </div>
@@ -4083,25 +4122,35 @@ function renderDiagData(d) {
     <div class="diag-section">
       <h3>LittleFS / History / Energy</h3>
       <div class="diag-kv-grid">
-        ${kvRow('LFS total', (lfs.total_b||0).toLocaleString() + ' B')}
-        ${kvRow('LFS used', (lfs.used_b||0).toLocaleString() + ' B')}
-        ${kvRow('LFS free', (lfs.free_b||0).toLocaleString() + ' B')}
+        ${kvRow('LFS total', fmtMb(lfs.total_b), (lfs.total_b||0) + ' B')}
+        ${kvRow('LFS used', fmtMb(lfs.used_b), (lfs.used_b||0) + ' B')}
+        ${kvRow('LFS free', fmtMb(lfs.free_b), (lfs.free_b||0) + ' B')}
         ${kvRow('Fine samples', his.fine_samples||0)}
         ${kvRow('Coarse samples', his.coarse_samples||0)}
-        ${kvRow('Today in', (ene.today_in_kwh||0).toFixed(2) + ' kWh')}
-        ${kvRow('Today out', (ene.today_out_kwh||0).toFixed(2) + ' kWh')}
+        ${kvRow('Today (in / out)', (ene.today_in_kwh||0).toFixed(2) + ' / ' + (ene.today_out_kwh||0).toFixed(2) + ' kWh')}
+        ${kvRow('Total (in / out)', (ene.total_in_kwh||0).toFixed(2) + ' / ' + (ene.total_out_kwh||0).toFixed(2) + ' kWh')}
         ${kvRow('Stored alerts', d.alerts_count||0)}
       </div>
     </div>
 
     ${(function() {
-      const ble = d.ble_status;
-      if (!ble) return '';
+      if (!d.ble_status) return '';
       const mppt  = ble.mppt  || {};
       const shunt = ble.shunt || {};
+      const dbg   = ble.ble_debug || {};
       const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
-      const fmtAge = s => (s < 0 ? 'never' : s + ' s ago');
-      const fmtF   = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
+      const fmtF  = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
+
+      // MPPT filter funnel — the fastest way to see WHY decoding fails
+      // (wrong MAC, wrong record type, wrong encryption key).
+      const funnelHtml = ble.ble_active ? `
+      <div class="diag-kv-grid">
+        ${kvRow('Configured MPPT MAC', dbg.configured_mac || '—')}
+        ${kvRow('MAC valid', dbg.mppt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
+                (dbg.victron_total||0) + ' -> ' + (dbg.mppt_type_match||0) + ' -> ' +
+                (dbg.mppt_mac_match||0) + ' -> ' + (dbg.mppt_decrypt_ok||0))}
+      </div>` : '';
 
       return `
     <div class="diag-section">
@@ -4112,15 +4161,19 @@ function renderDiagData(d) {
         ${kvRow('Advertisements (total / Victron / MPPT)',
                 `${(ble.ble_gap_events||0).toLocaleString()} / ${(ble.ble_victron_advs||0).toLocaleString()} / ${(ble.ble_mppt_advs||0).toLocaleString()}`)}
       </div>
+      ${funnelHtml}
     </div>
 
     <div class="diag-section">
       <h3>WiFi</h3>
       <div class="diag-kv-grid">
+        ${kvRow('SSID', ble.wifi_ssid || '—')}
+        ${kvRow('IP', ble.wifi_ip || '—')}
+        ${kvRow('Hostname', ble.wifi_hostname || '—')}
+        ${kvRow('Connected for', formatUptime(ble.wifi_connected_for_s))}
         ${kvRow('Disconnects', ble.wifi_disconnects||0)}
         ${kvRow('BSSID', ble.wifi_bssid || '—')}
-        ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' : '—')}
-        ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms')}
+        ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' + rssiQuality(ble.wifi_rssi) : '—')}
         ${kvRow('BSSID lock', ble.wifi_bssid_pin_active ? 'active' : 'off')}
       </div>
     </div>
@@ -4129,7 +4182,7 @@ function renderDiagData(d) {
       <h3>MPPT</h3>
       ${mppt.enabled ? `
       <div class="diag-kv-grid">
-        ${kvRow('Last seen', fmtAge(mppt.last_seen_s))}
+        ${kvRow('Last seen', fmtAgeS(mppt.last_seen_s))}
         ${kvRow('PV input power', fmtF(mppt.pv_power_w, 1) + ' W')}
         ${kvRow('Charger output voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
         ${kvRow('Charger output current', fmtF(mppt.batt_current_a, 2) + ' A')}
@@ -4140,13 +4193,11 @@ function renderDiagData(d) {
 
     <div class="diag-section">
       <h3>Shunt</h3>
-      <div class="diag-kv-grid">
-        ${kvRow('BMS total current', fmtF(ble.bms_current_a, 3) + ' A')}
-      </div>
       ${shunt.enabled ? `
       <div class="diag-kv-grid">
-        ${kvRow('Last seen', fmtAge(shunt.last_seen_s))}
+        ${kvRow('Last seen', fmtAgeS(shunt.last_seen_s))}
         ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
+        ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
         ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
         ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
       </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}

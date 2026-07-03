@@ -1021,6 +1021,8 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 .diag-tasks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .diag-tasks-table th { text-align: left; padding: 4px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
 .diag-tasks-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); }
+/* Task with < 512 B stack headroom — worth a second look */
+.diag-tasks-table tr.diag-task-low td { color: var(--color-warning); font-weight: 600; }
 
 /* ── Settings sub-nav responsive ───────────────────────────────────────────── */
 @media (max-width: 1023px) and (min-width: 768px) {
