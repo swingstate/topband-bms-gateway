@@ -18,6 +18,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Mode** (`Config::soc_mode`). Default-off: behavior is byte-identical to
   V3.1 until SmartShunt is explicitly enabled. See
   `docs/research/v3.2-shunt-soc-fusion.md`.
+- **Shunt BLE filter funnel on the diagnostics page.** The `Bluetooth LE`
+  diag panel previously only showed the MPPT decode funnel (Victron -> type
+  -> MAC -> decrypt); the shunt path had the exact same funnel internally but
+  zero visibility, making a misconfigured shunt MAC/key indistinguishable
+  from "not receiving any data at all". Diag now shows the configured shunt
+  MAC and its own type/MAC/decrypt counters (`src/sources/ble_scanner.h/.cpp`,
+  `handlers_diag.cpp`, diag page).
 
 ## [3.1.0] - 2026-07-03
 

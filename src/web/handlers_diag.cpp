@@ -404,6 +404,11 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, ",\"mppt_type_match\":"); hs_uint(s, dbg.mppt_type_match);
       hs_str(s, ",\"mppt_mac_match\":"); hs_uint(s, dbg.mppt_mac_match);
       hs_str(s, ",\"mppt_decrypt_ok\":"); hs_uint(s, dbg.mppt_decrypt_ok);
+      hs_str(s, ",\"configured_shunt_mac\":"); hs_json_str(s, dbg.configured_shunt_mac);
+      hs_str(s, ",\"shunt_mac_valid\":"); hs_bool(s, dbg.shunt_mac_valid);
+      hs_str(s, ",\"shunt_type_match\":"); hs_uint(s, dbg.shunt_type_match);
+      hs_str(s, ",\"shunt_mac_match\":"); hs_uint(s, dbg.shunt_mac_match);
+      hs_str(s, ",\"shunt_decrypt_ok\":"); hs_uint(s, dbg.shunt_decrypt_ok);
       hs_str(s, ",\"adv_ring\":[");
       for (uint8_t i = 0; i < dbg.count; i++) {
         const sources::ble_scanner::AdvDebugEntry& e = dbg.entries[i];

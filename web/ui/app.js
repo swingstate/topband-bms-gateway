@@ -4221,6 +4221,11 @@ function renderDiagData(d) {
       <h3>Shunt</h3>
       ${shunt.enabled ? `
       <div class="diag-kv-grid">
+        ${kvRow('Configured Shunt MAC', dbg.configured_shunt_mac || '—')}
+        ${kvRow('MAC valid', dbg.shunt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
+                (dbg.victron_total||0) + ' -> ' + (dbg.shunt_type_match||0) + ' -> ' +
+                (dbg.shunt_mac_match||0) + ' -> ' + (dbg.shunt_decrypt_ok||0))}
         ${kvRow('Last seen', fmtAgeS(shunt.last_seen_s))}
         ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
         ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
