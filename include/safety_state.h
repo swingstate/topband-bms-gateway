@@ -15,7 +15,15 @@ struct SafetyState {
   float    dcl_amps;               // effective DCL after temp throttle + proto cap
   float    pack_voltage_avg;
   float    pack_current_total;
-  float    soc_avg;
+  float    soc_avg;                // pure BMS mean. Charge-taper (below) and CAN TX
+                                    // always use THIS field, never soc_display.
+  float    soc_display;            // V3.2: bank SOC for dashboard/MQTT display —
+                                    // shunt-fused per Config::SocMode when available/
+                                    // fresh, else equal to soc_avg. Set by the caller
+                                    // (bms/poller.cpp) via Aggregator::fuse_bank_soc()
+                                    // AFTER runSafety() returns; runSafety() itself
+                                    // never touches this field (no I/O/globals rule).
+  bool     soc_source_shunt;       // true if soc_display came from the shunt this cycle.
   float    soh_avg;
   float    temp_avg;
   float    capacity_total_ah;

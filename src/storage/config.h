@@ -92,6 +92,19 @@ struct Config {
   TempMode temp_mode;
 
   // ── SOC source selection ────────────────────────────────────────────────────
+  // Controls the BANK-LEVEL aggregate SOC only (sources::Aggregator::fuse_bank_soc()).
+  // Per-pack SOC is always BMS passthrough, regardless of this mode — the shunt
+  // cannot inform individual packs. See docs/research/v3.2-shunt-soc-fusion.md.
+  //   Calculated — Option C: shunt SOC is primary whenever ble_shunt_enabled and
+  //                its reading is fresh (ReadingStatus::Valid); BMS soc_avg is the
+  //                fallback (shunt disabled/absent/stale). Default.
+  //   RawBms     — always soc_avg; shunt is never used for the aggregate even if
+  //                enabled and fresh (opt-out escape hatch).
+  //   Hybrid     — reserved for a future BMS-primary/shunt-correction model
+  //                (Option D in the research doc). Not implemented: Aggregator
+  //                currently treats Hybrid identically to Calculated.
+  // charge-taper safety logic (runSafety.cpp) and CAN TX always use soc_avg,
+  // never the fused value, regardless of this mode.
   enum class SocMode : uint8_t { Calculated = 0, RawBms = 1, Hybrid = 2 };
   SocMode soc_mode;
 

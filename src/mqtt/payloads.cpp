@@ -44,6 +44,12 @@ size_t build_data(const BmsSystemSnapshot& snap, const SafetyState& safety,
   s_doc_data["bms_count_online"]     = safety.packs_online;
   s_doc_data["bms_count_configured"] = safety.packs_configured;
   s_doc_data["soc_avg"]              = safety.soc_avg;
+  // V3.2: soc_display is the shunt-fused bank SOC (same value published on the
+  // retained {base}/soc topic); soc_avg above stays the raw BMS mean for anyone
+  // cross-checking. soc_source is "shunt" or "bms" — whichever fed soc_display
+  // this cycle.
+  s_doc_data["soc_display"]          = safety.soc_display;
+  s_doc_data["soc_source"]           = safety.soc_source_shunt ? "shunt" : "bms";
   s_doc_data["soh_avg"]              = safety.soh_avg;
   s_doc_data["pack_voltage_avg"]     = safety.pack_voltage_avg;
   s_doc_data["pack_current_total"]   = safety.pack_current_total;

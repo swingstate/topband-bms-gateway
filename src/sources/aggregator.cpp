@@ -18,6 +18,10 @@ void Aggregator::set_shunt_mode(Config::ShuntCurrentMode mode) {
   m_shunt_mode = mode;
 }
 
+void Aggregator::set_soc_mode(Config::SocMode mode) {
+  m_soc_mode = mode;
+}
+
 void Aggregator::update() {
   if (m_bms)   m_bms->update();
   if (m_shunt && m_shunt->enabled()) m_shunt->update();
@@ -77,6 +81,40 @@ SourceReading Aggregator::select(Metric m,
 
     default:
       return unavailable_reading();
+  }
+}
+
+// ── Bank-level SOC fusion (V3.2) ──────────────────────────────────────────────
+// select_bank_soc() is the policy table for this; keep it here alongside
+// select() rather than scattering the rule across call sites.
+Aggregator::BankSocReading Aggregator::fuse_bank_soc(float bms_soc_avg) const {
+  SourceReading shunt_r = (m_shunt && m_shunt->enabled())
+                          ? m_shunt->reading(Metric::SHUNT_SOC)
+                          : unavailable_reading("%");
+  return select_bank_soc(bms_soc_avg, shunt_r, m_soc_mode);
+}
+
+Aggregator::BankSocReading Aggregator::select_bank_soc(float bms_soc_avg,
+                                                        const SourceReading& shunt_r,
+                                                        Config::SocMode mode) {
+  switch (mode) {
+    case Config::SocMode::RawBms:
+      // Escape hatch: never use the shunt for the aggregate, even if enabled
+      // and fresh.
+      return { bms_soc_avg, false };
+
+    case Config::SocMode::Hybrid:
+      // Reserved for a future BMS-primary/shunt-correction model (Option D,
+      // docs/research/v3.2-shunt-soc-fusion.md). Not implemented — falls
+      // through to Calculated (Option C) until designed.
+    case Config::SocMode::Calculated:
+    default:
+      // Option C: shunt is the always-on primary bank SOC once online and
+      // fresh. No current-based branching, no threshold, no band — presence/
+      // freshness of the shunt reading (status == Valid) is the only switch.
+      // Stale/Unavailable shunt readings fall back to the BMS mean.
+      if (shunt_r.status == ReadingStatus::Valid) return { shunt_r.value, true };
+      return { bms_soc_avg, false };
   }
 }
 

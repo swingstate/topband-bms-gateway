@@ -40,6 +40,8 @@ static SafetyState make_safety() {
   ss.dcl_amps            = 80.0f;
   ss.cvl_volts           = 56.0f;
   ss.soc_avg             = 75.0f;
+  ss.soc_display         = 73.0f;
+  ss.soc_source_shunt    = true;
   ss.soh_avg             = 98.0f;
   ss.pack_voltage_avg    = 52.0f;
   ss.pack_current_total  = 10.0f;
@@ -67,6 +69,8 @@ TEST_CASE("build_data: produces valid JSON with required fields") {
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"ts_ms\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"uptime_s\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc_avg\""));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc_display\":73"));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc_source\":\"shunt\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"pack_voltage_avg\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"pack_current_total\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"pack_power_w\""));

@@ -116,6 +116,8 @@ esp_err_t handle_live(httpd_req_t* req) {
     saf["ccl_amps"]           = safety.ccl_amps;
     saf["dcl_amps"]           = safety.dcl_amps;
     saf["soc_avg"]            = safety.soc_avg;
+    saf["soc_display"]        = safety.soc_display;
+    saf["soc_source_shunt"]   = safety.soc_source_shunt;
     saf["soh_avg"]            = safety.soh_avg;
     saf["temp_avg"]           = safety.temp_avg;
     saf["pack_voltage_avg"]   = safety.pack_voltage_avg;
@@ -202,6 +204,11 @@ esp_err_t handle_live(httpd_req_t* req) {
       if (bms_abs < 0.5f && shunt_r.is_usable()) cur_src = "shunt";
     }
     src["battery_current_src"] = cur_src;
+
+    // battery_soc_src: mirrors safety.soc_source_shunt for the dashboard badge.
+    // Kept alongside soc_source_shunt (which is authoritative) so the UI can
+    // read source badges for current and SOC the same way.
+    src["battery_soc_src"] = has_safety && safety.soc_source_shunt ? "shunt" : "bms";
 
     // MPPT source details
     JsonObject jm = src["mppt"].to<JsonObject>();

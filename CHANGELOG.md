@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **SmartShunt bank-level SOC fusion.** When SmartShunt BLE is enabled
+  (Settings > Bluetooth LE) and its reading is fresh, the shunt's SOC becomes
+  the primary bank-level SOC shown on the dashboard, the Battery page, and
+  published to MQTT `{base}/soc` / `soc_display` — falling back to the BMS
+  average (`soc_avg`) when the shunt is disabled, absent, or stale. A source
+  badge ("SHUNT"/"BMS") discloses which one is active. Per-pack SOC, charge-
+  taper safety logic, and CAN TX SOC/SOH are unaffected — they always use the
+  BMS value, never the fused one. Selectable via **Battery > Bank SOC Source
+  Mode** (`Config::soc_mode`). Default-off: behavior is byte-identical to
+  V3.1 until SmartShunt is explicitly enabled. See
+  `docs/research/v3.2-shunt-soc-fusion.md`.
+
 ## [3.1.0] - 2026-07-03
 
 Second feature release of the V3.x line. Adds Bluetooth LE support for a Victron

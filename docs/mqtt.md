@@ -59,7 +59,7 @@ refreshes every ~5 s.
 
 | Topic | Value type | Example |
 |---|---|---|
-| `{base}/soc` | integer % | `75` |
+| `{base}/soc` | integer % | `75` (V3.2: shunt-fused bank SOC when `ble_shunt_enabled` and fresh, else BMS mean — see below) |
 | `{base}/voltage` | float V (2 dp) | `52.40` |
 | `{base}/current` | float A (1 dp) | `10.5` |
 | `{base}/power` | integer W | `550` |
@@ -102,6 +102,8 @@ Published every 5 s. Topic: `{base}/data`.
   "bms_count_online": 2,
   "bms_count_configured": 2,
   "soc_avg": 75,
+  "soc_display": 73,
+  "soc_source": "shunt",
   "soh_avg": 98,
   "pack_voltage_avg": 52.4,
   "pack_current_total": 10.5,
@@ -120,6 +122,14 @@ Published every 5 s. Topic: `{base}/data`.
 ```
 
 `cell_v_min/max/drift` and `temp_max` are `null` when no packs are online.
+
+`soc_avg` is the pure BMS mean (byte-identical to V2.67). `soc_display` (V3.2) is
+the bank SOC actually shown on the dashboard and published to `{base}/soc` — the
+SmartShunt reading when `ble_shunt_enabled` and fresh, else equal to `soc_avg`.
+`soc_source` is `"shunt"` or `"bms"`, whichever fed `soc_display` this cycle.
+Selection policy: `Config::soc_mode` (`Calculated` = shunt-primary/BMS-fallback,
+`RawBms` = always BMS). Per-pack `pack{N}/soc` and CAN TX SOC/SOH always use the
+BMS value, never `soc_display` — see `docs/research/v3.2-shunt-soc-fusion.md`.
 
 ### Level 2+ — Alarm topic (not retained)
 

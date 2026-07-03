@@ -14,6 +14,7 @@
 #include "app/boot.h"
 #include "diag/alerts.h"
 #include "notify/notify.h"
+#include "sources/registry.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -475,6 +476,18 @@ static void control_task_entry(void* param) {
         uint32_t safety_now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
+
+        // ── V3.2: bank-level SOC fusion — display/telemetry only ──────────
+        // runSafety() never touches soc_display (no globals/I-O in that pure
+        // function); computed here from its soc_avg output. Never feed this
+        // back into anything safety-critical — soc_avg above stays the sole
+        // input to charge-taper and CAN TX.
+        {
+          sources::Aggregator::BankSocReading bank_soc =
+              sources::aggregator()->fuse_bank_soc(tmp.soc_avg);
+          tmp.soc_display      = bank_soc.value;
+          tmp.soc_source_shunt = bank_soc.from_shunt;
+        }
 
         // Log and route safety events to MQTT alarm topic and notification system.
         uint64_t ts_ms  = static_cast<uint64_t>(esp_timer_get_time() / 1000);

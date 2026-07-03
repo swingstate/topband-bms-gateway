@@ -430,6 +430,12 @@ void runSafety(const BmsSystemSnapshot& snap,
     }
 
     // ── SOC-based charge taper (V2.67 lines 2226-2233) ──────────────────
+    // V3.2: deliberately keyed on out.soc_avg (pure BMS mean), never the
+    // shunt-fused display value (SafetyState::soc_display, set by the caller
+    // after this function returns). Charge-taper is a safety-critical trigger
+    // and stays on the established BMS data path; the shunt improves display/
+    // telemetry only, not charge control, until its behaviour is proven over
+    // time in the field. See docs/research/v3.2-shunt-soc-fusion.md.
     if (!cfg.maint_charge_enabled) {
       if (out.soc_avg >= 99.0f)
         safe_chg = static_cast<float>(count) * 2.0f;

@@ -12,6 +12,7 @@ void init_registry(const Config& cfg) {
   s_mppt.init(cfg);
   s_agg.init(&s_bms, &s_shunt, &s_mppt);
   s_agg.set_shunt_mode(cfg.shunt_current_mode);
+  s_agg.set_soc_mode(cfg.soc_mode);
 }
 
 BmsSource*   bms_source()  { return &s_bms;   }

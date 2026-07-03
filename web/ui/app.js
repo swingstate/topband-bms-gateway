@@ -460,7 +460,9 @@ function updateDashboardCards() {
   const packs  = snap.packs || [];
 
   // Aggregate from safety (already computed by firmware).
-  const soc    = safety.soc_avg         !== undefined ? safety.soc_avg         : null;
+  // soc: the fused bank SOC (shunt-primary when enabled/fresh, else BMS mean —
+  // see safety.soc_source_shunt / sources.battery_soc_src for which one is active).
+  const soc    = safety.soc_display     !== undefined ? safety.soc_display     : null;
   const soh    = safety.soh_avg         !== undefined ? safety.soh_avg         : null;
   const cvl    = safety.cvl_volts       !== undefined ? safety.cvl_volts       : null;
   const ccl    = safety.ccl_amps        !== undefined ? safety.ccl_amps        : null;
@@ -494,6 +496,7 @@ function updateDashboardCards() {
   const shuntSrc  = sources.shunt || {};
   const curSrcId  = sources.battery_current_src || 'bms';
   const curBadge  = `<span class="source-badge badge-${curSrcId}">${curSrcId.toUpperCase()}</span>`;
+  const socSrcId  = sources.battery_soc_src || 'bms';
 
   // MPPT tiles — only shown when MPPT enabled and seen.
   const mpptEnabled = mpptSrc.enabled && mpptSrc.seen;
@@ -554,7 +557,7 @@ function updateDashboardCards() {
     // Row 1
     col1top,
     { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
-    { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: 'bms' },
+    { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: socSrcId },
     { label: 'Cell Drift',            value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
     { label: 'Temperature',           value: temp !== null ? fmt(temp, 1) : '—',   unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
     // Row 2
@@ -1188,6 +1191,7 @@ function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
   const shuntMode    = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
+  const socMode      = (g_config && g_config.soc_mode != null) ? g_config.soc_mode : 0;
   const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
 
   const shuntCard = shuntEnabled ? `
@@ -1228,14 +1232,33 @@ function renderBattery() {
           <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src">—</span></span>
         </div>
       </div>
+      <div style="border-top:1px solid var(--border);padding:16px 18px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Bank SOC Source Mode</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="soc_mode" value="0" ${socMode===0?'checked':''} style="margin-top:2px;width:auto">
+            <span><strong>Shunt primary</strong> <span style="color:var(--text-muted)">— SmartShunt SOC used whenever online &amp; fresh; BMS average is fallback only</span></span>
+          </label>
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="soc_mode" value="1" ${socMode===1?'checked':''} style="margin-top:2px;width:auto">
+            <span><strong>BMS only</strong> <span style="color:var(--text-muted)">— always use BMS average; shunt SOC never used for the combined figure</span></span>
+          </label>
+        </div>
+        <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" onclick="saveSocMode()">Save</button>
+          <span id="soc-mode-feedback" style="font-size:12px"></span>
+          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="soc-active-src">—</span></span>
+        </div>
+      </div>
     </div>` : (g_config ? `
     <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
     <div class="card" style="padding:18px">
       <div style="display:flex;align-items:center;gap:14px">
         <div style="flex-shrink:0;width:10px;height:10px;border-radius:50%;background:var(--neutral-300)"></div>
         <div>
-          <div style="font-weight:600;font-size:14px;margin-bottom:4px">SmartShunt &mdash; coming in v3.2</div>
-          <div style="font-size:12px;color:var(--text-muted)">Battery-monitor integration (SOC, precise current, consumed Ah) is planned for the next release.</div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px">SmartShunt &mdash; not enabled</div>
+          <div style="font-size:12px;color:var(--text-muted)">Battery-monitor integration (SOC, precise current, consumed Ah) is available. Enable it in
+            <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">Settings &rarr; Bluetooth LE</a> to use it.</div>
         </div>
       </div>
     </div>` : '');
@@ -1251,7 +1274,11 @@ function renderBattery() {
       <!-- Aggregate metrics -->
       <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
         <div style="display:flex;align-items:center">
-          ${batteryMBox('Combined SOC', 'bagg-soc')}
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Combined SOC</div>
+            <div id="bagg-soc" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
+            <div style="margin-top:4px"><span class="card-src" id="bagg-soc-src">—</span></div>
+          </div>
           ${batteryVDiv()}
           ${batteryMBox('Pack Voltage', 'bagg-volt')}
           ${batteryVDiv()}
@@ -1312,6 +1339,32 @@ async function saveShuntMode() {
   }
 }
 
+async function saveSocMode() {
+  const fb = document.getElementById('soc-mode-feedback');
+  const sel = document.querySelector('input[name="soc_mode"]:checked');
+  if (!sel) return;
+  const mode = parseInt(sel.value, 10);
+  const cfg = Object.assign({}, g_config, { soc_mode: mode, auth_hash: '' });
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (fb) { fb.style.color = 'var(--color-success)'; fb.textContent = 'Saved.'; }
+      setTimeout(() => { if (fb) fb.textContent = ''; }, 2000);
+    } else {
+      if (fb) { fb.style.color = 'var(--red)'; fb.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (fb) { fb.style.color = 'var(--red)'; fb.textContent = 'Network error.'; }
+  }
+}
+
 function setEl(id, text, color) {
   const e = document.getElementById(id);
   if (!e) return;
@@ -1337,8 +1390,10 @@ function updateBatteryOverviewCards() {
   const pillEl = document.getElementById('batt-strip-pill');
   if (pillEl) pillEl.innerHTML = safety.pack_current_total !== undefined ? chargePill(safety.pack_current_total) : '';
   // ── Aggregate metric boxes ──
-  const socAvg = safety.soc_avg;
-  const soc  = socAvg !== undefined ? socAvg : null;
+  // Combined SOC is the fused bank value (see safety.soc_source_shunt for which
+  // source fed it); sagg-soc below shows the raw shunt reading independently.
+  const socDisplay = safety.soc_display;
+  const soc  = socDisplay !== undefined ? socDisplay : null;
   const volt = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
   const cur  = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
   const pow  = (cur !== null && volt !== null) ? cur * volt : null;
@@ -1362,6 +1417,13 @@ function updateBatteryOverviewCards() {
   const curSrcId = sources.battery_current_src || 'bms';
   const srcEl = document.getElementById('shunt-active-src');
   if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; }
+
+  // ── Bank SOC active source (mirrors the current-source badge above) ──
+  const socSrcId = sources.battery_soc_src || 'bms';
+  ['bagg-soc-src', 'soc-active-src'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) { e.textContent = socSrcId.toUpperCase(); e.className = `card-src card-src-${socSrcId}`; }
+  });
 
   // ── Pack grid ──
   if (packs.length === 0) {
@@ -3088,14 +3150,15 @@ function renderSettingsBle() {
 
       <!-- ── SmartShunt ────────────────────────────────────────────────────── -->
       <div class="settings-section">
-        <div class="settings-section-title">SmartShunt (battery monitor) <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">planned for v3.2</span></div>
+        <div class="settings-section-title">SmartShunt (battery monitor)</div>
         <div style="padding:12px 16px;background:color-mix(in srgb,var(--neutral-300) 30%,var(--bg-card));border-radius:6px;font-size:12px;color:var(--text-muted);margin-bottom:12px">
-          SmartShunt integration (SOC, precise current, consumed Ah) is planned for v3.2. The fields below are
-          preserved for migration; the BLE stack is not initialised until a shunt is enabled.
+          SmartShunt integration adds precise 1&thinsp;Hz current and a shunt-derived bank SOC (see
+          <a href="/battery" style="color:var(--accent)" onclick="navigate('/battery');return false;">Battery &rarr; Bank SOC Source Mode</a>
+          once enabled). Disabled by default; the BLE stack is not initialised until a shunt is enabled here.
         </div>
-        <div class="form-group" style="display:flex;align-items:center;gap:8px;opacity:.5">
-          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} disabled style="width:auto">
-          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source (v3.2)</label>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source</label>
         </div>
         <div class="form-group">
           <label>BLE MAC Address</label>
@@ -4163,7 +4226,9 @@ function renderDiagData(d) {
         ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
         ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
         ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
-      </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}
+        ${kvRow('BMS SOC avg (cross-check)', fmtF(g_live && g_live.safety && g_live.safety.soc_avg, 0) + ' %')}
+        ${kvRow('Active source (bank SOC)', ((g_live && g_live.sources && g_live.sources.battery_soc_src) || 'bms').toUpperCase())}
+      </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — enable in Settings &rarr; Bluetooth LE</div>`}
     </div>`;
     })()}
 
