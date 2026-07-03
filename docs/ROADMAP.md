@@ -292,15 +292,15 @@ SmartShunt provides 1-Hz precision current measurements via BLE. If a SmartShunt
 ### Scope
 
 - **SmartShunt BLE module** (extends `ble_victron.cpp` with SmartShunt protocol variant) — shipped V3.1/V3.2.
-- **Data fusion** (`sources::Aggregator`): priority-based source selection
-  - Current: SmartShunt (if online) > BMS aggregate — shipped (`Config::ShuntCurrentMode`).
-  - SOC (bank-level aggregate only): SmartShunt (if online & fresh) > BMS `soc_avg` —
-    shipped (`Config::SocMode`, `Aggregator::fuse_bank_soc()`). Per-pack SOC is BMS-only,
-    always — the shunt cannot see individual packs.
-  - Cell voltages, temps, alarms: BMS (always)
-  - Pack voltage: BMS (always)
-- **Dashboard UX**: "Source: SmartShunt"/"Source: BMS avg" badge on the SOC tile
-  (and the pre-existing current-source badge) — shipped.
+- **Data fusion** (`sources::Aggregator`): consolidated "Battery Value Sources" policy —
+  shipped (`Config::BatterySourcePolicy` Auto/Manual + per-metric `Config::MetricSource`
+  for voltage/current/soc, replacing the earlier separate `ShuntCurrentMode`/`SocMode`
+  fields). Auto: SmartShunt leads whenever online & fresh, BMS is the fallback, applied
+  uniformly to voltage/current/bank-SOC via `Aggregator::fuse_bank_voltage/current/soc()`.
+  Manual: BMS/Shunt picked independently per metric. Per-pack SOC/voltage/temp/alarms stay
+  BMS-only always — the shunt cannot see individual packs.
+- **Dashboard UX**: "Source: SmartShunt"/"Source: BMS avg" badges on the SOC/Voltage/Current
+  tiles, driven by the same fused value shown — shipped.
 - **MQTT**: `soc_display` + `soc_source` added to the `/data` JSON blob; `{base}/soc`
   now carries the fused value — shipped, see `docs/mqtt.md`.
 - **Victron CAN TX**: kept on BMS `soc_avg`, NOT SmartShunt data, contrary to what

@@ -460,15 +460,18 @@ function updateDashboardCards() {
   const packs  = snap.packs || [];
 
   // Aggregate from safety (already computed by firmware).
-  // soc: the fused bank SOC (shunt-primary when enabled/fresh, else BMS mean —
-  // see safety.soc_source_shunt / sources.battery_soc_src for which one is active).
+  // soc/volt/cur are the Battery Value Sources fused values (shunt leads per the
+  // Auto/Manual policy when fresh, else BMS — see sources.battery_*_src for
+  // which one is active per metric). soh/temp are BMS-only; the backend sends
+  // JSON null for any of these when the source has no usable data right now, so
+  // they come through here as null and render as "—", never a misleading 0.
   const soc    = safety.soc_display     !== undefined ? safety.soc_display     : null;
   const soh    = safety.soh_avg         !== undefined ? safety.soh_avg         : null;
   const cvl    = safety.cvl_volts       !== undefined ? safety.cvl_volts       : null;
   const ccl    = safety.ccl_amps        !== undefined ? safety.ccl_amps        : null;
   const dcl    = safety.dcl_amps        !== undefined ? safety.dcl_amps        : null;
-  const cur    = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
-  const volt   = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
+  const cur    = safety.current_display !== undefined ? safety.current_display : null;
+  const volt   = safety.voltage_display !== undefined ? safety.voltage_display : null;
   const temp   = safety.temp_avg        !== undefined ? safety.temp_avg        : null;
 
   // Per-cell min/max/drift: find across all online packs.
@@ -497,6 +500,10 @@ function updateDashboardCards() {
   const curSrcId  = sources.battery_current_src || 'bms';
   const curBadge  = `<span class="source-badge badge-${curSrcId}">${curSrcId.toUpperCase()}</span>`;
   const socSrcId  = sources.battery_soc_src || 'bms';
+  const voltSrcId = sources.battery_voltage_src || 'bms';
+  // Battery Power (Total) is derived from current x voltage; its badge follows
+  // Current's source since power tracks current's sign/magnitude most directly.
+  const powSrcId  = curSrcId;
 
   // MPPT tiles — only shown when MPPT enabled and seen.
   const mpptEnabled = mpptSrc.enabled && mpptSrc.seen;
@@ -556,14 +563,14 @@ function updateDashboardCards() {
   const cards = [
     // Row 1
     col1top,
-    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
+    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: cur !== null ? chargePill(cur) : '',        color: 'var(--text-primary)', alarm: false,            src: powSrcId },
     { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: socSrcId },
     { label: 'Cell Drift',            value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
     { label: 'Temperature',           value: temp !== null ? fmt(temp, 1) : '—',   unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
     // Row 2
     col1bot,
     { label: 'Current (total)',  value: cur !== null ? fmtA(cur) : '—',   unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,           src: curSrcId },
-    { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: 'bms' },
+    { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: voltSrcId },
     { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
     { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
   ];
@@ -1175,11 +1182,14 @@ async function loadCharts() {
 
 /* ── Battery overview page ──────────────────────────────────────────────────── */
 
-function batteryMBox(label, id) {
+function batteryMBox(label, id, withBadge) {
+  const badge = withBadge
+    ? `<div style="margin-top:4px"><span class="card-src" id="${id}-src">—</span></div>` : '';
   return `
     <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
       <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
       <div id="${id}" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
+      ${badge}
     </div>`;
 }
 
@@ -1190,8 +1200,6 @@ function batteryVDiv() {
 function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
-  const shuntMode    = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
-  const socMode      = (g_config && g_config.soc_mode != null) ? g_config.soc_mode : 0;
   const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
 
   const shuntCard = shuntEnabled ? `
@@ -1210,45 +1218,9 @@ function renderBattery() {
         ${batteryVDiv()}
         ${batteryMBox('SOC', 'sagg-soc')}
       </div>
-      <div style="border-top:1px solid var(--border);padding:16px 18px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Current Source Mode</div>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="shunt_mode" value="0" ${shuntMode===0?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>Auto</strong> <span style="color:var(--text-muted)">— BMS leads; shunt fills in below 0.5&thinsp;A dead-zone</span></span>
-          </label>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="shunt_mode" value="1" ${shuntMode===1?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>Shunt leads</strong> <span style="color:var(--text-muted)">— SmartShunt always used when available, BMS fallback</span></span>
-          </label>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="shunt_mode" value="2" ${shuntMode===2?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>BMS leads</strong> <span style="color:var(--text-muted)">— BMS always used; shunt ignored</span></span>
-          </label>
-        </div>
-        <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
-          <button class="btn btn-primary" onclick="saveShuntMode()">Save</button>
-          <span id="shunt-mode-feedback" style="font-size:12px"></span>
-          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src">—</span></span>
-        </div>
-      </div>
-      <div style="border-top:1px solid var(--border);padding:16px 18px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Bank SOC Source Mode</div>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="soc_mode" value="0" ${socMode===0?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>Shunt primary</strong> <span style="color:var(--text-muted)">— SmartShunt SOC used whenever online &amp; fresh; BMS average is fallback only</span></span>
-          </label>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="soc_mode" value="1" ${socMode===1?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>BMS only</strong> <span style="color:var(--text-muted)">— always use BMS average; shunt SOC never used for the combined figure</span></span>
-          </label>
-        </div>
-        <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
-          <button class="btn btn-primary" onclick="saveSocMode()">Save</button>
-          <span id="soc-mode-feedback" style="font-size:12px"></span>
-          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="soc-active-src">—</span></span>
-        </div>
+      <div style="border-top:1px solid var(--border);padding:12px 18px;font-size:12px;color:var(--text-muted)">
+        Raw SmartShunt readings. Configure how these feed the dashboard/MQTT in
+        <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');showSettingsSection('battery');return false;">Settings &rarr; Battery &rarr; Battery Value Sources</a>.
       </div>
     </div>` : (g_config ? `
     <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
@@ -1280,9 +1252,9 @@ function renderBattery() {
             <div style="margin-top:4px"><span class="card-src" id="bagg-soc-src">—</span></div>
           </div>
           ${batteryVDiv()}
-          ${batteryMBox('Pack Voltage', 'bagg-volt')}
+          ${batteryMBox('Pack Voltage', 'bagg-volt', true)}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Current', 'bagg-curr')}
+          ${batteryMBox('Combined Current', 'bagg-curr', true)}
           ${batteryVDiv()}
           ${batteryMBox('Combined Power', 'bagg-pow')}
         </div>
@@ -1313,58 +1285,6 @@ function renderBattery() {
   g_drift_timer = setInterval(loadDriftDetails, 30000);
 }
 
-async function saveShuntMode() {
-  const fb = document.getElementById('shunt-mode-feedback');
-  const sel = document.querySelector('input[name="shunt_mode"]:checked');
-  if (!sel) return;
-  const mode = parseInt(sel.value, 10);
-  const cfg = Object.assign({}, g_config, { shunt_current_mode: mode, auth_hash: '' });
-  try {
-    const r = await apiFetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    });
-    if (!r) return;
-    const data = await r.json();
-    if (r.ok) {
-      g_config = data;
-      if (fb) { fb.style.color = 'var(--color-success)'; fb.textContent = 'Saved.'; }
-      setTimeout(() => { if (fb) fb.textContent = ''; }, 2000);
-    } else {
-      if (fb) { fb.style.color = 'var(--red)'; fb.textContent = data.error || 'Save failed.'; }
-    }
-  } catch (e) {
-    if (fb) { fb.style.color = 'var(--red)'; fb.textContent = 'Network error.'; }
-  }
-}
-
-async function saveSocMode() {
-  const fb = document.getElementById('soc-mode-feedback');
-  const sel = document.querySelector('input[name="soc_mode"]:checked');
-  if (!sel) return;
-  const mode = parseInt(sel.value, 10);
-  const cfg = Object.assign({}, g_config, { soc_mode: mode, auth_hash: '' });
-  try {
-    const r = await apiFetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    });
-    if (!r) return;
-    const data = await r.json();
-    if (r.ok) {
-      g_config = data;
-      if (fb) { fb.style.color = 'var(--color-success)'; fb.textContent = 'Saved.'; }
-      setTimeout(() => { if (fb) fb.textContent = ''; }, 2000);
-    } else {
-      if (fb) { fb.style.color = 'var(--red)'; fb.textContent = data.error || 'Save failed.'; }
-    }
-  } catch (e) {
-    if (fb) { fb.style.color = 'var(--red)'; fb.textContent = 'Network error.'; }
-  }
-}
-
 function setEl(id, text, color) {
   const e = document.getElementById(id);
   if (!e) return;
@@ -1388,14 +1308,15 @@ function updateBatteryOverviewCards() {
   if (dot) { dot.className = 'pack-status-dot ' + (online > 0 ? 'online' : 'offline'); }
   setEl('batt-strip-text', `${online}/${total} packs online`);
   const pillEl = document.getElementById('batt-strip-pill');
-  if (pillEl) pillEl.innerHTML = safety.pack_current_total !== undefined ? chargePill(safety.pack_current_total) : '';
+  if (pillEl) pillEl.innerHTML = safety.current_display !== undefined && safety.current_display !== null
+    ? chargePill(safety.current_display) : '';
   // ── Aggregate metric boxes ──
-  // Combined SOC is the fused bank value (see safety.soc_source_shunt for which
-  // source fed it); sagg-soc below shows the raw shunt reading independently.
-  const socDisplay = safety.soc_display;
-  const soc  = socDisplay !== undefined ? socDisplay : null;
-  const volt = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
-  const cur  = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
+  // All three are the Battery Value Sources fused values (see sources.battery_*_src
+  // for which source fed each one) — never the raw BMS-only safety.pack_voltage_avg/
+  // pack_current_total/soc_avg, which stay reserved for safety/CAN TX.
+  const soc  = (safety.soc_display     !== undefined) ? safety.soc_display     : null;
+  const volt = (safety.voltage_display !== undefined) ? safety.voltage_display : null;
+  const cur  = (safety.current_display !== undefined) ? safety.current_display : null;
   const pow  = (cur !== null && volt !== null) ? cur * volt : null;
 
   setEl('bagg-soc',  soc  !== null ? fmt(soc,  0)  + ' %' : '—', soc  !== null ? socColor(soc)         : 'var(--text-muted)');
@@ -1419,15 +1340,17 @@ function updateBatteryOverviewCards() {
   setEl('sagg-soc',
         !shuntSeen ? '—' : (shuntSocSynced ? fmt(shunt.soc_pct, 1) + ' %' : 'Not synced'),
         shuntSeen ? (shuntSocSynced ? socColor(shunt.soc_pct) : 'var(--text-muted)') : 'var(--text-muted)');
-  const curSrcId = sources.battery_current_src || 'bms';
-  const srcEl = document.getElementById('shunt-active-src');
-  if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; }
-
-  // ── Bank SOC active source (mirrors the current-source badge above) ──
-  const socSrcId = sources.battery_soc_src || 'bms';
-  ['bagg-soc-src', 'soc-active-src'].forEach(id => {
+  // ── Source badges ── each badge MUST come from the same fused result as the
+  // number it's labelling (sources.battery_*_src mirrors safety.*_source_shunt),
+  // so a badge can never disagree with the value shown next to it.
+  const badgeMap = {
+    'bagg-soc-src':  sources.battery_soc_src     || 'bms',
+    'bagg-volt-src': sources.battery_voltage_src || 'bms',
+    'bagg-curr-src': sources.battery_current_src || 'bms',
+  };
+  Object.entries(badgeMap).forEach(([id, srcId]) => {
     const e = document.getElementById(id);
-    if (e) { e.textContent = socSrcId.toUpperCase(); e.className = `card-src card-src-${socSrcId}`; }
+    if (e) { e.textContent = srcId.toUpperCase(); e.className = `card-src card-src-${srcId}`; }
   });
 
   // ── Pack grid ──
@@ -1660,6 +1583,8 @@ function pwField(id, label, autocomplete, placeholder) {
 const SETTINGS_SECTIONS = [
   { id: 'battery',  label: 'Battery',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M20 11h2v2h-2"/></svg>' },
+  { id: 'can',      label: 'CAN',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M7 14h.01M12 10h.01M12 14h.01M17 10h.01M17 14h.01"/></svg>' },
   { id: 'hardware', label: 'Hardware',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16M15 4v16M4 9h16M4 15h16"/></svg>' },
   { id: 'charts',  label: 'Charts',
@@ -1728,6 +1653,7 @@ function renderSettingsSection(id) {
   if (!content || !g_config) return;
   switch (id) {
     case 'battery':  content.innerHTML = renderSettingsBattery();  break;
+    case 'can':      content.innerHTML = renderSettingsCan();      break;
     case 'hardware': content.innerHTML = renderSettingsHardware(); break;
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
@@ -1953,6 +1879,122 @@ async function saveHardwareSection() {
   }
 }
 
+/* ── CAN / Inverter (Settings -> CAN) ──────────────────────────────────────────
+ * Moved off Settings -> Battery: CAN/inverter output protocol is a distinct
+ * concern from battery/BMS/shunt configuration. */
+function renderSettingsCan() {
+  const c = g_config;
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">CAN / Inverter</div>
+        <div class="form-group">
+          <label>Inverter Protocol</label>
+          <div class="proto-options">
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="-1" ${!c.can_enabled ? 'checked' : ''}>
+              <span class="proto-name">Disabled</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="0" ${c.can_enabled && c.can_protocol === 0 ? 'checked' : ''}>
+              <span class="proto-name">Victron</span><span class="proto-desc">— HIL-verified</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="1" ${c.can_enabled && c.can_protocol === 1 ? 'checked' : ''}>
+              <span class="proto-name">Pylontech</span><span class="proto-desc">— Spec-derived, community-validated</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="2" ${c.can_enabled && c.can_protocol === 2 ? 'checked' : ''}>
+              <span class="proto-name">SMA</span><span class="proto-desc">— Spec-derived, community-validated</span>
+            </label>
+          </div>
+          <div class="help" style="margin-top:8px">
+            Pylontech and SMA implementations are derived from spec.
+            The maintainer cannot HIL-verify these against their respective inverters.
+            Reports from users with Pylontech or SMA hardware are welcome.
+          </div>
+        </div>
+      </div>
+
+      <div id="can-feedback" class="feedback-msg"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveCanSection()">Save</button>
+      </div>
+    </div>
+  `;
+}
+
+function saveCanSection() {
+  const protoChecked = document.querySelector('input[name="can_protocol_radio"]:checked');
+  const protoVal = protoChecked ? Number(protoChecked.value) : null;
+
+  let overrides = {};
+  if (protoVal === -1) {
+    overrides = { can_enabled: false };
+  } else if (protoVal !== null && protoVal >= 0) {
+    overrides = { can_enabled: true, can_protocol: protoVal };
+  }
+
+  saveSectionFields([], 'can-feedback', overrides);
+}
+
+/* ── Battery Value Sources (Settings -> Battery) ──────────────────────────────
+ * Consolidates the former separate "Current Source Mode" / "Bank SOC Source
+ * Mode" selectors (previously scattered on the /battery overview page) into
+ * one Auto/Manual policy. Display/dashboard/MQTT only — charge-taper and CAN
+ * TX are permanently BMS-only regardless of this setting (runSafety.cpp). */
+function renderBatteryValueSourcesSection(c) {
+  const shuntEnabled = !!c.ble_shunt_enabled;
+  const policy = c.battery_source_policy !== undefined ? c.battery_source_policy : 0; // default Auto
+  const isManual = policy === 1;
+  const metrics = [
+    { key: 'voltage', label: 'Voltage' },
+    { key: 'current', label: 'Current' },
+    { key: 'soc',     label: 'SOC' },
+  ];
+  return `
+    <div class="settings-section">
+      <div class="settings-section-title">Battery Value Sources</div>
+      <div class="help" style="margin-bottom:10px">
+        Controls where the Voltage, Current, and SOC shown on the dashboard and published
+        to MQTT come from when the SmartShunt is enabled. Display only &mdash; charge-taper
+        safety logic and CAN TX to the inverter always use the BMS value, in Auto or Manual,
+        with no exceptions.
+      </div>
+      <div class="proto-options" id="cfg-bvs-policy-options">
+        <label class="proto-option">
+          <input type="radio" name="bvs_policy_radio" value="0" ${policy === 0 ? 'checked' : ''}
+                 onchange="updateBvsPolicyUI(0)">
+          <span class="proto-name">Auto</span><span class="proto-desc">— shunt leads whenever online &amp; fresh, BMS is the fallback, applied the same way to every metric</span>
+        </label>
+        <label class="proto-option">
+          <input type="radio" name="bvs_policy_radio" value="1" ${policy === 1 ? 'checked' : ''}
+                 onchange="updateBvsPolicyUI(1)">
+          <span class="proto-name">Manual</span><span class="proto-desc">— pick BMS or Shunt independently for each metric below</span>
+        </label>
+      </div>
+      <div id="cfg-bvs-manual-rows" style="margin-top:12px;${isManual ? '' : 'display:none'}">
+        ${metrics.map(m => {
+          const val = c[m.key + '_source'] !== undefined ? c[m.key + '_source'] : 0;
+          return `
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;max-width:260px">
+            <label style="min-width:70px;margin:0">${m.label}</label>
+            <select id="cfg-bvs-${m.key}">
+              <option value="0" ${val === 0 ? 'selected' : ''}>BMS</option>
+              <option value="1" ${val === 1 ? 'selected' : ''}>Shunt</option>
+            </select>
+          </div>`;
+        }).join('')}
+      </div>
+      ${!shuntEnabled ? `<div class="help" style="margin-top:8px;color:var(--brand-coral)">SmartShunt is not enabled &mdash; this policy has no effect until enabled in <a href="/settings#ble" onclick="navigate('/settings');showSettingsSection('ble');return false;">Settings &rarr; BLE</a>.</div>` : ''}
+    </div>`;
+}
+
+function updateBvsPolicyUI(newPolicy) {
+  const rows = document.getElementById('cfg-bvs-manual-rows');
+  if (rows) rows.style.display = newPolicy === 1 ? '' : 'none';
+}
+
 function renderSettingsBattery() {
   const c = g_config;
   const mode = c.battery_config_mode !== undefined ? c.battery_config_mode : 2; // default Manual
@@ -2094,35 +2136,7 @@ function renderSettingsBattery() {
         </div>
       </div>
 
-      <div class="settings-section">
-        <div class="settings-section-title">CAN / Inverter</div>
-        <div class="form-group">
-          <label>Inverter Protocol</label>
-          <div class="proto-options">
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="-1" ${!c.can_enabled ? 'checked' : ''}>
-              <span class="proto-name">Disabled</span>
-            </label>
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="0" ${c.can_enabled && c.can_protocol === 0 ? 'checked' : ''}>
-              <span class="proto-name">Victron</span><span class="proto-desc">— HIL-verified</span>
-            </label>
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="1" ${c.can_enabled && c.can_protocol === 1 ? 'checked' : ''}>
-              <span class="proto-name">Pylontech</span><span class="proto-desc">— Spec-derived, community-validated</span>
-            </label>
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="2" ${c.can_enabled && c.can_protocol === 2 ? 'checked' : ''}>
-              <span class="proto-name">SMA</span><span class="proto-desc">— Spec-derived, community-validated</span>
-            </label>
-          </div>
-          <div class="help" style="margin-top:8px">
-            Pylontech and SMA implementations are derived from spec.
-            The maintainer cannot HIL-verify these against their respective inverters.
-            Reports from users with Pylontech or SMA hardware are welcome.
-          </div>
-        </div>
-      </div>
+      ${renderBatteryValueSourcesSection(c)}
 
       <div id="battery-feedback" class="feedback-msg"></div>
       <div class="btn-row">
@@ -3032,20 +3046,24 @@ function updateBatteryModeUI(newMode) {
 }
 
 function saveBatterySection() {
-  const protoChecked = document.querySelector('input[name="can_protocol_radio"]:checked');
-  const protoVal = protoChecked ? Number(protoChecked.value) : null;
   const modeChecked = document.querySelector('input[name="batt_mode_radio"]:checked');
   const modeVal = modeChecked ? Number(modeChecked.value) : null;
 
   let overrides = {};
-  if (protoVal === -1) {
-    overrides = { can_enabled: false };
-  } else if (protoVal !== null && protoVal >= 0) {
-    overrides = { can_enabled: true, can_protocol: protoVal };
-  }
   if (modeVal !== null && modeVal >= 0 && modeVal <= 2) {
     overrides.battery_config_mode = modeVal;
   }
+
+  // Battery Value Sources (Auto/Manual policy + per-metric BMS/Shunt pickers).
+  // Display only — never touches charge-taper or CAN TX (see runSafety.cpp).
+  const bvsPolicyChecked = document.querySelector('input[name="bvs_policy_radio"]:checked');
+  if (bvsPolicyChecked) {
+    overrides.battery_source_policy = Number(bvsPolicyChecked.value);
+  }
+  ['voltage', 'current', 'soc'].forEach(m => {
+    const el = document.getElementById(`cfg-bvs-${m}`);
+    if (el) overrides[`${m}_source`] = Number(el.value);
+  });
 
   // In Auto/AutoMargin, pack-derived fields are readonly — read the current
   // g_config values so they round-trip unchanged rather than sending whatever
@@ -3158,7 +3176,7 @@ function renderSettingsBle() {
         <div class="settings-section-title">SmartShunt (battery monitor)</div>
         <div style="padding:12px 16px;background:color-mix(in srgb,var(--neutral-300) 30%,var(--bg-card));border-radius:6px;font-size:12px;color:var(--text-muted);margin-bottom:12px">
           SmartShunt integration adds precise 1&thinsp;Hz current and a shunt-derived bank SOC (see
-          <a href="/battery" style="color:var(--accent)" onclick="navigate('/battery');return false;">Battery &rarr; Bank SOC Source Mode</a>
+          <a href="/settings#battery" style="color:var(--accent)" onclick="navigate('/settings');showSettingsSection('battery');return false;">Settings &rarr; Battery &rarr; Battery Value Sources</a>
           once enabled). Disabled by default; the BLE stack is not initialised until a shunt is enabled here.
         </div>
         <div class="form-group" style="display:flex;align-items:center;gap:8px">

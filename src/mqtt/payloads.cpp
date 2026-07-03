@@ -54,6 +54,13 @@ size_t build_data(const BmsSystemSnapshot& snap, const SafetyState& safety,
   s_doc_data["pack_voltage_avg"]     = safety.pack_voltage_avg;
   s_doc_data["pack_current_total"]   = safety.pack_current_total;
   s_doc_data["pack_power_w"]         = safety.pack_voltage_avg * safety.pack_current_total;
+  // V3.2: voltage_display/current_display are the Battery Value Sources fused
+  // values (same pattern as soc_display/soc_source above); pack_voltage_avg/
+  // pack_current_total above stay the raw BMS figures, unchanged.
+  s_doc_data["voltage_display"]      = safety.voltage_display;
+  s_doc_data["voltage_source"]       = safety.voltage_source_shunt ? "shunt" : "bms";
+  s_doc_data["current_display"]      = safety.current_display;
+  s_doc_data["current_source"]       = safety.current_source_shunt ? "shunt" : "bms";
   s_doc_data["temp_avg"]             = safety.temp_avg;
   s_doc_data["cvl_v"]                = safety.cvl_volts;
   s_doc_data["ccl_a"]                = safety.ccl_amps;

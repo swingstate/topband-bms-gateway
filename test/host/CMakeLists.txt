@@ -339,6 +339,29 @@ target_link_libraries(test_config_json PRIVATE
 )
 catch_discover_tests(test_config_json)
 
+# ── test_aggregator ───────────────────────────────────────────────────────────
+# aggregator.cpp is pure logic, but its header pulls in shunt_source.h /
+# mppt_source.h which declare a portMUX_TYPE member — stub out just that IDF
+# symbol (stubs/freertos/FreeRTOS.h) so the headers parse. Only the static
+# pure functions (select / select_bank_value) are exercised; shunt_source.cpp,
+# mppt_source.cpp and bms_source.cpp are never linked or instantiated.
+add_executable(test_aggregator
+  test_aggregator.cpp
+  ../../src/sources/aggregator.cpp
+  stubs/sources_link_stubs.cpp
+)
+
+target_include_directories(test_aggregator PRIVATE
+  stubs
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_aggregator PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_aggregator PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_aggregator PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_aggregator)
+
 # ── test_victron_shunt_decode ─────────────────────────────────────────────────
 # victron_shunt_decode.cpp is a pure bit-math module: no IDF, no FreeRTOS,
 # no mbedTLS dependency (it operates on already-decrypted plaintext).

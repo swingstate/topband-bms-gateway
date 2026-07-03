@@ -477,16 +477,31 @@ static void control_task_entry(void* param) {
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
 
-        // ── V3.2: bank-level SOC fusion — display/telemetry only ──────────
-        // runSafety() never touches soc_display (no globals/I-O in that pure
-        // function); computed here from its soc_avg output. Never feed this
-        // back into anything safety-critical — soc_avg above stays the sole
-        // input to charge-taper and CAN TX.
+        // ── V3.2: Battery Value Sources fusion — display/telemetry only ────
+        // runSafety() never touches the *_display fields (no globals/I-O in
+        // that pure function); computed here from its BMS outputs. Never feed
+        // these back into anything safety-critical — soc_avg/pack_voltage_avg/
+        // pack_current_total above stay the sole inputs to charge-taper and CAN TX.
         {
-          sources::Aggregator::BankSocReading bank_soc =
-              sources::aggregator()->fuse_bank_soc(tmp.soc_avg);
-          tmp.soc_display      = bank_soc.value;
-          tmp.soc_source_shunt = bank_soc.from_shunt;
+          const bool bms_valid = (tmp.packs_online > 0);
+
+          sources::Aggregator::BankReading v_r =
+              sources::aggregator()->fuse_bank_voltage(tmp.pack_voltage_avg, bms_valid);
+          tmp.voltage_display       = v_r.value;
+          tmp.voltage_source_shunt  = v_r.from_shunt;
+          tmp.voltage_display_valid = v_r.valid;
+
+          sources::Aggregator::BankReading i_r =
+              sources::aggregator()->fuse_bank_current(tmp.pack_current_total, bms_valid);
+          tmp.current_display       = i_r.value;
+          tmp.current_source_shunt  = i_r.from_shunt;
+          tmp.current_display_valid = i_r.valid;
+
+          sources::Aggregator::BankReading s_r =
+              sources::aggregator()->fuse_bank_soc(tmp.soc_avg, bms_valid);
+          tmp.soc_display       = s_r.value;
+          tmp.soc_source_shunt  = s_r.from_shunt;
+          tmp.soc_display_valid = s_r.valid;
         }
 
         // Log and route safety events to MQTT alarm topic and notification system.

@@ -17,13 +17,24 @@ struct SafetyState {
   float    pack_current_total;
   float    soc_avg;                // pure BMS mean. Charge-taper (below) and CAN TX
                                     // always use THIS field, never soc_display.
-  float    soc_display;            // V3.2: bank SOC for dashboard/MQTT display —
-                                    // shunt-fused per Config::SocMode when available/
-                                    // fresh, else equal to soc_avg. Set by the caller
-                                    // (bms/poller.cpp) via Aggregator::fuse_bank_soc()
-                                    // AFTER runSafety() returns; runSafety() itself
-                                    // never touches this field (no I/O/globals rule).
+  // ── Battery Value Sources fusion (V3.2) — display/MQTT only ────────────────
+  // *_display / *_source_shunt / *_display_valid are set by the caller
+  // (bms/poller.cpp) via Aggregator::fuse_bank_voltage/current/soc() AFTER
+  // runSafety() returns; runSafety() itself never touches these fields (no
+  // I/O/globals rule). *_display_valid=false means neither BMS nor shunt has
+  // usable data right now — the UI must show "no data", never a bare 0.
+  // PERMANENT SAFETY INVARIANT: charge-taper and CAN TX always use the plain
+  // BMS fields above (soc_avg, pack_voltage_avg, pack_current_total), never
+  // any of the *_display fields, regardless of Battery Value Sources policy.
+  float    voltage_display;
+  bool     voltage_source_shunt;
+  bool     voltage_display_valid;
+  float    current_display;
+  bool     current_source_shunt;
+  bool     current_display_valid;
+  float    soc_display;
   bool     soc_source_shunt;       // true if soc_display came from the shunt this cycle.
+  bool     soc_display_valid;
   float    soh_avg;
   float    temp_avg;
   float    capacity_total_ah;

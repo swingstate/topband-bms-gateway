@@ -70,7 +70,6 @@ static Config make_default() {
   c.temp_soft_zone     = 5.0f;
   c.temp_mode          = Config::TempMode::Hottest;
 
-  c.soc_mode             = Config::SocMode::Calculated;
   c.setup_mode           = Config::SetupMode::Wizard;
   c.auto_from_bms_applied = false;
 
@@ -141,6 +140,16 @@ static Config make_default() {
   // c.wifi_bssid is zero-init from Config{}, so wifi_bssid[0] == '\0'.
   c.wifi_rssi_threshold = -75;
 
+  // v11 additions: Battery Value Sources. Auto is the default for fresh installs
+  // (shunt leads when fresh, BMS fallback). Per-metric fields are only consulted
+  // in Manual mode; default them to Bms (the historical, always-safe behaviour)
+  // so switching to Manual without touching a row doesn't silently pull in shunt
+  // data the user never opted into.
+  c.battery_source_policy = Config::BatterySourcePolicy::Auto;
+  c.voltage_source        = Config::MetricSource::Bms;
+  c.current_source        = Config::MetricSource::Bms;
+  c.soc_source            = Config::MetricSource::Bms;
+
   return c;
 }
 
@@ -169,6 +178,39 @@ const Config DEFAULT_CONFIG = make_default();
 
 namespace {
 
+// Config::SocMode / Config::ShuntCurrentMode were removed from Config in the v11
+// schema (superseded by BatterySourcePolicy/MetricSource below). These mirror
+// their old values so the historical struct snapshots can still parse pre-v11
+// NVS blobs; nothing outside this migration file should reference them.
+enum class LegacySocMode : uint8_t { Calculated = 0, RawBms = 1, Hybrid = 2 };
+enum class LegacyShuntCurrentMode : uint8_t { Auto = 0, ShuntLeads = 1, BmsLeads = 2 };
+
+// Derives the v11 Battery Value Sources fields from the pre-v11 soc_mode /
+// shunt_current_mode values, so upgraded devices keep equivalent behaviour.
+// Both old fields at their defaults (Calculated + Auto) -> new Auto policy
+// (uniform shunt-leads-when-fresh is a superset of both old default rules).
+// Any explicit non-default choice -> Manual, mapped onto the closest old
+// per-metric meaning. voltage_source has no historical equivalent (voltage
+// was never shunt-configurable) so it stays Bms, matching its only-ever behaviour.
+static void derive_battery_source_fields(Config& out, LegacySocMode old_soc_mode,
+                                          LegacyShuntCurrentMode old_shunt_mode) {
+  const bool soc_was_default     = (old_soc_mode != LegacySocMode::RawBms);
+  const bool current_was_default = (old_shunt_mode == LegacyShuntCurrentMode::Auto);
+
+  if (soc_was_default && current_was_default) {
+    out.battery_source_policy = Config::BatterySourcePolicy::Auto;
+    // Per-metric fields unused in Auto; leave at DEFAULT_CONFIG values.
+    return;
+  }
+
+  out.battery_source_policy = Config::BatterySourcePolicy::Manual;
+  out.voltage_source = Config::MetricSource::Bms;
+  out.current_source = (old_shunt_mode == LegacyShuntCurrentMode::BmsLeads)
+                        ? Config::MetricSource::Bms : Config::MetricSource::Shunt;
+  out.soc_source = (old_soc_mode == LegacySocMode::RawBms)
+                   ? Config::MetricSource::Bms : Config::MetricSource::Shunt;
+}
+
 // Historical Config layout at schema version 1.
 // The only structural difference from Config (v2) is the absence of rs485_enabled
 // between pins and bms_count.
@@ -195,7 +237,7 @@ struct Config_v1 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -285,7 +327,7 @@ static bool migrate_v1_to_v2(const uint8_t* buf, size_t len, Config& out) {
   out.temp_mode             = v1.temp_mode;
 
   // SOC / setup
-  out.soc_mode              = v1.soc_mode;
+  derive_battery_source_fields(out, v1.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode            = v1.setup_mode;
   out.auto_from_bms_applied = v1.auto_from_bms_applied;
 
@@ -367,7 +409,7 @@ struct Config_v2 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -432,7 +474,7 @@ struct Config_v3 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -500,7 +542,7 @@ struct Config_v4 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -575,7 +617,7 @@ struct Config_v5 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -651,7 +693,7 @@ struct Config_v6 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -726,7 +768,7 @@ struct Config_v7 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -807,7 +849,7 @@ struct Config_v8 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -891,7 +933,7 @@ struct Config_v9 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  LegacySocMode            soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -949,6 +991,92 @@ struct Config_v9 {
 static_assert(sizeof(Config_v9) == 880,
     "Config_v9 size drifted from expected 880 B — check alignment against v9 NVS blobs");
 
+// Historical Config layout at schema version 10 (identical to Config_v9 plus
+// shunt_current_mode at the end). Superseded in v11 by Config's
+// battery_source_policy/voltage_source/current_source/soc_source.
+struct Config_v10 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  LegacySocMode            soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  uint16_t                 notify_debounce_s;
+  Config::BatteryConfigMode battery_config_mode;
+  bool                     ble_shunt_enabled;
+  bool                     ble_mppt_enabled;
+  char                     ble_shunt_mac[18];
+  char                     ble_mppt_mac[18];
+  char                     ble_shunt_key[33];
+  char                     ble_mppt_key[33];
+  char                     wifi_bssid[18];
+  int8_t                   wifi_rssi_threshold;
+  char                     mqtt_solar_passthrough_topic[64];
+  LegacyShuntCurrentMode   shunt_current_mode;
+  // 884 B total (880 + 1 B field + 3 B tail padding)
+};
+
+static_assert(sizeof(Config_v10) == 884,
+    "Config_v10 size drifted from expected 884 B — check alignment against v10 NVS blobs");
+
 // ── v6 → v7 migration ────────────────────────────────────────────────────────
 // BLE source fields are the only additions. All default to disabled/empty so
 // system behaviour is byte-for-byte identical to V3.0 after migration.
@@ -983,7 +1111,7 @@ static bool migrate_v6_to_v7(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v6.discharge_temp_max;
   out.temp_soft_zone          = v6.temp_soft_zone;
   out.temp_mode               = v6.temp_mode;
-  out.soc_mode                = v6.soc_mode;
+  derive_battery_source_fields(out, v6.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v6.setup_mode;
   out.auto_from_bms_applied   = v6.auto_from_bms_applied;
   out.maint_charge_enabled    = v6.maint_charge_enabled;
@@ -1069,7 +1197,7 @@ static bool migrate_v7_to_v8(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v7.discharge_temp_max;
   out.temp_soft_zone          = v7.temp_soft_zone;
   out.temp_mode               = v7.temp_mode;
-  out.soc_mode                = v7.soc_mode;
+  derive_battery_source_fields(out, v7.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v7.setup_mode;
   out.auto_from_bms_applied   = v7.auto_from_bms_applied;
   out.maint_charge_enabled    = v7.maint_charge_enabled;
@@ -1161,7 +1289,7 @@ static bool migrate_v8_to_v9(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v8.discharge_temp_max;
   out.temp_soft_zone          = v8.temp_soft_zone;
   out.temp_mode               = v8.temp_mode;
-  out.soc_mode                = v8.soc_mode;
+  derive_battery_source_fields(out, v8.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v8.setup_mode;
   out.auto_from_bms_applied   = v8.auto_from_bms_applied;
   out.maint_charge_enabled    = v8.maint_charge_enabled;
@@ -1219,16 +1347,17 @@ static bool migrate_v8_to_v9(const uint8_t* buf, size_t len, Config& out) {
   return true;
 }
 
-// ── v9 → v10 migration ───────────────────────────────────────────────────────
-// shunt_current_mode is the only new field.
-// Default Auto: preserves existing BMS-leads / shunt-fills-dead-zone behaviour.
+// ── v9 → v11 migration ───────────────────────────────────────────────────────
+// v9 has no shunt_current_mode (added in v10), so it's treated as Auto —
+// derive_battery_source_fields() then collapses (soc_mode, Auto) onto the new
+// battery_source_policy/per-metric fields the same way every other path does.
 static bool migrate_v9_to_v10(const uint8_t* buf, size_t len, Config& out) {
   if (len < sizeof(Config_v9)) return false;
 
   Config_v9 v9;
   memcpy(&v9, buf, sizeof(Config_v9));
 
-  // Start from DEFAULT_CONFIG so shunt_current_mode gets Auto.
+  // Start from DEFAULT_CONFIG so v10/v11 fields get safe defaults.
   out = DEFAULT_CONFIG;
 
   out.board_preset            = v9.board_preset;
@@ -1253,7 +1382,7 @@ static bool migrate_v9_to_v10(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v9.discharge_temp_max;
   out.temp_soft_zone          = v9.temp_soft_zone;
   out.temp_mode               = v9.temp_mode;
-  out.soc_mode                = v9.soc_mode;
+  derive_battery_source_fields(out, v9.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v9.setup_mode;
   out.auto_from_bms_applied   = v9.auto_from_bms_applied;
   out.maint_charge_enabled    = v9.maint_charge_enabled;
@@ -1306,7 +1435,100 @@ static bool migrate_v9_to_v10(const uint8_t* buf, size_t len, Config& out) {
   out.wifi_rssi_threshold  = v9.wifi_rssi_threshold;
   memcpy(out.mqtt_solar_passthrough_topic, v9.mqtt_solar_passthrough_topic,
          sizeof(out.mqtt_solar_passthrough_topic));
-  // shunt_current_mode: stays at DEFAULT_CONFIG value (Auto).
+
+  out.schema_version = CURRENT_SCHEMA_VERSION;
+  return true;
+}
+
+// ── v10 → v11 migration ──────────────────────────────────────────────────────
+// Consolidated Battery Value Sources: soc_mode and shunt_current_mode are
+// removed; derive_battery_source_fields() maps their v10 values onto the new
+// battery_source_policy/voltage_source/current_source/soc_source fields.
+static bool migrate_v10_to_v11(const uint8_t* buf, size_t len, Config& out) {
+  if (len < sizeof(Config_v10)) return false;
+
+  Config_v10 v10;
+  memcpy(&v10, buf, sizeof(Config_v10));
+
+  // Start from DEFAULT_CONFIG; derive_battery_source_fields() below overwrites
+  // the v11 fields it's responsible for.
+  out = DEFAULT_CONFIG;
+
+  out.board_preset            = v10.board_preset;
+  out.pins                    = v10.pins;
+  out.rs485_enabled           = v10.rs485_enabled;
+  out.bms_count               = v10.bms_count;
+  out.force_cell_count        = v10.force_cell_count;
+  out.can_protocol            = v10.can_protocol;
+  out.can_enabled              = v10.can_enabled;
+  out.charge_amps_per_pack    = v10.charge_amps_per_pack;
+  out.discharge_amps_per_pack = v10.discharge_amps_per_pack;
+  out.cvl_voltage             = v10.cvl_voltage;
+  out.safe_pack_volt          = v10.safe_pack_volt;
+  out.safe_cell_volt          = v10.safe_cell_volt;
+  out.safe_cell_drift         = v10.safe_cell_drift;
+  out.spike_volt_max          = v10.spike_volt_max;
+  out.spike_curr_max          = v10.spike_curr_max;
+  out.spike_soc_max           = v10.spike_soc_max;
+  out.charge_temp_min         = v10.charge_temp_min;
+  out.charge_temp_max         = v10.charge_temp_max;
+  out.discharge_temp_min      = v10.discharge_temp_min;
+  out.discharge_temp_max      = v10.discharge_temp_max;
+  out.temp_soft_zone          = v10.temp_soft_zone;
+  out.temp_mode               = v10.temp_mode;
+  derive_battery_source_fields(out, v10.soc_mode, v10.shunt_current_mode);
+  out.setup_mode              = v10.setup_mode;
+  out.auto_from_bms_applied   = v10.auto_from_bms_applied;
+  out.maint_charge_enabled    = v10.maint_charge_enabled;
+  out.maint_target_voltage    = v10.maint_target_voltage;
+  out.auto_balance_enabled    = v10.auto_balance_enabled;
+  out.auto_balance_last_ts    = v10.auto_balance_last_ts;
+  memcpy(out.wifi_ssid,       v10.wifi_ssid,       sizeof(out.wifi_ssid));
+  memcpy(out.ntp_server,      v10.ntp_server,      sizeof(out.ntp_server));
+  out.timezone_offset_h       = v10.timezone_offset_h;
+  out.mqtt_enabled            = v10.mqtt_enabled;
+  memcpy(out.mqtt_host,       v10.mqtt_host,       sizeof(out.mqtt_host));
+  out.mqtt_port               = v10.mqtt_port;
+  memcpy(out.mqtt_user,       v10.mqtt_user,       sizeof(out.mqtt_user));
+  memcpy(out.mqtt_pass_obf,   v10.mqtt_pass_obf,   sizeof(out.mqtt_pass_obf));
+  memcpy(out.mqtt_base_topic, v10.mqtt_base_topic, sizeof(out.mqtt_base_topic));
+  out.mqtt_level              = v10.mqtt_level;
+  out.mqtt_diag_enabled       = v10.mqtt_diag_enabled;
+  out.ha_discovery_enabled    = v10.ha_discovery_enabled;
+  out.mqtt_full_publish       = v10.mqtt_full_publish;
+  out.auth_enabled            = v10.auth_enabled;
+  memcpy(out.auth_user, v10.auth_user, sizeof(out.auth_user));
+  memcpy(out.auth_hash, v10.auth_hash, sizeof(out.auth_hash));
+  out.theme_id                = v10.theme_id;
+  out.chart_series_a          = v10.chart_series_a;
+  out.chart_series_b          = v10.chart_series_b;
+  out.ui_poll_live_ms         = v10.ui_poll_live_ms;
+  out.ui_poll_diag_ms         = v10.ui_poll_diag_ms;
+  out.ui_poll_alerts_ms       = v10.ui_poll_alerts_ms;
+  out.last_reset_ts           = v10.last_reset_ts;
+  out.serial_debug_enabled    = v10.serial_debug_enabled;
+  out.spy_persist_default     = v10.spy_persist_default;
+  out.notify_telegram_enabled  = v10.notify_telegram_enabled;
+  memcpy(out.notify_telegram_token,   v10.notify_telegram_token,   sizeof(out.notify_telegram_token));
+  memcpy(out.notify_telegram_chat_id, v10.notify_telegram_chat_id, sizeof(out.notify_telegram_chat_id));
+  memcpy(out.notify_sender_name,      v10.notify_sender_name,      sizeof(out.notify_sender_name));
+  out.notify_alert_flags          = v10.notify_alert_flags;
+  out.notify_telegram_last_ok_ts  = v10.notify_telegram_last_ok_ts;
+  out.notify_poll_interval_s      = v10.notify_poll_interval_s;
+  out.notify_cooldown_s           = v10.notify_cooldown_s;
+  out.notify_telegram_verified    = v10.notify_telegram_verified;
+  out.notify_debounce_s           = v10.notify_debounce_s;
+  out.battery_config_mode         = v10.battery_config_mode;
+  out.ble_shunt_enabled           = v10.ble_shunt_enabled;
+  out.ble_mppt_enabled            = v10.ble_mppt_enabled;
+  memcpy(out.ble_shunt_mac, v10.ble_shunt_mac, sizeof(out.ble_shunt_mac));
+  memcpy(out.ble_mppt_mac,  v10.ble_mppt_mac,  sizeof(out.ble_mppt_mac));
+  memcpy(out.ble_shunt_key, v10.ble_shunt_key, sizeof(out.ble_shunt_key));
+  memcpy(out.ble_mppt_key,  v10.ble_mppt_key,  sizeof(out.ble_mppt_key));
+  memcpy(out.wifi_bssid,    v10.wifi_bssid,    sizeof(out.wifi_bssid));
+  out.wifi_rssi_threshold  = v10.wifi_rssi_threshold;
+  memcpy(out.mqtt_solar_passthrough_topic, v10.mqtt_solar_passthrough_topic,
+         sizeof(out.mqtt_solar_passthrough_topic));
 
   out.schema_version = CURRENT_SCHEMA_VERSION;
   return true;
@@ -1330,9 +1552,15 @@ static bool migrate_v9_to_v10(const uint8_t* buf, size_t len, Config& out) {
 //   816 B (v8) + 64 B = 880 B; 880 % 4 = 0, no new pad.
 // v10 additions: ShuntCurrentMode (uint8_t) at end.
 //   880 B (v9) + 1 B = 881 B raw; compiler pads to 884 B (4-byte alignment).
+// v11: removed SocMode soc_mode (1 B, mid-struct) and ShuntCurrentMode
+//   shunt_current_mode (1 B, tail); added BatterySourcePolicy
+//   battery_source_policy + 3x MetricSource (voltage/current/soc_source) = 4 B
+//   at the tail. Removing the mid-struct field closes an alignment gap that
+//   absorbs the net growth: sizeof(Config) == 880 B again (verified by build,
+//   not hand-derived — see this assert).
 // This assert catches field additions or reorderings that silently change the NVS blob.
-static_assert(sizeof(Config) == 884,
-    "Config size drifted from expected 884 B — if intentional, bump schema version, "
+static_assert(sizeof(Config) == 880,
+    "Config size drifted from expected 880 B — if intentional, bump schema version, "
     "add a migration, and update this assert");
 
 namespace {
@@ -1373,7 +1601,7 @@ static bool migrate_v5_to_v6(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v5.discharge_temp_max;
   out.temp_soft_zone          = v5.temp_soft_zone;
   out.temp_mode               = v5.temp_mode;
-  out.soc_mode                = v5.soc_mode;
+  derive_battery_source_fields(out, v5.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v5.setup_mode;
   out.auto_from_bms_applied   = v5.auto_from_bms_applied;
   out.maint_charge_enabled    = v5.maint_charge_enabled;
@@ -1459,7 +1687,7 @@ static bool migrate_v4_to_v5(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v4.discharge_temp_max;
   out.temp_soft_zone          = v4.temp_soft_zone;
   out.temp_mode               = v4.temp_mode;
-  out.soc_mode                = v4.soc_mode;
+  derive_battery_source_fields(out, v4.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v4.setup_mode;
   out.auto_from_bms_applied   = v4.auto_from_bms_applied;
   out.maint_charge_enabled    = v4.maint_charge_enabled;
@@ -1537,7 +1765,7 @@ static bool migrate_v3_to_v4(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v3.discharge_temp_max;
   out.temp_soft_zone          = v3.temp_soft_zone;
   out.temp_mode               = v3.temp_mode;
-  out.soc_mode                = v3.soc_mode;
+  derive_battery_source_fields(out, v3.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v3.setup_mode;
   out.auto_from_bms_applied   = v3.auto_from_bms_applied;
   out.maint_charge_enabled    = v3.maint_charge_enabled;
@@ -1611,7 +1839,7 @@ static bool migrate_v2_to_v3(const uint8_t* buf, size_t len, Config& out) {
   out.discharge_temp_max      = v2.discharge_temp_max;
   out.temp_soft_zone          = v2.temp_soft_zone;
   out.temp_mode               = v2.temp_mode;
-  out.soc_mode                = v2.soc_mode;
+  derive_battery_source_fields(out, v2.soc_mode, LegacyShuntCurrentMode::Auto);
   out.setup_mode              = v2.setup_mode;
   out.auto_from_bms_applied   = v2.auto_from_bms_applied;
   out.maint_charge_enabled    = v2.maint_charge_enabled;
@@ -1671,6 +1899,10 @@ bool deserialize(const uint8_t* buf, size_t len, Config& out) {
     if (len < sizeof(Config)) return false;
     memcpy(&out, buf, sizeof(Config));
     return true;
+  }
+
+  if (ver == 10) {
+    return migrate_v10_to_v11(buf, len, out);
   }
 
   if (ver == 9) {

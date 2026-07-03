@@ -147,7 +147,10 @@ TEST_CASE("Config struct is 692 bytes (v5 layout unchanged from v4)", "[config]"
 
 // Config_v3 layout mirror (must stay in sync with the frozen struct in config.cpp).
 // Used only for building synthetic v3 blobs in tests.
+// TestSocMode mirrors the pre-v11 Config::SocMode (removed; see config.cpp
+// LegacySocMode) purely for byte-layout parity — same uint8_t single-byte enum.
 namespace {
+enum class TestSocMode : uint8_t { Calculated = 0, RawBms = 1, Hybrid = 2 };
 struct TestConfig_v3 {
   uint16_t                 schema_version;
   Config::BoardPreset      board_preset;
@@ -172,7 +175,7 @@ struct TestConfig_v3 {
   float                    discharge_temp_max;
   float                    temp_soft_zone;
   Config::TempMode         temp_mode;
-  Config::SocMode          soc_mode;
+  TestSocMode              soc_mode;
   Config::SetupMode        setup_mode;
   bool                     auto_from_bms_applied;
   bool                     maint_charge_enabled;
@@ -229,7 +232,7 @@ TEST_CASE("Migration v3->v4: all v3 settings survive, v4 fields get safe default
   v3.discharge_temp_min = -10.0f; v3.discharge_temp_max = 55.0f;
   v3.temp_soft_zone = 4.0f;
   v3.temp_mode      = Config::TempMode::Average;
-  v3.soc_mode       = Config::SocMode::Hybrid;
+  v3.soc_mode       = TestSocMode::Hybrid;
   v3.setup_mode     = Config::SetupMode::Manual;
   strncpy(v3.wifi_ssid,       "MyNet",   sizeof(v3.wifi_ssid) - 1);
   strncpy(v3.ntp_server,      "time.cloudflare.com", sizeof(v3.ntp_server) - 1);
@@ -318,29 +321,100 @@ TEST_CASE("Round-trip: v4 notify_alert_flags all-bits survives", "[config][notif
 }
 
 // ── v4 → v5 migration tests ────────────────────────────────────────────────────
-// Config_v4 is identical to Config_v5 in size (692 B) — the v5 field uses former
-// tail padding. We build a synthetic v4 blob by constructing a v5 Config, zeroing
-// the debounce field bytes (tail padding in v4), and tagging schema_version = 4.
+// Config_v4 layout mirror (must stay in sync with the frozen struct in
+// config.cpp) — same rationale as TestConfig_v3 above: the live Config's
+// prefix is NOT guaranteed to match any historical schema's layout (fields
+// can be removed/reordered mid-struct, not just appended), so synthetic
+// blobs must be built from a real byte-layout mirror, never from a
+// live-Config instance with a relabelled schema_version.
+namespace {
+struct TestConfig_v4 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  TestSocMode              soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  // 3 bytes tail padding (offset 689-691 in the blob are zero)
+};
+static_assert(sizeof(TestConfig_v4) == 692, "TestConfig_v4 size mismatch");
+}  // namespace
 
 TEST_CASE("Migration v4->v5: debounce_s gets default 30 from v4 blob", "[config][migrate]") {
-  // Build a v5 Config with known v4 fields; schema_version set to 4.
-  Config src = DEFAULT_CONFIG;
-  src.schema_version         = 4;   // pretend to be a v4 blob
-  src.notify_debounce_s      = 0;   // simulates v4 tail padding (zero)
-  src.bms_count              = 7;
-  src.notify_poll_interval_s = 90;
-  src.notify_cooldown_s      = 180;
-  src.notify_telegram_enabled = true;
-  strncpy(src.notify_sender_name, "GW-test", sizeof(src.notify_sender_name) - 1);
+  // Build a genuine v4-shaped blob (not a live Config with a relabelled
+  // schema_version — see TestConfig_v4 comment above for why that's unsafe).
+  TestConfig_v4 v4{};
+  v4.schema_version         = 4;
+  v4.board_preset           = Config::BoardPreset::Waveshare;
+  v4.can_protocol           = Config::CanProtocol::Victron;
+  v4.bms_count              = 7;
+  v4.notify_poll_interval_s = 90;
+  v4.notify_cooldown_s      = 180;
+  v4.notify_telegram_enabled = true;
+  strncpy(v4.notify_sender_name, "GW-test", sizeof(v4.notify_sender_name) - 1);
+  // notify_debounce_s doesn't exist in v4 — its bytes are the 3-byte tail
+  // padding, already zeroed by the `TestConfig_v4 v4{};` value-init above.
 
-  // Serialize the blob with schema_version=4.
-  uint8_t buf[sizeof(Config) + 64];
-  size_t len = 0;
-  REQUIRE(storage::serialize(src, buf, sizeof(buf), len));
-
-  // Deserialize: should trigger v4->v5 migration.
   Config out{};
-  bool ok = storage::deserialize(buf, len, out);
+  bool ok = storage::deserialize(reinterpret_cast<const uint8_t*>(&v4), sizeof(v4), out);
   REQUIRE(ok);
 
   // Schema bumped to v5.
@@ -375,4 +449,172 @@ TEST_CASE("Round-trip: notify_debounce_s zero (disabled) survives", "[config][mi
   bool ok = round_trip(src, dst);
   REQUIRE(ok);
   REQUIRE(dst.notify_debounce_s == 0u);
+}
+
+// ── v10 → v11 migration tests ──────────────────────────────────────────────────
+// v11 removes Config::SocMode/ShuntCurrentMode (soc_mode/shunt_current_mode)
+// in favour of BatterySourcePolicy + per-metric MetricSource fields. These
+// tests build genuine v10-shaped blobs (see TestConfig_v10 comment) to verify
+// existing settings survive and the new fields are derived correctly — this
+// is the "config schema changes must preserve existing settings on upgrade"
+// guarantee for the V3.2 Battery Value Sources consolidation.
+
+namespace {
+// Mirrors LegacyShuntCurrentMode in config.cpp — same rationale as TestSocMode.
+enum class TestShuntCurrentMode : uint8_t { Auto = 0, ShuntLeads = 1, BmsLeads = 2 };
+
+// Config_v10 layout mirror (must stay in sync with the frozen struct in config.cpp).
+struct TestConfig_v10 {
+  uint16_t                 schema_version;
+  Config::BoardPreset      board_preset;
+  Config::PinMap           pins;
+  bool                     rs485_enabled;
+  uint8_t                  bms_count;
+  uint8_t                  force_cell_count;
+  Config::CanProtocol      can_protocol;
+  bool                     can_enabled;
+  float                    charge_amps_per_pack;
+  float                    discharge_amps_per_pack;
+  float                    cvl_voltage;
+  float                    safe_pack_volt;
+  float                    safe_cell_volt;
+  float                    safe_cell_drift;
+  float                    spike_volt_max;
+  float                    spike_curr_max;
+  uint8_t                  spike_soc_max;
+  float                    charge_temp_min;
+  float                    charge_temp_max;
+  float                    discharge_temp_min;
+  float                    discharge_temp_max;
+  float                    temp_soft_zone;
+  Config::TempMode         temp_mode;
+  TestSocMode              soc_mode;
+  Config::SetupMode        setup_mode;
+  bool                     auto_from_bms_applied;
+  bool                     maint_charge_enabled;
+  float                    maint_target_voltage;
+  bool                     auto_balance_enabled;
+  uint32_t                 auto_balance_last_ts;
+  char                     wifi_ssid[33];
+  char                     ntp_server[64];
+  int8_t                   timezone_offset_h;
+  bool                     mqtt_enabled;
+  char                     mqtt_host[64];
+  uint16_t                 mqtt_port;
+  char                     mqtt_user[32];
+  char                     mqtt_pass_obf[64];
+  char                     mqtt_base_topic[64];
+  Config::MqttLevel        mqtt_level;
+  bool                     mqtt_diag_enabled;
+  bool                     ha_discovery_enabled;
+  bool                     mqtt_full_publish;
+  bool                     auth_enabled;
+  char                     auth_user[32];
+  char                     auth_hash[65];
+  uint8_t                  theme_id;
+  uint8_t                  chart_series_a;
+  uint8_t                  chart_series_b;
+  uint16_t                 ui_poll_live_ms;
+  uint16_t                 ui_poll_diag_ms;
+  uint16_t                 ui_poll_alerts_ms;
+  uint32_t                 last_reset_ts;
+  bool                     serial_debug_enabled;
+  bool                     spy_persist_default;
+  bool                     notify_telegram_enabled;
+  char                     notify_telegram_token[80];
+  char                     notify_telegram_chat_id[24];
+  char                     notify_sender_name[32];
+  uint32_t                 notify_alert_flags;
+  uint32_t                 notify_telegram_last_ok_ts;
+  uint16_t                 notify_poll_interval_s;
+  uint16_t                 notify_cooldown_s;
+  bool                     notify_telegram_verified;
+  uint16_t                 notify_debounce_s;
+  Config::BatteryConfigMode battery_config_mode;
+  bool                     ble_shunt_enabled;
+  bool                     ble_mppt_enabled;
+  char                     ble_shunt_mac[18];
+  char                     ble_mppt_mac[18];
+  char                     ble_shunt_key[33];
+  char                     ble_mppt_key[33];
+  char                     wifi_bssid[18];
+  int8_t                   wifi_rssi_threshold;
+  char                     mqtt_solar_passthrough_topic[64];
+  TestShuntCurrentMode     shunt_current_mode;
+};
+static_assert(sizeof(TestConfig_v10) == 884, "TestConfig_v10 size mismatch");
+
+// Builds a valid, fully-populated v10 blob with sensible non-default field
+// values in a few spots so the "existing settings survive" assertions below
+// are meaningful (not just checking untouched zero-init memory).
+TestConfig_v10 make_v10_blob() {
+  TestConfig_v10 v10{};
+  v10.schema_version = 10;
+  v10.board_preset    = Config::BoardPreset::Waveshare;
+  v10.can_protocol    = Config::CanProtocol::Victron;
+  v10.can_enabled     = true;
+  v10.bms_count       = 6;
+  v10.cvl_voltage     = 52.5f;
+  v10.setup_mode      = Config::SetupMode::Manual;
+  strncpy(v10.wifi_ssid, "HomeNet", sizeof(v10.wifi_ssid) - 1);
+  v10.ble_shunt_enabled = true;
+  strncpy(v10.ble_shunt_mac, "aa:bb:cc:dd:ee:ff", sizeof(v10.ble_shunt_mac) - 1);
+  return v10;
+}
+}  // namespace
+
+TEST_CASE("Migration v10->v11: defaults (Calculated+Auto) -> Auto policy", "[config][migrate][v11]") {
+  TestConfig_v10 v10 = make_v10_blob();
+  v10.soc_mode            = TestSocMode::Calculated;
+  v10.shunt_current_mode  = TestShuntCurrentMode::Auto;
+
+  Config out{};
+  bool ok = storage::deserialize(reinterpret_cast<const uint8_t*>(&v10), sizeof(v10), out);
+  REQUIRE(ok);
+  REQUIRE(out.schema_version == CURRENT_SCHEMA_VERSION);
+
+  // Pre-existing v10 settings preserved.
+  REQUIRE(out.bms_count == 6);
+  REQUIRE(out.cvl_voltage == Catch::Approx(52.5f));
+  REQUIRE(std::string(out.wifi_ssid) == "HomeNet");
+  REQUIRE(out.ble_shunt_enabled == true);
+  REQUIRE(std::string(out.ble_shunt_mac) == "aa:bb:cc:dd:ee:ff");
+
+  // Both old fields at their defaults -> new Auto policy (uniform shunt-leads-
+  // when-fresh is a superset of the old Calculated+Auto default behaviour).
+  REQUIRE(out.battery_source_policy == Config::BatterySourcePolicy::Auto);
+}
+
+TEST_CASE("Migration v10->v11: RawBms + BmsLeads -> Manual, all metrics on BMS",
+          "[config][migrate][v11]") {
+  TestConfig_v10 v10 = make_v10_blob();
+  v10.soc_mode           = TestSocMode::RawBms;
+  v10.shunt_current_mode = TestShuntCurrentMode::BmsLeads;
+
+  Config out{};
+  bool ok = storage::deserialize(reinterpret_cast<const uint8_t*>(&v10), sizeof(v10), out);
+  REQUIRE(ok);
+
+  REQUIRE(out.battery_source_policy == Config::BatterySourcePolicy::Manual);
+  REQUIRE(out.voltage_source == Config::MetricSource::Bms);
+  REQUIRE(out.current_source == Config::MetricSource::Bms);
+  REQUIRE(out.soc_source      == Config::MetricSource::Bms);
+}
+
+TEST_CASE("Migration v10->v11: Calculated + ShuntLeads -> Manual, current+soc on Shunt",
+          "[config][migrate][v11]") {
+  TestConfig_v10 v10 = make_v10_blob();
+  v10.soc_mode           = TestSocMode::Calculated;  // not RawBms -> soc "was default"
+  v10.shunt_current_mode = TestShuntCurrentMode::ShuntLeads;  // explicit non-default choice
+
+  Config out{};
+  bool ok = storage::deserialize(reinterpret_cast<const uint8_t*>(&v10), sizeof(v10), out);
+  REQUIRE(ok);
+
+  // Any explicit non-default choice on EITHER old field flips the whole
+  // policy to Manual (Auto is uniform across all three metrics or not at all).
+  REQUIRE(out.battery_source_policy == Config::BatterySourcePolicy::Manual);
+  REQUIRE(out.voltage_source == Config::MetricSource::Bms);  // no historical equivalent
+  REQUIRE(out.current_source == Config::MetricSource::Shunt);
+  REQUIRE(out.soc_source      == Config::MetricSource::Shunt);
 }
