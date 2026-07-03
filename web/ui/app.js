@@ -802,9 +802,6 @@ function updateSolarValues() {
   const ptStale  = pt.received && ptAgeMs > PASSTHROUGH_STALE_MS;
   const ptActive = pt.received && !ptStale && pt.state;
 
-  const ptNoteEl = document.getElementById('solar-pt-note');
-  if (ptNoteEl) ptNoteEl.style.display = (showOutput && ptActive) ? '' : 'none';
-
   // ── Passthrough card values (only when ptConfigured, i.e. element IDs exist) ─
   if (ptConfigured) {
     const ptPillEl = document.getElementById('solar-pt-pill');
@@ -971,9 +968,6 @@ function renderPackCard(card, p) {
   // Build cell bars.
   let barsHtml = '';
   if (online && count > 0) {
-    const vMin = Math.min(...cells.filter((_, i) => i < count));
-    const vMax = Math.max(...cells.filter((_, i) => i < count));
-    const vRange = vMax - vMin || 0.001;
     cells.slice(0, count).forEach((v, i) => {
       const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
       let cls = 'cell-ok';
@@ -1007,36 +1001,6 @@ function renderPackCard(card, p) {
     </div>
     <div class="cell-graph">${barsHtml}</div>
   `;
-}
-
-/* ── Energy + Runtime cards ─────────────────────────────────────────────────── */
-function updateEnergyRuntimeCards() {
-  const live   = g_live || {};
-  const energy = live.energy || {};
-
-  const inEl = document.getElementById('energy-in');
-  if (!inEl) return;  // not on dashboard
-
-  inEl.textContent = energy.today_in_kwh !== undefined ? energy.today_in_kwh.toFixed(2) : '—';
-  const outEl = document.getElementById('energy-out');
-  if (outEl) outEl.textContent = energy.today_out_kwh !== undefined ? energy.today_out_kwh.toFixed(2) : '—';
-
-  const weekEl = document.getElementById('energy-week');
-  if (weekEl) {
-    const wIn  = energy.week_in_kwh  !== undefined ? energy.week_in_kwh.toFixed(1)  : '—';
-    const wOut = energy.week_out_kwh !== undefined ? energy.week_out_kwh.toFixed(1) : '—';
-    weekEl.textContent = `Week: ${wIn} / ${wOut} kWh`;
-  }
-
-  const rtMin   = live.runtime_est_min;
-  const rtState = live.runtime_est_state || 'idle';
-  const rtEl  = document.getElementById('runtime-val');
-  const rtSub = document.getElementById('runtime-sub');
-  if (rtEl) rtEl.textContent = rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—';
-  if (rtSub) {
-    const labels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
-    rtSub.textContent = labels[rtState] || 'Idle';
-  }
 }
 
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
@@ -1541,9 +1505,6 @@ function renderBmsDetailContent(packId, d) {
   const maxIdx = d.cell_max_idx;
   let cellBarsHtml = '';
   if (online && count > 0) {
-    const vMin = cells.slice(0, count).reduce((a, b) => Math.min(a, b), Infinity);
-    const vMax = cells.slice(0, count).reduce((a, b) => Math.max(a, b), -Infinity);
-    const yPad = 0.02;
     cells.slice(0, count).forEach((v, i) => {
       const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
       let cls = 'cell-ok';
