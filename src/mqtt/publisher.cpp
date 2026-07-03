@@ -50,6 +50,14 @@ static bool s_ha_discovery_done = false;
 // s_mux permanently locked. Per docs/diag-mqtt-crash-review.md Finding 7.
 static volatile bool s_stop_requested = false;
 
+// ── Solar Passthrough (display-only, subscribed to configured OpenDTU topic) ──
+// Written from the esp_mqtt internal task (MQTT_EVENT_DATA).
+// Read from httpd task (handlers_live). Guarded by s_mux.
+static char     s_passthrough_topic[64]  = {};  // copy of cfg at connect time
+static bool     s_passthrough_state      = false;
+static bool     s_passthrough_received   = false;  // true after first message
+static uint32_t s_passthrough_ts_ms      = 0;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static void compute_mac_identifiers(const Config& cfg) {
@@ -143,14 +151,26 @@ static void mqtt_event_handler(void* /*arg*/, esp_event_base_t /*base*/,
   (void)ev;
 
   switch (static_cast<esp_mqtt_event_id_t>(event_id)) {
-    case MQTT_EVENT_CONNECTED:
+    case MQTT_EVENT_CONNECTED: {
       portENTER_CRITICAL(&s_mux);
       s_state = mqtt::publisher::State::Connected;
       s_just_connected = true;
+      // Snapshot topic under lock so the subscribe call below is lock-free.
+      char pt[sizeof(s_passthrough_topic)];
+      memcpy(pt, s_passthrough_topic, sizeof(pt));
       portEXIT_CRITICAL(&s_mux);
       diag::alerts::emit(diag::alerts::Severity::Info, "mqtt",
                          "connected to %s", s_cfg.mqtt_host);
+      if (pt[0] != '\0') {
+        int rc = esp_mqtt_client_subscribe(s_client, pt, 0);
+        if (rc < 0) {
+          ESP_LOGW(TAG, "solar-passthrough subscribe failed (topic=%s)", pt);
+        } else {
+          ESP_LOGI(TAG, "subscribed to solar-passthrough topic: %s", pt);
+        }
+      }
       break;
+    }
 
     case MQTT_EVENT_DISCONNECTED:
       portENTER_CRITICAL(&s_mux);
@@ -159,6 +179,34 @@ static void mqtt_event_handler(void* /*arg*/, esp_event_base_t /*base*/,
       ESP_LOGW(TAG, "MQTT disconnected — auto-reconnect pending");
       diag::alerts::emit(diag::alerts::Severity::Warn, "mqtt", "disconnected");
       break;
+
+    case MQTT_EVENT_DATA: {
+      // Handle incoming messages. Currently only the solar-passthrough topic.
+      if (!ev || ev->topic_len == 0) break;
+      char topic_buf[64];
+      size_t tlen = (ev->topic_len < sizeof(topic_buf) - 1) ? (size_t)ev->topic_len
+                                                             : sizeof(topic_buf) - 1;
+      memcpy(topic_buf, ev->topic, tlen);
+      topic_buf[tlen] = '\0';
+
+      portENTER_CRITICAL(&s_mux);
+      bool is_pt = (s_passthrough_topic[0] != '\0' &&
+                    strncmp(topic_buf, s_passthrough_topic, sizeof(s_passthrough_topic) - 1) == 0);
+      portEXIT_CRITICAL(&s_mux);
+
+      if (is_pt && ev->data_len > 0) {
+        // Payload: "1"/"true"/"True" = active; anything else = inactive.
+        char c = ev->data[0];
+        bool active = (c == '1' || c == 't' || c == 'T');
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        portENTER_CRITICAL(&s_mux);
+        s_passthrough_state    = active;
+        s_passthrough_received = true;
+        s_passthrough_ts_ms    = now_ms;
+        portEXIT_CRITICAL(&s_mux);
+      }
+      break;
+    }
 
     case MQTT_EVENT_ERROR:
       ESP_LOGE(TAG, "MQTT_EVENT_ERROR");
@@ -256,9 +304,12 @@ bool start(const Config& cfg) {
     return false;
   }
 
-  // Snapshot config for use in MqttTask
+  // Snapshot config for use in MqttTask; also copy passthrough topic so the
+  // MQTT_EVENT_CONNECTED handler can subscribe without holding a long lock.
   portENTER_CRITICAL(&s_mux);
   s_cfg = cfg;
+  snprintf(s_passthrough_topic, sizeof(s_passthrough_topic), "%s",
+           cfg.mqtt_solar_passthrough_topic);
   portEXIT_CRITICAL(&s_mux);
 
   compute_mac_identifiers(cfg);
@@ -308,9 +359,11 @@ bool start(const Config& cfg) {
   esp_mqtt_client_register_event(s_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID),
                                    mqtt_event_handler, nullptr);
 
-  // Spawn MqttTask on Core 1, priority 3 (architecture §3.2)
+  // Spawn MqttTask on Core 1, priority 3 (architecture §3.2).
+  // 8192 B: 884 B Config snapshot + HA-discovery helpers (640-700 B char[] locals under
+  // 16-pack × 15-cell load) left only 256 B HWM at 6144 — one exception frame from overflow.
   BaseType_t r = xTaskCreatePinnedToCore(
-      mqtt_task_entry, "mqtt", 6144, nullptr, 3, &s_task_handle, /*core*/ 1);
+      mqtt_task_entry, "mqtt", 8192, nullptr, 3, &s_task_handle, /*core*/ 1);
   if (r != pdPASS) {
     ESP_LOGE(TAG, "xTaskCreatePinnedToCore failed");
     esp_mqtt_client_destroy(s_client);
@@ -432,6 +485,20 @@ void trigger_ha_discovery() {
     s_ha_discovery_done = false;
   }
   portEXIT_CRITICAL(&s_mux);
+}
+
+bool get_solar_passthrough(bool& out_state, uint32_t& out_ts_ms) {
+  portENTER_CRITICAL(&s_mux);
+  bool configured = (s_passthrough_topic[0] != '\0');
+  bool received   = s_passthrough_received;
+  bool state      = s_passthrough_state;
+  uint32_t ts     = s_passthrough_ts_ms;
+  portEXIT_CRITICAL(&s_mux);
+
+  if (!configured || !received) return false;
+  out_state  = state;
+  out_ts_ms  = ts;
+  return true;
 }
 
 }  // namespace mqtt::publisher

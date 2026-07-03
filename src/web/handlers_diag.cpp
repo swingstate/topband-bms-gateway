@@ -1,17 +1,24 @@
 #include "handlers_diag.h"
+#include "handlers_live.h"
 #include "bms/poller.h"
 #include "can/tx.h"
 #include "bus/snapshot_bus.h"
 #include "mqtt/publisher.h"
 #include "net/ntp.h"
+#include "net/wifi.h"
 #include "storage/lfs_store.h"
 #include "storage/energy_store.h"
 #include "storage/history_store.h"
 #include "storage/boot_reasons.h"
 #include "storage/alerts_store.h"
 #include "diag/log_ring.h"
+#include "diag/coredump_probe.h"
 #include "app/version.h"
 #include "app/boot.h"
+#include "app/housekeeping.h"
+#include "notify/notify.h"
+#include "sources/registry.h"
+#include "sources/ble_scanner.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -22,8 +29,10 @@
 #include "freertos/task.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 static const char* TAG = "web_diag";
+
 
 // ── HStream (shared pattern from handlers_history.cpp) ───────────────────────
 
@@ -132,6 +141,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
   uint32_t dram_largest     = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   uint32_t psram_free       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   uint32_t psram_largest    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  float    cpu_temp_c       = app::housekeeping::get_cpu_temp_c();
 
   hs_str(s, "{");
 
@@ -163,7 +173,13 @@ esp_err_t handle_diag(httpd_req_t* req) {
   }
   hs_str(s, ",\"reset_reason\":"); hs_json_str(s, reset_reason);
   hs_str(s, ",\"build\":"); hs_json_str(s, BUILD_DATE " " BUILD_TIME);
-  hs_str(s, ",\"version\":"); hs_json_str(s, FW_VERSION_FULL);
+  // ESP32-S3 internal die temperature (-128.0f sentinel = unavailable).
+  if (cpu_temp_c > -100.0f) {
+    char t[16]; snprintf(t, sizeof(t), "%.1f", cpu_temp_c);
+    hs_str(s, ",\"cpu_temp_c\":"); hs_str(s, t);
+  } else {
+    hs_str(s, ",\"cpu_temp_c\":null");
+  }
   hs_str(s, "}");
 
   // ── poller ────────────────────────────────────────────────────────────────
@@ -177,6 +193,9 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"rs485_parse_err\":"); hs_uint(s, ps.analog_polls_parse_err);
   hs_str(s, ",\"alarm_polls_ok\":"); hs_uint(s, ps.alarm_polls_ok);
   hs_str(s, ",\"alarm_polls_err\":"); hs_uint(s, ps.alarm_polls_err);
+  hs_str(s, ",\"sysparam_polls_ok\":"); hs_uint(s, ps.sysparam_polls_ok);
+  hs_str(s, ",\"sysparam_polls_err\":"); hs_uint(s, ps.sysparam_polls_err);
+  hs_str(s, ",\"wrong_addr\":"); hs_uint(s, ps.wrong_addr);
   hs_str(s, "}");
 
   // ── can ───────────────────────────────────────────────────────────────────
@@ -212,12 +231,22 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"publish_ok\":"); hs_uint(s, mqtt::publisher::get_publish_ok());
   hs_str(s, ",\"publish_fail\":"); hs_uint(s, mqtt::publisher::get_publish_fail());
   hs_str(s, ",\"publish_drops\":"); hs_uint(s, mqtt::publisher::get_publish_drops());
+  hs_str(s, ",\"publish_max_ms\":"); hs_uint(s, mqtt::publisher::get_publish_max_ms());
+  // Effective base topic (configured prefix + MAC suffix) — needed when
+  // debugging HA discovery; previously only visible in the boot log.
+  {
+    char base[80] = {};
+    mqtt::publisher::get_effective_base(base, sizeof(base));
+    hs_str(s, ",\"effective_base\":"); hs_json_str(s, base);
+  }
   hs_str(s, "}");
 
   // ── ntp ───────────────────────────────────────────────────────────────────
+  // now_ts_s is the CURRENT device time (review F4: the old field name
+  // last_sync_ts was a lie — the module does not track sync time).
   hs_str(s, ",\"ntp\":{");
   hs_str(s, "\"synced\":"); hs_bool(s, net::ntp::is_synced());
-  hs_str(s, ",\"last_sync_ts\":"); hs_uint(s, net::ntp::now_unix_s());
+  hs_str(s, ",\"now_ts_s\":"); hs_uint(s, net::ntp::now_unix_s());
   hs_str(s, ",\"server\":"); hs_json_str(s, app::get_config().ntp_server);
   hs_str(s, "}");
 
@@ -247,27 +276,153 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"alerts_count\":"); hs_uint(s, storage::alerts_store::stored_count());
 
   // ── coredump ──────────────────────────────────────────────────────────────
-  // Present when the previous boot left a valid coredump in flash (ELF format).
-  hs_str(s, ",\"coredump\":{");
-  bool cd_valid = (esp_core_dump_image_check() == ESP_OK);
-  hs_str(s, "\"present\":"); hs_bool(s, cd_valid);
-  if (cd_valid) {
-#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
-    esp_core_dump_summary_t sum{};
-    if (esp_core_dump_get_summary(&sum) == ESP_OK) {
-      hs_str(s, ",\"crashing_task\":");  hs_json_str(s, sum.exc_task);
-      hs_str(s, ",\"build_sha256\":");
-      // app_elf_sha256 is already a null-terminated hex string.
-      hs_json_str(s, reinterpret_cast<const char*>(sum.app_elf_sha256));
-      // exc_pc as a readable hex string.
-      char pc_buf[16];
-      snprintf(pc_buf, sizeof(pc_buf), "0x%08lx", (unsigned long)sum.exc_pc);
-      hs_str(s, ",\"exc_pc\":"); hs_json_str(s, pc_buf);
-      hs_str(s, ",\"core_dump_version\":"); hs_uint(s, sum.core_dump_version);
+  // Cached boot-time probe. NEVER parse the dump per request: the summary
+  // parse reads flash, and a stale BIN-era dump under the ELF config cost
+  // ~33 s per /api/diag request, starving the single-threaded HTTP server
+  // (preview.3 field regression).
+  {
+    const diag::coredump::ProbeResult& cd = diag::coredump::probe();
+    hs_str(s, ",\"coredump\":{");
+    hs_str(s, "\"present\":"); hs_bool(s, cd.present);
+    if (cd.has_summary) {
+      hs_str(s, ",\"crashing_task\":");     hs_json_str(s, cd.task);
+      hs_str(s, ",\"build_sha256\":");      hs_json_str(s, cd.sha256);
+      hs_str(s, ",\"exc_pc\":");            hs_json_str(s, cd.pc_hex);
+      hs_str(s, ",\"core_dump_version\":"); hs_uint(s, cd.version);
     }
-#endif
+    hs_str(s, "}");
   }
-  hs_str(s, "}");
+
+  // ── ble_status — BLE scanner, MPPT, and Shunt status ────────────────────
+  {
+    bool ble_on = sources::ble_scanner::is_active();
+
+    hs_str(s, ",\"ble_status\":{");
+    hs_str(s, "\"ble_active\":"); hs_bool(s, ble_on);
+    hs_str(s, ",\"stack\":"); hs_json_str(s, sources::ble_scanner::stack_name());
+    hs_str(s, ",\"wifi_disconnects\":"); hs_uint(s, net::wifi::get_disconnect_count());
+    { std::string bssid = net::wifi::get_bssid();
+      hs_str(s, ",\"wifi_bssid\":"); hs_json_str(s, bssid.empty() ? "" : bssid.c_str()); }
+    hs_str(s, ",\"wifi_rssi\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)net::wifi::get_rssi()); hs_str(s,t); }
+    hs_str(s, ",\"wifi_bssid_pin_active\":"); hs_bool(s, net::wifi::is_bssid_pin_active());
+    // Connection identity — a diagnosing user should not need the router UI
+    // to see which network/IP the gateway is on (review Part 3.2).
+    { std::string ssid = net::wifi::get_ssid();
+      hs_str(s, ",\"wifi_ssid\":"); hs_json_str(s, ssid.empty() ? "" : ssid.c_str()); }
+    { char ip[24] = {}; net::wifi::get_ip(ip, sizeof(ip));
+      hs_str(s, ",\"wifi_ip\":"); hs_json_str(s, ip); }
+    { char hn[48] = {}; net::wifi::get_hostname(hn, sizeof(hn));
+      hs_str(s, ",\"wifi_hostname\":"); hs_json_str(s, hn); }
+    hs_str(s, ",\"wifi_connected_for_s\":"); hs_uint(s, net::wifi::connected_for_s());
+    hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
+    hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
+    hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());
+    hs_str(s, ",\"ble_victron_advs\":"); hs_uint(s, sources::ble_scanner::victron_adv_count());
+    hs_str(s, ",\"ble_mppt_advs\":"); hs_uint(s, sources::ble_scanner::mppt_adv_count());
+
+    // BMS total current (for side-by-side comparison with shunt current).
+    {
+      BmsSystemSnapshot snap{};
+      float bms_total_current = 0.0f;
+      if (bus::snapshot_bus::read(snap)) {
+        for (uint8_t i = 0; i < snap.pack_count_configured && i < 16; ++i) {
+          if (snap.pack[i].online) bms_total_current += snap.pack[i].pack_current;
+        }
+      }
+      hs_str(s, ",\"bms_current_a\":");
+      { char t[16]; snprintf(t, sizeof(t), "%.3f", bms_total_current); hs_str(s, t); }
+    }
+
+    // MPPT BLE decode state.
+    {
+      sources::MpptSource* mppt = sources::mppt_source();
+      bool mppt_enabled = mppt && mppt->enabled();
+      hs_str(s, ",\"mppt\":{");
+      hs_str(s, "\"enabled\":"); hs_bool(s, mppt_enabled);
+      if (mppt_enabled) {
+        sources::MpptSource::DiagSnap d = mppt->diag_snap();
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
+        hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
+        hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        // null when the charger sent a Victron not-available sentinel (0x7FFF/0xFFFF)
+        hs_str(s, ",\"pv_power_w\":");
+        if (d.pv_power_valid)    { char t[16]; snprintf(t,sizeof(t),"%.1f",d.pv_power_w);    hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"pv_voltage_v\":");
+        if (d.pv_v_valid)        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_voltage_v);  hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"pv_current_a\":");
+        if (d.pv_i_valid)        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.pv_current_a);  hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"yield_today_wh\":");
+        if (d.yield_valid)       { char t[16]; snprintf(t,sizeof(t),"%.0f",d.yield_today_wh); hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"charge_state\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)d.charge_state); hs_str(s,t); }
+        hs_str(s, ",\"batt_voltage_v\":");
+        if (d.batt_v_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_voltage_v); hs_str(s,t); }
+        else hs_str(s, "null");
+        hs_str(s, ",\"batt_current_a\":");
+        if (d.batt_i_valid)      { char t[16]; snprintf(t,sizeof(t),"%.2f",d.batt_current_a); hs_str(s,t); }
+        else hs_str(s, "null");
+      }
+      hs_str(s, "}");
+    }
+
+    // Shunt BLE decode state.
+    {
+      sources::ShuntSource* shunt = sources::shunt_source();
+      bool shunt_enabled = shunt && shunt->enabled();
+      hs_str(s, ",\"shunt\":{");
+      hs_str(s, "\"enabled\":"); hs_bool(s, shunt_enabled);
+      if (shunt_enabled) {
+        sources::ShuntSource::DiagSnap d = shunt->diag_snap();
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        int32_t age_s = d.seen ? (int32_t)((now_ms - d.last_seen_ms) / 1000u) : -1;
+        hs_str(s, ",\"seen\":"); hs_bool(s, d.seen);
+        hs_str(s, ",\"last_seen_s\":"); { char t[12]; snprintf(t,sizeof(t),"%ld",(long)age_s); hs_str(s,t); }
+        hs_str(s, ",\"current_a\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.3f",d.current_a); hs_str(s,t); }
+        hs_str(s, ",\"voltage_v\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.2f",d.voltage_v); hs_str(s,t); }
+        hs_str(s, ",\"soc_pct\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.1f",d.soc_pct);   hs_str(s,t); }
+      }
+      hs_str(s, "}");
+    }
+
+    // Per-advertisement filter funnel: configured_mac, stage counters, and
+    // a ring of the last ≤8 Victron advertisements with per-stage pass/fail flags.
+    {
+      sources::ble_scanner::AdvDebugState dbg{};
+      sources::ble_scanner::get_adv_debug(dbg);
+
+      hs_str(s, ",\"ble_debug\":{");
+      hs_str(s, "\"configured_mac\":"); hs_json_str(s, dbg.configured_mac);
+      hs_str(s, ",\"mppt_mac_valid\":"); hs_bool(s, dbg.mppt_mac_valid);
+      hs_str(s, ",\"victron_total\":"); hs_uint(s, dbg.victron_total);
+      hs_str(s, ",\"mppt_type_match\":"); hs_uint(s, dbg.mppt_type_match);
+      hs_str(s, ",\"mppt_mac_match\":"); hs_uint(s, dbg.mppt_mac_match);
+      hs_str(s, ",\"mppt_decrypt_ok\":"); hs_uint(s, dbg.mppt_decrypt_ok);
+      hs_str(s, ",\"adv_ring\":[");
+      for (uint8_t i = 0; i < dbg.count; i++) {
+        const sources::ble_scanner::AdvDebugEntry& e = dbg.entries[i];
+        if (i > 0) hs_str(s, ",");
+        char type_hex[7];
+        snprintf(type_hex, sizeof(type_hex), "0x%02X", e.record_type);
+        hs_str(s, "{\"mac\":"); hs_json_str(s, e.mac_str);
+        hs_str(s, ",\"rssi\":"); { char t[8]; snprintf(t, sizeof(t), "%d", (int)e.rssi); hs_str(s, t); }
+        hs_str(s, ",\"type\":"); hs_json_str(s, type_hex);
+        hs_str(s, ",\"mac_match\":"); hs_bool(s, e.mac_match);
+        hs_str(s, ",\"type_ok\":"); hs_bool(s, e.record_type_ok);
+        hs_str(s, ",\"decrypt_ok\":"); hs_bool(s, e.decrypt_ok);
+        hs_str(s, "}");
+      }
+      hs_str(s, "]}");
+    }
+
+    hs_str(s, "}");
+  }
 
   // ── tasks (FreeRTOS stack HWM) ────────────────────────────────────────────
   // Requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y and
@@ -283,6 +438,12 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, "{\"name\":");
       hs_json_str(s, task_buf[i].pcTaskName);
       hs_str(s, ",\"stack_hwm\":");
+      // usStackHighWaterMark is in words (StackType_t = 4 B on Xtensa); convert to bytes.
+      // This is a since-boot low-water mark — sample AFTER full load for meaningful numbers.
+      // NOTE: configured stack size (stack_cfg) is NOT available from the FreeRTOS SMP
+      // TaskStatus_t (pxEndOfStack absent when configRECORD_STACK_HIGH_ADDRESS defaults to 0
+      // in FreeRTOS-Kernel-SMP/FreeRTOS.h). Reclaimable = cfg_from_source - (cfg - hwm).
+      // See sdkconfig.defaults and task creation sites for per-task configured sizes.
       hs_uint(s, (uint32_t)task_buf[i].usStackHighWaterMark * sizeof(StackType_t));
       // xCoreID requires configTASKLIST_INCLUDE_COREID=1 (FREERTOS_VTASKLIST_INCLUDE_COREID).
       // Guard so the handler compiles even if that option is off; UI shows "any" for -1.
@@ -361,5 +522,40 @@ esp_err_t handle_diag_coredump(httpd_req_t* req) {
   httpd_resp_send_chunk(req, nullptr, 0);
   return ESP_OK;
 }
+
+// ── Dev TLS burst handler — POST /api/diag/tls-burst?n=<1..10> ───────────────
+// Only compiled and registered when BLE_SPIKE_DEV_BURST=1.
+// Starts the burst coordinator task in notify.cpp; returns immediately.
+// Returns 409 if a burst is already in flight.
+#if BLE_SPIKE_DEV_BURST
+esp_err_t handle_diag_tls_burst(httpd_req_t* req) {
+  httpd_resp_set_type(req, "application/json");
+
+  if (notify::dev_tls_burst_active()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "{\"error\":\"burst already active\"}");
+  }
+
+  // Parse n= query param; default 4.
+  char qs[32] = {};
+  int n = 4;
+  if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) == ESP_OK) {
+    char n_str[8] = {};
+    if (httpd_query_key_value(qs, "n", n_str, sizeof(n_str)) == ESP_OK) {
+      int parsed = atoi(n_str);
+      if (parsed >= 1 && parsed <= 10) n = parsed;
+    }
+  }
+
+  if (!notify::dev_tls_burst_start(n)) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_sendstr(req, "{\"error\":\"burst start failed\"}");
+  }
+
+  char resp[64];
+  snprintf(resp, sizeof(resp), "{\"ok\":true,\"n\":%d}", n);
+  return httpd_resp_sendstr(req, resp);
+}
+#endif  // BLE_SPIKE_DEV_BURST
 
 }  // namespace web

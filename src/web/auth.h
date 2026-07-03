@@ -8,7 +8,7 @@
 // Session token: 32-hex-char random string, generated fresh on every boot
 // (RAM-only per D2.3 — server reboot invalidates all sessions by design).
 //
-// Cookie:  tbsid=<token>; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400
+// Cookie:  tbsid=<token>; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000 (30 days)
 // CSRF:    Same token injected as <meta name="csrf-token"> in index.html.
 //          Mutating requests (POST/PUT/DELETE/PATCH) must include it in the
 //          X-CSRF-Token header (double-submit pattern).

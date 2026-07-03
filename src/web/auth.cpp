@@ -147,10 +147,11 @@ esp_err_t handler_login(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"Wrong password\"}");
   }
 
-  // Set session cookie.
+  // Set session cookie — 30-day Max-Age; SameSite=Lax is sufficient on a LAN
+  // device (mutating requests are separately protected by the CSRF double-submit).
   char cookie_hdr[128];
   snprintf(cookie_hdr, sizeof(cookie_hdr),
-           "tbsid=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400",
+           "tbsid=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000",
            g_session_token);
   httpd_resp_set_hdr(req, "Set-Cookie", cookie_hdr);
   httpd_resp_set_type(req, "application/json");
@@ -169,7 +170,7 @@ esp_err_t handler_logout(httpd_req_t* req) {
   // server-side (not just expired on the client).
   init();
   httpd_resp_set_hdr(req, "Set-Cookie",
-                     "tbsid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+                     "tbsid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
   httpd_resp_set_type(req, "application/json");
   ESP_LOGI(TAG, "User logged out — session token rotated");
   return httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -219,7 +220,7 @@ esp_err_t handler_set_password(httpd_req_t* req) {
   // Issue a fresh session cookie now that auth is enabled.
   char cookie_hdr[128];
   snprintf(cookie_hdr, sizeof(cookie_hdr),
-           "tbsid=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400",
+           "tbsid=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000",
            g_session_token);
   httpd_resp_set_hdr(req, "Set-Cookie", cookie_hdr);
   httpd_resp_set_type(req, "application/json");

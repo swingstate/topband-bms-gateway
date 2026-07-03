@@ -95,6 +95,38 @@ esp_err_t handle_config_post(httpd_req_t* req) {
   Config new_cfg = app::get_config();
   json_to_config(doc, new_cfg);
 
+  // Normalize and validate BLE MAC addresses before general validation.
+  // mac_normalize accepts colons, hyphens, or bare 12-hex-char input (any case)
+  // and stores canonical lowercase colon form. Returns a UI-facing error string
+  // on invalid non-empty input so the owner sees a clear message inline, not
+  // just a serial warning that silently disabled decode.
+  {
+    char normalized[18];
+    char mac_err[96];
+    if (new_cfg.ble_shunt_mac[0] != '\0') {
+      if (!storage::mac_normalize(new_cfg.ble_shunt_mac, normalized, nullptr, mac_err, sizeof(mac_err))) {
+        ESP_LOGW(TAG, "config POST: shunt MAC rejected: %s", mac_err);
+        return send_json_error(req, 400, mac_err);
+      }
+      snprintf(new_cfg.ble_shunt_mac, sizeof(new_cfg.ble_shunt_mac), "%s", normalized);
+    }
+    if (new_cfg.ble_mppt_mac[0] != '\0') {
+      if (!storage::mac_normalize(new_cfg.ble_mppt_mac, normalized, nullptr, mac_err, sizeof(mac_err))) {
+        ESP_LOGW(TAG, "config POST: mppt MAC rejected: %s", mac_err);
+        return send_json_error(req, 400, mac_err);
+      }
+      snprintf(new_cfg.ble_mppt_mac, sizeof(new_cfg.ble_mppt_mac), "%s", normalized);
+    }
+    // wifi_bssid: optional BSSID pin. Empty = auto-select (valid); non-empty must parse.
+    if (new_cfg.wifi_bssid[0] != '\0') {
+      if (!storage::mac_normalize(new_cfg.wifi_bssid, normalized, nullptr, mac_err, sizeof(mac_err))) {
+        ESP_LOGW(TAG, "config POST: wifi_bssid rejected: %s", mac_err);
+        return send_json_error(req, 400, mac_err);
+      }
+      snprintf(new_cfg.wifi_bssid, sizeof(new_cfg.wifi_bssid), "%s", normalized);
+    }
+  }
+
   // Validate.
   char field_err[64] = {};
   ValidationError verr = storage::validate(new_cfg, field_err, sizeof(field_err));

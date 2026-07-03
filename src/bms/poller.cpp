@@ -356,6 +356,15 @@ static void control_task_entry(void* param) {
           local_stats.pack[i].errors++;
           continue;
         }
+        // A checksum-valid frame from the wrong address is a late reply from a
+        // previous poll; attributing it to pack i would corrupt safety inputs.
+        if (bms_id_out != i) {
+          ESP_LOGW(TAG, "analog addr mismatch: polled=%u got=%u — frame discarded",
+                   i, bms_id_out);
+          local_stats.wrong_addr++;
+          local_stats.pack[i].errors++;
+          continue;
+        }
 
         bms::protocol::tb_analog_values_fixed_point parsed{};
         auto perr = bms::protocol::interpret_analog_values_fixed_point(payload, payload_len, parsed);
@@ -386,12 +395,19 @@ static void control_task_entry(void* param) {
               const uint8_t* pl = nullptr; size_t pl_len = 0;
               if (bms::protocol::parse_response_header(rx_buf, rxlen, id_out, rtn_out, &pl, pl_len)
                     == bms::protocol::ParseError::Ok && rtn_out == bms::protocol::TB_RTN_OK) {
-                bms::protocol::tb_alarm_info ai{};
-                if (bms::protocol::interpret_alarm_info(pl, pl_len, ai) == bms::protocol::ParseError::Ok) {
-                  now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-                  bms::fill_from_alarm(ai, now_ms, sys->pack[rr]);
-                  local_stats.alarm_polls_ok++;
-                } else { local_stats.alarm_polls_err++; }
+                if (id_out != rr) {
+                  // Late reply from a previous poll — discard (review F1).
+                  ESP_LOGW(TAG, "alarm addr mismatch: polled=%u got=%u — frame discarded", rr, id_out);
+                  local_stats.wrong_addr++;
+                  local_stats.alarm_polls_err++;
+                } else {
+                  bms::protocol::tb_alarm_info ai{};
+                  if (bms::protocol::interpret_alarm_info(pl, pl_len, ai) == bms::protocol::ParseError::Ok) {
+                    now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                    bms::fill_from_alarm(ai, now_ms, sys->pack[rr]);
+                    local_stats.alarm_polls_ok++;
+                  } else { local_stats.alarm_polls_err++; }
+                }
               } else { local_stats.alarm_polls_err++; }
             } else { local_stats.alarm_polls_err++; }
           } else { local_stats.alarm_polls_err++; }
@@ -407,21 +423,28 @@ static void control_task_entry(void* param) {
               const uint8_t* pl = nullptr; size_t pl_len = 0;
               if (bms::protocol::parse_response_header(rx_buf, rxlen, id_out, rtn_out, &pl, pl_len)
                     == bms::protocol::ParseError::Ok && rtn_out == bms::protocol::TB_RTN_OK) {
-                bms::protocol::tb_system_parameter sp{};
-                if (bms::protocol::interpret_system_parameter(pl, pl_len, sp) == bms::protocol::ParseError::Ok) {
-                  now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-                  bms::fill_from_sysparam(sp, now_ms, sys->pack[rr]);
-                  // Update firmware-side cache so sysparam persists between polls.
-                  s_sysparam_cache[rr] = {
-                    true, now_ms,
-                    sp.cell_high_v, sp.cell_low_v,
-                    sp.module_high_v, sp.module_low_v, sp.module_under_v,
-                    sp.charge_high_t, sp.charge_low_t,
-                    sp.discharge_high_t, sp.discharge_low_t,
-                    sp.charge_max_a, sp.discharge_max_a,
-                  };
-                  local_stats.sysparam_polls_ok++;
-                } else { local_stats.sysparam_polls_err++; }
+                if (id_out != rr) {
+                  // Late reply from a previous poll — discard (review F1).
+                  ESP_LOGW(TAG, "sysparam addr mismatch: polled=%u got=%u — frame discarded", rr, id_out);
+                  local_stats.wrong_addr++;
+                  local_stats.sysparam_polls_err++;
+                } else {
+                  bms::protocol::tb_system_parameter sp{};
+                  if (bms::protocol::interpret_system_parameter(pl, pl_len, sp) == bms::protocol::ParseError::Ok) {
+                    now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                    bms::fill_from_sysparam(sp, now_ms, sys->pack[rr]);
+                    // Update firmware-side cache so sysparam persists between polls.
+                    s_sysparam_cache[rr] = {
+                      true, now_ms,
+                      sp.cell_high_v, sp.cell_low_v,
+                      sp.module_high_v, sp.module_low_v, sp.module_under_v,
+                      sp.charge_high_t, sp.charge_low_t,
+                      sp.discharge_high_t, sp.discharge_low_t,
+                      sp.charge_max_a, sp.discharge_max_a,
+                    };
+                    local_stats.sysparam_polls_ok++;
+                  } else { local_stats.sysparam_polls_err++; }
+                }
               } else { local_stats.sysparam_polls_err++; }
             } else { local_stats.sysparam_polls_err++; }
           }

@@ -11,4 +11,8 @@ esp_err_t handle_history(httpd_req_t* req);
 // CSV export of full history for analytics.
 esp_err_t handle_history_export(httpd_req_t* req);
 
+// GET /api/solar-day
+// Returns today's PV power curve (PSRAM-only solar day ring, 5-min cadence).
+esp_err_t handle_solar_day(httpd_req_t* req);
+
 }  // namespace web

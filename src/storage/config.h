@@ -18,7 +18,20 @@
 //           sizeof(Config) grows 692 → 696 B (4-byte alignment padding).
 //           Migration: existing devices get Manual (preserves current behavior);
 //           fresh installs (DEFAULT_CONFIG) get Auto.
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 6;
+// v6 → v7: added BLE source config fields (V3.1 Victron BLE spike).
+//           sizeof(Config) grows 696 → 800 B.
+//           Migration: all BLE fields default to disabled/empty (safe default-off).
+// v7 → v8: added wifi_bssid (optional BSSID pin) and wifi_rssi_threshold.
+//           sizeof(Config) grows 800 → 816 B.
+//           Migration: wifi_bssid = '' (auto-select), wifi_rssi_threshold = -127 (no floor,
+//           preserves existing behaviour for all existing sites).
+// v8 → v9: added mqtt_solar_passthrough_topic (V3.1 OpenDTU display-only integration).
+//           sizeof(Config) grows 816 → 880 B.
+//           Migration: mqtt_solar_passthrough_topic = '' (feature off; owner configures later).
+// v9 → v10: added shunt_current_mode (uint8_t) — user-selectable aggregation rule.
+//            sizeof(Config) grows 880 → 884 B (1 B field + 3 B tail padding).
+//            Migration: Auto (preserves existing behaviour).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 10;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -197,7 +210,61 @@ struct Config {
     Manual     = 2,
   };
   BatteryConfigMode battery_config_mode;
-  // 3 bytes implicit tail padding → sizeof(Config) = 696 B
+
+  // ── BLE source config (v7, V3.1 Victron BLE spike) ──────────────────────────
+  // ble_shunt_enabled / ble_mppt_enabled default false.
+  // SAFETY INVARIANT: NimBLE stack is NEVER initialized when both are false.
+  // System behaviour with both false is byte-for-byte identical to V3.0.
+  //
+  // ble_*_key: advertisement decryption keys from VictronConnect app.
+  // SECRETS — excluded from backup export, never logged in plaintext,
+  // leave-blank-to-keep in UI (same pattern as notify_telegram_token).
+  // Format: 32 hex chars = 16 key bytes, e.g. "aabbccddaabbccddaabbccddaabbccdd".
+  bool ble_shunt_enabled;
+  bool ble_mppt_enabled;
+  char ble_shunt_mac[18];    // SmartShunt BLE MAC "AA:BB:CC:DD:EE:FF"
+  char ble_mppt_mac[18];     // MPPT BLE MAC
+  char ble_shunt_key[33];    // SmartShunt adv decryption key (32 hex chars) — SECRET
+  char ble_mppt_key[33];     // MPPT adv decryption key (32 hex chars) — SECRET
+  // (3 bytes former v7 tail padding consumed by v8 fields below)
+
+  // ── WiFi AP selection (v8) ───────────────────────────────────────────────────
+  // Fixes sticky-client behaviour in multi-AP (mesh) environments.
+  // The STA is configured with WIFI_ALL_CHANNEL_SCAN + WIFI_CONNECT_AP_BY_SIGNAL
+  // at every boot, regardless of these fields, so signal-based selection is always
+  // active even without a pin.
+  //
+  // wifi_bssid: optional BSSID pin ("xx:xx:xx:xx:xx:xx", lowercase colon form).
+  //   Empty = auto-select the strongest AP of the configured SSID (default).
+  //   Non-empty = prefer that exact AP; falls back to auto-select after
+  //   WIFI_BSSID_PIN_MAX_RETRY failures so connectivity is never permanently lost.
+  //   Normalised via mac_normalize on config POST (same as BLE MACs).
+  //
+  // wifi_rssi_threshold: minimum RSSI (dBm) an AP must have to be selected.
+  //   -127 = disabled (accept any signal strength; ESP-IDF default).
+  //   Recommended range: -80 to -65. Too high risks no connection on weak-signal
+  //   sites; too low keeps the sticky-AP problem if a very weak AP matches first.
+  char  wifi_bssid[18];          // canonical "xx:xx:xx:xx:xx:xx" or empty
+  int8_t wifi_rssi_threshold;    // dBm floor; -127 = no floor
+
+  // ── Solar Passthrough (v9, V3.1 OpenDTU display-only integration) ────────────
+  // MQTT topic published by OpenDTU-OnBattery for the Solar-Passthrough state.
+  // Empty = feature disabled; gateway subscribes and displays on Solar detail page.
+  // Display-only — no control sent to the DTU/inverter. Read-only monitoring.
+  char mqtt_solar_passthrough_topic[64];
+
+  // ── Shunt current aggregation mode (v10) ─────────────────────────────────────
+  // Controls which source provides TOTAL_CURRENT when SmartShunt is enabled.
+  //   Auto       — BMS leads; shunt takes over below 0.5 A (BMS dead-zone).
+  //   ShuntLeads — SmartShunt always leads; BMS is fallback when shunt unavailable.
+  //   BmsLeads   — BMS always leads; shunt reading is supplementary/display only.
+  enum class ShuntCurrentMode : uint8_t {
+    Auto       = 0,
+    ShuntLeads = 1,
+    BmsLeads   = 2,
+  };
+  ShuntCurrentMode shunt_current_mode;
+  // sizeof(Config) = 884 B (880 + 1 field + 3 B tail padding)
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────
@@ -218,6 +285,24 @@ enum class ValidationError : uint8_t {
 };
 
 namespace storage {
+  // Normalize a BLE MAC address from any accepted input form to canonical lowercase
+  // colon-separated "xx:xx:xx:xx:xx:xx" stored in out_canonical[18].
+  //
+  // Accepted input forms (case-insensitive, surrounding whitespace tolerated):
+  //   "E3:8D:48:C8:52:B4"  colon-separated
+  //   "e3-8d-48-c8-52-b4"  hyphen-separated
+  //   "e38d48c852b4"        bare 12 hex chars (no separators)
+  //
+  // Special cases:
+  //   empty string or all-zero MAC → out_canonical[0] = '\0', returns true (= not configured)
+  //   if out_bytes is non-null, 6 parsed byte values are written on success
+  //
+  // Returns false for anything else; writes a UI-facing error string to err_msg if provided.
+  bool mac_normalize(const char* in,
+                     char out_canonical[18],
+                     uint8_t* out_bytes,
+                     char* err_msg, size_t err_len);
+
   // Serializes cfg into buf (deterministic byte layout; schema_version at offset 0).
   // Returns false if buf_size < sizeof(Config).
   bool serialize(const Config& cfg, uint8_t* buf, size_t buf_size, size_t& out_len);

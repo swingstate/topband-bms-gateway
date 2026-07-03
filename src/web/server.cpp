@@ -8,6 +8,8 @@
 #include "handlers_alerts.h"
 #include "handlers_ota.h"
 #include "handlers_notify.h"
+#include "handlers_net_diag.h"
+#include "handlers_drift.h"
 #include "handlers_static.h"
 #include "app/self_test.h"
 #include "esp_log.h"
@@ -47,13 +49,14 @@ static esp_err_t auth_dispatch(httpd_req_t* req) {
 
 // Statically allocated auth context slots (one per protected route).
 // We need as many as there are auth-required routes.
-static AuthCtx g_auth_ctx[30];
+static constexpr int AUTH_CTX_MAX = 36;
+static AuthCtx g_auth_ctx[AUTH_CTX_MAX];
 static int     g_auth_ctx_count = 0;
 
 static void reg_auth(httpd_handle_t srv,
                      const char* uri, httpd_method_t method,
                      esp_err_t (*handler)(httpd_req_t*)) {
-  if (g_auth_ctx_count >= 30) {
+  if (g_auth_ctx_count >= AUTH_CTX_MAX) {
     ESP_LOGE(TAG, "reg_auth: out of context slots");
     return;
   }
@@ -115,10 +118,17 @@ bool start_httpd(const Config& /*cfg*/) {
   // ── History endpoints (Phase H2) ─────────────────────────────────────────
   reg_auth(g_server, "/api/history",            HTTP_GET, handle_history);
   reg_auth(g_server, "/api/history/export.csv", HTTP_GET, handle_history_export);
+  reg_auth(g_server, "/api/solar-day",          HTTP_GET, handle_solar_day);
+  reg_auth(g_server, "/api/drift",              HTTP_GET, handle_drift);
 
   // ── Diag and alerts endpoints (Phase H3a) ─────────────────────────────────
   reg_auth(g_server, "/api/diag",              HTTP_GET, handle_diag);
   reg_auth(g_server, "/api/diag/coredump.bin", HTTP_GET, handle_diag_coredump);
+#if BLE_SPIKE_DEV_BURST
+  // Dev-only TLS burst trigger for V3.1 Phase A gate-hardening.
+  // Remove with BLE_SPIKE_DEV_BURST flag when Phase A hardware verification is done.
+  reg_auth(g_server, "/api/diag/tls-burst",    HTTP_POST, handle_diag_tls_burst);
+#endif
   reg_auth(g_server, "/api/alerts",            HTTP_GET, handle_alerts_get);
   reg_auth(g_server, "/api/alerts",  HTTP_DELETE, handle_alerts_delete);
 
@@ -140,6 +150,10 @@ bool start_httpd(const Config& /*cfg*/) {
            web::handle_notify_status_get);
   reg_auth(g_server, "/api/notify/alert-types", HTTP_GET,
            web::handle_notify_alert_types_get);
+
+  // ── Network self-test (staged DNS→TCP→TLS diagnostic) ─────────────────────
+  reg_auth(g_server, "/api/net/self-test", HTTP_POST, web::handle_net_diag_post);
+  reg_auth(g_server, "/api/net/self-test", HTTP_GET,  web::handle_net_diag_get);
 
   // Static files — catch-all last (handles login.html, setup.html, etc.)
   reg(g_server, "/*", HTTP_GET, handle_static);

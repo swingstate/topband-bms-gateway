@@ -36,6 +36,10 @@ struct PollerStats {
   uint32_t alarm_polls_err;
   uint32_t sysparam_polls_ok;
   uint32_t sysparam_polls_err;
+  // Frames with a valid checksum but a responder address that does not match
+  // the polled pack (late reply from a previous poll, bus collision). Such
+  // frames are discarded, never attributed to the wrong pack (review F1).
+  uint32_t wrong_addr;
   uint32_t cycle_max_ms;
   uint32_t cycle_avg_ms;
 

@@ -67,6 +67,8 @@ const routes = {
   '/':          renderDashboard,
   '/dashboard': renderDashboard,
   '/battery':   renderBattery,
+  '/solar':     renderSolar,
+  '/shunt':     () => navigate('/battery'),
   '/general':   renderSettings,   // backward-compat alias
   '/settings':  renderSettings,
   '/network':   renderNetwork,
@@ -97,6 +99,22 @@ function navigate(path) {
   }
   // Stop battery detail polling when navigating away.
   if (!path.startsWith('/battery/')) stopBatteryDetailPoll();
+  // Cancel drift refresh timer when leaving the battery overview page.
+  if (path !== '/battery' && g_drift_timer) {
+    clearInterval(g_drift_timer);
+    g_drift_timer = null;
+  }
+  // Destroy solar chart and cancel its refresh timer when leaving the solar page.
+  if (path !== '/solar') {
+    if (g_solar_chart) { try { g_solar_chart.destroy(); } catch (_) {} g_solar_chart = null; }
+    if (g_solar_chart_timer) { clearInterval(g_solar_chart_timer); g_solar_chart_timer = null; }
+    g_solar_page_state = null;
+  }
+  // Drop dashboard chart references when leaving the dashboard (their DOM is about to be replaced).
+  if (path !== '/' && path !== '/dashboard') {
+    if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; g_chart_a_key = null; }
+    if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; g_chart_b_key = null; }
+  }
   history.pushState({}, '', path);
   renderPage(path);
   updateSidebarActive(path);
@@ -110,6 +128,7 @@ function updateSidebarActive(path) {
     if (href === path) { el.classList.add('active'); return; }
     if (path === '/' && href === '/') { el.classList.add('active'); return; }
     if (path.startsWith('/battery') && href === '/battery') { el.classList.add('active'); return; }
+    if (path === '/solar'  && href === '/solar')  { el.classList.add('active'); return; }
     if ((path === '/settings' || path === '/general') && href === '/settings') { el.classList.add('active'); return; }
     if (path === '/network' && href === '/network') { el.classList.add('active'); return; }
   });
@@ -152,6 +171,17 @@ function chargePill(current) {
   return pill('Idle', 'pill-idle');
 }
 
+const CS_LABELS = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
+function csLabel(cs)     { return CS_LABELS[cs] !== undefined ? CS_LABELS[cs] : `State ${cs}`; }
+function csPillClass(cs) {
+  return (cs === 3 || cs === 4) ? 'pill-charging'
+       : cs === 2 ? 'pill-discharging' : 'pill-idle';
+}
+function csPill(cs, extraStyle) {
+  const st = extraStyle ? ` style="${extraStyle}"` : '';
+  return `<span class="charging-pill ${csPillClass(cs)}"${st}>${csLabel(cs)}</span>`;
+}
+
 function formatRuntime(min) {
   if (min === undefined || min < 0) return '—';
   const h = Math.floor(min / 60);
@@ -180,13 +210,39 @@ let g_live = null;
 let g_poll_interval = null;
 let g_chart_a = null;
 let g_chart_b = null;
+let g_chart_a_key = null;   // series key last used to build g_chart_a
+let g_chart_b_key = null;   // series key last used to build g_chart_b
+let g_solar_chart = null;
+let g_solar_chart_timer = null;     // 5-min refresh timer for solar day chart
+let g_solar_now_ts    = 0;          // "now" marker timestamp — read by uPlot draw hook
+let g_solar_peak_w    = 0;          // peak PV watt value — read by uPlot draw hook
+let g_solar_peak_ts   = 0;          // timestamp of peak — read by uPlot draw hook
+let g_solar_page_state = null;      // 'disabled' | 'enabled' — what's currently rendered
+let g_solar_pt_configured = false;  // ptConfigured state of the currently-rendered page
+let g_drift_data   = null;          // latest /api/drift response
+let g_drift_timer  = null;          // 30-s refresh timer for drift section
+const g_drift_open = new Set();     // pack ids (numeric) currently expanded
 
 /* ── Config (loaded once at boot for alarm thresholds) ──────────────────────── */
 async function fetchConfigOnce() {
   try {
     const r = await apiFetch('/api/config');
-    if (r && r.ok) g_config = await r.json();
+    if (r && r.ok) {
+      g_config = await r.json();
+      updateSolarNavVisibility();
+      // Solar page may have rendered before config loaded (g_config was null → early return).
+      // Re-render now so loadSolarChart() fires on entry, not on the next poll tick.
+      if (window.location.pathname === '/solar' && g_solar_page_state !== 'enabled') {
+        renderSolar();
+      }
+    }
   } catch (e) { /* thresholds unavailable until config loads */ }
+}
+
+function updateSolarNavVisibility() {
+  const navSolar = document.getElementById('nav-solar');
+  if (!navSolar) return;
+  navSolar.style.display = (g_config && g_config.ble_mppt_enabled) ? '' : 'none';
 }
 
 /* ── Alarm threshold helpers ────────────────────────────────────────────────── */
@@ -248,6 +304,36 @@ function updateStatusBar() {
       canEl.className = 'status-pill pill-can' + (hasAlarm || txFail ? ' alarm' : '');
     }
   }
+
+  // MPPT pill — shown only when MPPT is enabled in config.
+  const mpptEl = document.getElementById('status-mppt');
+  if (mpptEl && g_config) {
+    if (!g_config.ble_mppt_enabled) {
+      mpptEl.style.display = 'none';
+    } else {
+      mpptEl.style.display = '';
+      const src = (g_live && g_live.sources && g_live.sources.mppt) || {};
+      const seen = src.seen;
+      const stale = seen && src.ms_since_last_seen > 30000;
+      mpptEl.className = 'status-pill pill-mppt' + (seen && !stale ? '' : ' off');
+      mpptEl.textContent = 'MPPT';
+    }
+  }
+
+  // SHUNT pill — shown only when SmartShunt is enabled in config.
+  const shuntEl = document.getElementById('status-shunt');
+  if (shuntEl && g_config) {
+    if (!g_config.ble_shunt_enabled) {
+      shuntEl.style.display = 'none';
+    } else {
+      shuntEl.style.display = '';
+      const src = (g_live && g_live.sources && g_live.sources.shunt) || {};
+      const seen = src.seen;
+      const stale = seen && src.ms_since_last_seen > 30000;
+      shuntEl.className = 'status-pill pill-shunt' + (seen && !stale ? '' : ' off');
+      shuntEl.textContent = 'SHUNT';
+    }
+  }
 }
 
 let g_health = null;
@@ -305,6 +391,9 @@ function updateLiveUI() {
     updatePackCards();
   } else if (p === '/battery') {
     updateBatteryOverviewCards();
+    updateDriftNow();
+  } else if (p === '/solar') {
+    updateSolarValues();
   }
 }
 
@@ -322,6 +411,16 @@ function driftColor(driftV) {
   if (mv >= 100) return 'var(--amber)';
   return 'var(--accent)';
 }
+// Cell bar height for a LiFePO4 cell voltage. The old 2.5-4.2 V mapping was
+// a Li-ion range: LiFePO4 cells live between ~3.0 and 3.45 V, so all bars
+// rendered in a compressed upper band and looked identical (review U6).
+// 2.95-3.65 V spreads the working range across the full bar height.
+const CELL_BAR_MIN_V = 2.95;
+const CELL_BAR_MAX_V = 3.65;
+function cellBarPct(v) {
+  return Math.max(5, Math.min(100, ((v - CELL_BAR_MIN_V) / (CELL_BAR_MAX_V - CELL_BAR_MIN_V)) * 100));
+}
+
 function cellVColor(v) {
   if (v === null || v === undefined) return 'var(--text-primary)';
   if (v < 2.80 || v > 3.55)                               return 'var(--red)';
@@ -389,102 +488,440 @@ function updateDashboardCards() {
   const rtState = (g_live && g_live.runtime_est_state) || 'idle';
   const rtLabels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
 
+  // Sources section (MPPT / Shunt data from firmware aggregator).
+  const sources   = (g_live && g_live.sources) || {};
+  const mpptSrc   = sources.mppt || {};
+  const shuntSrc  = sources.shunt || {};
+  const curSrcId  = sources.battery_current_src || 'bms';
+  const curBadge  = `<span class="source-badge badge-${curSrcId}">${curSrcId.toUpperCase()}</span>`;
+
+  // MPPT tiles — only shown when MPPT enabled and seen.
+  const mpptEnabled = mpptSrc.enabled && mpptSrc.seen;
+  const pvPowerW    = mpptEnabled && mpptSrc.pv_power_valid  ? mpptSrc.pv_power_w    : null;
+  const pvVoltV     = mpptEnabled && mpptSrc.pv_v_valid      ? mpptSrc.pv_voltage_v  : null;
+  const pvCurrA     = mpptEnabled && mpptSrc.pv_i_valid      ? mpptSrc.pv_current_a  : null;
+  const yieldWh     = mpptEnabled && mpptSrc.yield_valid     ? mpptSrc.yield_today_wh : null;
+
+  // Solar Passthrough — Active indicator on the Solar Power tile (Active-only, 15 s staleness).
+  const ptSrcDash = sources.solar_passthrough || {};
+  const ptActiveDash = ptSrcDash.received &&
+                       (ptSrcDash.ms_since_last || 0) <= 15000 &&
+                       ptSrcDash.state;
+  const ptPill = ptActiveDash
+    ? ' <span class="charging-pill" style="font-size:10px;padding:2px 7px;background:var(--brand-teal);color:var(--brand-aubergine)">Passthrough</span>'
+    : '';
+
+  // Layout: 5 columns, 2 rows.
+  // Row 1: [Solar/CellMin] [Battery Power (Total)] [SOC] [Cell Drift] [Temperature]
+  // Row 2: [Yield/CellMax] [Current (total)]       [Pack Voltage] [Energy Today] [Runtime]
+  const col1top = mpptSrc.enabled ? {
+    label: 'Solar Power',
+    value: pvPowerW !== null ? fmt(pvPowerW, 0) : '—',
+    unit: 'W',
+    sub: mpptEnabled ? (csPill(mpptSrc.charge_state) + ptPill) : '—',
+    color: 'var(--text-primary)',
+    alarm: false,
+    src: 'mppt',
+  } : {
+    label: 'Cell Min',
+    value: cellMin !== null ? fmt(cellMin, 3) : '—',
+    unit: 'V',
+    sub: '',
+    color: cellVColor(cellMin),
+    alarm: alarmCellMin(cellMin),
+    src: 'bms',
+  };
+
+  const col1bot = mpptSrc.enabled ? {
+    label: 'Solar yield today',
+    value: yieldWh !== null ? fmt(yieldWh / 1000, 2) : '—',
+    unit: 'kWh',
+    sub: pvVoltV !== null ? `${fmt(pvVoltV, 1)} V / ${pvCurrA !== null ? fmt(pvCurrA, 1) : '—'} A` : '',
+    color: 'var(--text-primary)',
+    alarm: false,
+    src: 'mppt',
+  } : {
+    label: 'Cell Max',
+    value: cellMax !== null ? fmt(cellMax, 3) : '—',
+    unit: 'V',
+    sub: '',
+    color: cellVColor(cellMax),
+    alarm: alarmCellMax(cellMax),
+    src: 'bms',
+  };
+
   const cards = [
-    {
-      label: 'State of Charge',
-      value: soc !== null ? fmt(soc, 0) : '—',
-      unit: '%',
-      sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '',
-      color: socColor(soc),
-      alarm: alarmSoc(soc),
-    },
-    {
-      label: 'Power',
-      value: power !== null ? fmt(power, 0) : '—',
-      unit: 'W',
-      sub: chargePill(cur),
-      color: 'var(--text-primary)',
-      alarm: false,
-    },
-    {
-      label: 'Current (total)',
-      value: cur !== null ? fmtA(cur) : '—',
-      unit: 'A',
-      sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`,
-      color: 'var(--text-primary)',
-      alarm: false,
-    },
-    {
-      label: 'Pack Voltage',
-      value: volt !== null ? fmt(volt, 2) : '—',
-      unit: 'V',
-      sub: `CVL ${fmt(cvl, 2)} V`,
-      color: 'var(--text-primary)',
-      alarm: alarmVolt(volt),
-    },
-    {
-      label: 'Cell Min',
-      value: cellMin !== null ? fmt(cellMin, 3) : '—',
-      unit: 'V',
-      sub: '',
-      color: cellVColor(cellMin),
-      alarm: alarmCellMin(cellMin),
-    },
-    {
-      label: 'Cell Max',
-      value: cellMax !== null ? fmt(cellMax, 3) : '—',
-      unit: 'V',
-      sub: '',
-      color: cellVColor(cellMax),
-      alarm: alarmCellMax(cellMax),
-    },
-    {
-      label: 'Cell Drift',
-      value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—',
-      unit: 'mV',
-      sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">⚠ Imbalance</span>' : 'Normal',
-      color: driftColor(cellDrift),
-      alarm: alarmDrift(cellDrift),
-    },
-    {
-      label: 'Temperature',
-      value: temp !== null ? fmt(temp, 1) : '—',
-      unit: '°C',
-      sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal',
-      color: 'var(--text-primary)',
-      alarm: alarmTemp(temp),
-    },
-    {
-      label: 'Energy Today',
-      value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—',
-      unit: 'kWh in',
-      sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '',
-      color: 'var(--text-primary)',
-      alarm: false,
-    },
-    {
-      label: 'Runtime Est.',
-      value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—',
-      unit: '',
-      sub: rtLabels[rtState] || 'Idle',
-      color: 'var(--text-primary)',
-      alarm: false,
-    },
+    // Row 1
+    col1top,
+    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
+    { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: 'bms' },
+    { label: 'Cell Drift',            value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
+    { label: 'Temperature',           value: temp !== null ? fmt(temp, 1) : '—',   unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
+    // Row 2
+    col1bot,
+    { label: 'Current (total)',  value: cur !== null ? fmtA(cur) : '—',   unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,           src: curSrcId },
+    { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: 'bms' },
+    { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
   ];
 
-  grid.innerHTML = '';
-  cards.forEach(c => {
-    const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
-    // Omit inline color when in alarm state so the CSS .alarm rule can control the value color.
-    const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
-    card.innerHTML = `
-      <div class="metric-label">${c.label}</div>
-      <div class="metric-value" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
-      <div class="metric-sub">${c.sub}</div>
-    `;
-    grid.appendChild(card);
+  // Build card structure once (or when count / col-1 label changes — MPPT toggled).
+  // Then update values in-place on subsequent polls to avoid metric-tile flicker.
+  const existing = grid.querySelectorAll('.metric-card');
+  const col1Label = cards[0].label;
+  const needsBuild = existing.length !== cards.length
+    || (existing[0] && existing[0].querySelector('.metric-label').textContent !== col1Label);
+
+  if (needsBuild) {
+    grid.innerHTML = '';
+    cards.forEach((c, i) => {
+      const card = el('div', 'card metric-card' + (c.alarm ? ' alarm' : ''));
+      card.id = `mc-${i}`;
+      const valueStyle = c.alarm ? '' : `style="color:${c.color}"`;
+      const srcBadge = c.src ? `<span class="card-src card-src-${c.src}" id="mc-${i}-src">${c.src.toUpperCase()}</span>` : '';
+      card.innerHTML = `
+        <div class="metric-label">${c.label}</div>
+        <div class="metric-value" id="mc-${i}-val" ${valueStyle}>${c.value}<span class="metric-unit">${c.unit}</span></div>
+        <div class="metric-footer">
+          <span class="metric-sub" id="mc-${i}-sub">${c.sub}</span>
+          ${srcBadge}
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+    return;
+  }
+
+  // In-place update — only touch text/style, no DOM node creation.
+  cards.forEach((c, i) => {
+    const card = document.getElementById(`mc-${i}`);
+    if (!card) return;
+    card.className = 'card metric-card' + (c.alarm ? ' alarm' : '');
+    const valEl = document.getElementById(`mc-${i}-val`);
+    if (valEl) {
+      valEl.style.color = c.alarm ? '' : c.color;
+      valEl.innerHTML = c.value + `<span class="metric-unit">${c.unit}</span>`;
+    }
+    const subEl = document.getElementById(`mc-${i}-sub`);
+    if (subEl) subEl.innerHTML = c.sub;
   });
 }
+
+/* ── Solar detail page ───────────────────────────────────────────────────────── */
+// renderSolar() builds the page structure ONCE with stable element IDs.
+// updateSolarValues() handles all 2-second live updates without touching the structure.
+function renderSolar() {
+  const root = document.getElementById('page-root');
+
+  if (!g_config || !g_config.ble_mppt_enabled) {
+    root.innerHTML = `
+      <div style="max-width:520px;margin:0 auto">
+        <div class="card" style="padding:18px">
+          <div style="display:flex;align-items:center;gap:14px">
+            <div class="pack-status-dot offline" style="flex-shrink:0"></div>
+            <div>
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px">Not enabled</div>
+              <div style="font-size:12px;color:var(--text-muted)">MPPT BLE source is disabled.
+                Enable it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; BLE</a>.</div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    g_solar_page_state = 'disabled';
+    return;
+  }
+
+  const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
+  g_solar_page_state = 'enabled';
+  g_solar_pt_configured = ptConfigured;
+
+  root.innerHTML = `
+    <div style="max-width:680px;margin:0 auto" id="solar-page-root">
+
+      <!-- Status strip — values updated in-place by updateSolarValues() -->
+      <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="pack-status-dot offline" id="solar-status-dot" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px" id="solar-status-text">—</span>
+        <span id="solar-charge-pill"></span>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="solar-last-seen">—</span>
+      </div>
+
+      <!-- PV Input + Yield Today -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">PV Input</div>
+          <div>
+            <span id="solar-pv-power" style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">—</span>
+            <span id="solar-pv-unit" style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px;display:none">W</span>
+          </div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;justify-content:center;padding:16px 20px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Yield today</div>
+          <div>
+            <span id="solar-yield-kwh" style="font-size:38px;font-weight:700;line-height:1;color:var(--brand-teal)">—</span>
+            <span id="solar-yield-unit" style="font-size:15px;font-weight:400;color:var(--text-muted);margin-left:3px;display:none">kWh</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Solar Today chart (built once, data refreshed every 5 min via setData) -->
+      <div class="card" style="padding:14px 16px 10px;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px" id="solar-chart-title">Solar Today</div>
+        <div id="solar-chart-plot"></div>
+      </div>
+
+      <!-- MPPT Charger Output (always in DOM, shown when batt data is valid) -->
+      <div id="solar-output-section" class="card" style="display:none;padding-top:14px;padding-bottom:14px;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);padding:0 16px 8px">MPPT Charger Output</div>
+        <div style="display:flex;align-items:center">
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Power</div>
+            <div id="solar-output-power"><span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span></div>
+          </div>
+          <div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Voltage</div>
+            <div id="solar-output-volt"><span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span></div>
+          </div>
+          <div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Current</div>
+            <div id="solar-output-curr"><span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span></div>
+          </div>
+        </div>
+      </div>
+      <!-- Solar Passthrough -->
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Solar Passthrough</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;opacity:.75">Only relevant for setups controlled by OpenDTU-onBattery.</div>
+      </div>
+      ${ptConfigured ? `
+      <div class="card" style="padding:16px 18px" id="solar-pt-card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px" id="solar-pt-header">
+          <span id="solar-pt-pill"></span>
+          <span id="solar-pt-desc" style="font-size:12px;color:var(--text-muted);line-height:1.45;display:none">Solar energy is fed directly into the system, bypassing the battery.</span>
+        </div>
+        <div class="net-kv-grid">
+          <div class="net-kv-row"><span>MQTT Topic</span><span style="font-family:monospace;font-size:12px">${escHtml(g_config.mqtt_solar_passthrough_topic || '')}</span></div>
+          <div class="net-kv-row" id="solar-pt-age-row" style="display:none"><span>Last update</span><span id="solar-pt-age">—</span></div>
+        </div>
+      </div>` : `
+      <div class="card" style="padding:18px">
+        <div style="display:flex;align-items:center;gap:14px">
+          <div class="pack-status-dot offline" style="flex-shrink:0"></div>
+          <div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:4px">Not configured</div>
+            <div style="font-size:12px;color:var(--text-muted)">No passthrough topic set.
+              Configure it in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">General &rarr; MQTT</a>.</div>
+          </div>
+        </div>
+      </div>`}
+
+    </div>
+  `;
+
+  updateSolarValues();
+  loadSolarChart();
+}
+
+/* ── Solar in-place value updater (called on every 2-second live poll) ────────── */
+function updateSolarValues() {
+  const sources = (g_live && g_live.sources) || {};
+  const m  = sources.mppt || {};
+  const pt = sources.solar_passthrough || {};
+
+  const mpptEnabled  = !!(g_config && g_config.ble_mppt_enabled);
+  const ptConfigured = !!(g_config && g_config.mqtt_solar_passthrough_topic);
+
+  // Rebuild DOM if structural state changed (MPPT toggled, passthrough configured/not, or fresh nav).
+  if (!mpptEnabled || g_solar_page_state !== 'enabled' || ptConfigured !== g_solar_pt_configured
+      || !document.getElementById('solar-page-root')) {
+    renderSolar();
+    return;
+  }
+
+  // ── Status strip ─────────────────────────────────────────────────────────────
+  const cs      = m.charge_state;
+  const seen    = !!m.seen;
+  const staleMs = m.ms_since_last_seen || 0;
+  const stale   = seen && staleMs > 30000;
+
+  const dotEl = document.getElementById('solar-status-dot');
+  if (dotEl) dotEl.className = 'pack-status-dot ' + (seen && !stale ? 'online' : 'offline');
+
+  const textEl = document.getElementById('solar-status-text');
+  if (textEl) textEl.textContent = seen && !stale ? 'Receiving data' : seen ? 'Stale' : 'No data';
+
+  const pillEl = document.getElementById('solar-charge-pill');
+  if (pillEl) pillEl.innerHTML = seen ? csPill(cs, 'margin:0') : '';
+
+  const lastSeenEl = document.getElementById('solar-last-seen');
+  if (lastSeenEl) lastSeenEl.textContent = 'Last seen: ' + (seen ? Math.round(staleMs / 1000) + ' s ago' : '—');
+
+  // ── PV Input + Yield ─────────────────────────────────────────────────────────
+  const pvPower  = m.pv_power_valid ? fmt(m.pv_power_w, 0) : null;
+  const yieldKwh = m.yield_valid    ? fmt((m.yield_today_wh || 0) / 1000, 2) : null;
+
+  const pvPowerEl = document.getElementById('solar-pv-power');
+  const pvUnitEl  = document.getElementById('solar-pv-unit');
+  if (pvPowerEl) pvPowerEl.textContent = pvPower !== null ? pvPower : '—';
+  if (pvUnitEl)  pvUnitEl.style.display = pvPower !== null ? '' : 'none';
+
+  const yieldEl  = document.getElementById('solar-yield-kwh');
+  const yieldUEl = document.getElementById('solar-yield-unit');
+  if (yieldEl)  yieldEl.textContent = yieldKwh !== null ? yieldKwh : '—';
+  if (yieldUEl) yieldUEl.style.display = yieldKwh !== null ? '' : 'none';
+
+  // ── MPPT Charger Output ───────────────────────────────────────────────────────
+  const showOutput = !!(m.batt_v_valid || m.batt_i_valid);
+  const outSection = document.getElementById('solar-output-section');
+  if (outSection) outSection.style.display = showOutput ? '' : 'none';
+
+  if (showOutput) {
+    const battV     = m.batt_v_valid ? fmt(m.batt_voltage_v, 2) : null;
+    const battA     = m.batt_i_valid ? fmt(m.batt_current_a, 1) : null;
+    const battPower = (m.batt_v_valid && m.batt_i_valid) ? fmt(m.batt_voltage_v * m.batt_current_a, 0) : null;
+
+    function setSolarOutCell(id, value, unit, accent) {
+      const cel = document.getElementById(id);
+      if (!cel) return;
+      if (value !== null) {
+        cel.innerHTML = `<span style="font-size:28px;font-weight:700;line-height:1;color:${accent || 'var(--text-primary)'}">` +
+          value + `</span><span style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px">${unit}</span>`;
+      } else {
+        cel.innerHTML = '<span style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</span>';
+      }
+    }
+    setSolarOutCell('solar-output-power', battPower, 'W', 'var(--brand-teal)');
+    setSolarOutCell('solar-output-volt',  battV,     'V', null);
+    setSolarOutCell('solar-output-curr',  battA,     'A', null);
+  }
+
+  // ── Passthrough note ─────────────────────────────────────────────────────────
+  const PASSTHROUGH_STALE_MS = 15000;
+  const ptAgeMs  = pt.ms_since_last || 0;
+  const ptStale  = pt.received && ptAgeMs > PASSTHROUGH_STALE_MS;
+  const ptActive = pt.received && !ptStale && pt.state;
+
+  // ── Passthrough card values (only when ptConfigured, i.e. element IDs exist) ─
+  if (ptConfigured) {
+    const ptPillEl = document.getElementById('solar-pt-pill');
+    const ptDescEl = document.getElementById('solar-pt-desc');
+    const ptAgeEl  = document.getElementById('solar-pt-age');
+    const ptAgeRow = document.getElementById('solar-pt-age-row');
+
+    const pillHtml = ptActive
+      ? '<span class="charging-pill pill-charging" style="font-size:11px;padding:2px 8px">ACTIVE</span>'
+      : (!pt.received || ptStale)
+        ? '<span class="charging-pill pill-idle" style="font-size:11px;padding:2px 8px;opacity:.7">UNKNOWN</span>'
+        : '<span class="charging-pill pill-idle" style="font-size:11px;padding:2px 8px">INACTIVE</span>';
+
+    if (ptPillEl) ptPillEl.innerHTML = pillHtml;
+    if (ptDescEl) ptDescEl.style.display = ptActive ? '' : 'none';
+    if (ptAgeEl)  ptAgeEl.textContent = pt.received ? Math.round(ptAgeMs / 1000) + ' s ago' : '—';
+    if (ptAgeRow) ptAgeRow.style.display = pt.received ? '' : 'none';
+  }
+}
+
+async function loadSolarChart() {
+  if (typeof uPlot === 'undefined') return;
+  const plotEl = document.getElementById('solar-chart-plot');
+  if (!plotEl) return;
+
+  if (g_solar_chart) { try { g_solar_chart.destroy(); } catch (_) {} g_solar_chart = null; }
+  if (g_solar_chart_timer) { clearInterval(g_solar_chart_timer); g_solar_chart_timer = null; }
+
+  let d = null;
+  try {
+    const r = await apiFetch('/api/solar-day');
+    if (r && r.ok) d = await r.json();
+  } catch (_) {}
+
+  const parsed = d ? buildSolarChartData(d) : null;
+
+  if (!parsed) {
+    const nowTs = (d && d.now_ts_s) || 0;
+    const msg = nowTs === 0 ? 'Waiting for NTP time sync…' : 'No solar data yet — first point in ~5 min';
+    plotEl.innerHTML = `<p class="chart-empty">${msg}</p>`;
+    g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
+    return;
+  }
+
+  g_solar_now_ts  = parsed.nowTs;
+  g_solar_peak_w  = parsed.peakW;
+  g_solar_peak_ts = parsed.peakTs;
+
+  const titleEl = document.getElementById('solar-chart-title');
+  if (titleEl) titleEl.textContent = 'SOLAR TODAY';
+
+  // buildOrUpdateChart is the same function dashboard charts use; solar passes a
+  // customizeOpts callback for the taller canvas, y-min=0, no legend, and draw hooks.
+  const result = buildOrUpdateChart(plotEl, 'solar', parsed.data, null, null, (opts) => {
+    opts.height      = 200;
+    opts.padding     = [10, 0, 0, 0];
+    opts.legend      = { show: false };
+    opts.axes[1].size = 56;
+    opts.axes[1].gap  = 4;
+    opts.scales.x    = { time: true, range: [parsed.midnight, parsed.midnight + 86400] };
+    opts.scales.y    = { range: (u, dataMin, dataMax) => [0, (dataMax == null ? 1 : dataMax) * 1.1] };
+    opts.hooks = {
+      draw: [(u) => {
+        const ctx = u.ctx, bbox = u.bbox;
+        const nowPx = u.valToPos(g_solar_now_ts, 'x', true);
+        if (nowPx >= bbox.left && nowPx <= bbox.left + bbox.width) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth   = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(nowPx, bbox.top);
+          ctx.lineTo(nowPx, bbox.top + bbox.height);
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (g_solar_peak_w > 0) {
+          const peakPx = u.valToPos(g_solar_peak_ts, 'x', true);
+          const peakPy = u.valToPos(g_solar_peak_w,  'y', true);
+          if (peakPx >= bbox.left && peakPx <= bbox.left + bbox.width) {
+            ctx.save();
+            ctx.font         = '11px sans-serif';
+            ctx.fillStyle    = SERIES_DEFS.solar.color;
+            ctx.textAlign    = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(`${g_solar_peak_w} W`, peakPx, Math.max(peakPy - 4, bbox.top + 14));
+            ctx.restore();
+          }
+        }
+      }],
+    };
+  });
+
+  g_solar_chart = result.chart;
+  g_solar_chart_timer = setInterval(refreshSolarChartData, 5 * 60 * 1000);
+}
+
+async function refreshSolarChartData() {
+  const plotEl = document.getElementById('solar-chart-plot');
+  if (!plotEl) return;
+  if (!g_solar_chart) { await loadSolarChart(); return; }
+
+  let d;
+  try {
+    const r = await apiFetch('/api/solar-day');
+    if (!r || !r.ok) return;
+    d = await r.json();
+  } catch (_) { return; }
+
+  const parsed = buildSolarChartData(d);
+  if (!parsed) return;
+
+  g_solar_now_ts  = parsed.nowTs;
+  g_solar_peak_w  = parsed.peakW;
+  g_solar_peak_ts = parsed.peakTs;
+
+  g_solar_chart.setData(parsed.data);
+}
+
 
 function updatePackCards() {
   const grid = document.getElementById('packs-grid');
@@ -516,27 +953,24 @@ function updatePackCards() {
   });
 }
 
-function renderPackCard(card, p) {
+// Shared renderer for the dashboard and battery-overview pack cards
+// (review U4: the two copies had already drifted apart in rounding and the
+// Ah metric). Variants: detailBtn adds the Details chevron; ahRem appends
+// the remaining-capacity metric on the dashboard card.
+function renderPackCardInner(card, p, opts) {
   const online  = p.online;
   const cells   = p.cells || [];
   const count   = p.cell_count || cells.length;
   const minIdx  = p.cell_min_idx;
   const maxIdx  = p.cell_max_idx;
-  const driftMv = ((p.cell_drift_v || 0) * 1000).toFixed(0);
+  const driftMv = Math.round((p.cell_drift_v || 0) * 1000);
+  const power   = (p.pack_voltage && p.pack_current !== undefined)
+                  ? fmt(p.pack_voltage * p.pack_current, 0) : '—';
 
-  // Success rate from snapshot stats (not available here yet — show polls from global stats).
-  const rs485 = p.rs485_ok_count !== undefined
-    ? `${p.rs485_ok_count}/${p.rs485_total_count}`
-    : '—';
-
-  // Build cell bars.
   let barsHtml = '';
   if (online && count > 0) {
-    const vMin = Math.min(...cells.filter((_, i) => i < count));
-    const vMax = Math.max(...cells.filter((_, i) => i < count));
-    const vRange = vMax - vMin || 0.001;
     cells.slice(0, count).forEach((v, i) => {
-      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
+      const pct = cellBarPct(v);
       let cls = 'cell-ok';
       if (i === minIdx) cls = 'cell-min';
       else if (i === maxIdx) cls = 'cell-max';
@@ -554,50 +988,24 @@ function renderPackCard(card, p) {
       <span class="pack-id">BMS ${p.bms_id + 1}</span>
       <div class="pack-status-dot ${online ? 'online' : 'offline'}"></div>
       <span style="font-size:12px;color:var(--fg-muted)">${online ? 'Online' : 'Offline'}</span>
+      ${opts.detailBtn ? '<span class="pack-detail-btn">Details ›</span>' : ''}
     </div>
     <div class="pack-metrics">
       <div><div class="pack-metric-label">SOC</div><div class="pack-metric-value" style="color:var(--purple)">${p.soc !== undefined ? p.soc + '%' : '—'}</div></div>
       <div><div class="pack-metric-label">Voltage</div><div class="pack-metric-value">${fmt(p.pack_voltage, 2)} V</div></div>
       <div><div class="pack-metric-label">Current</div><div class="pack-metric-value">${fmtA(p.pack_current)} A</div></div>
-      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${p.pack_voltage && p.pack_current !== undefined ? fmt(p.pack_voltage * p.pack_current, 0) : '—'} W</div></div>
+      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${power} W</div></div>
       <div><div class="pack-metric-label">SOH</div><div class="pack-metric-value">${p.soh !== undefined ? p.soh + '%' : '—'}</div></div>
       <div><div class="pack-metric-label">Drift</div><div class="pack-metric-value" style="color:${driftMv > 50 ? 'var(--amber)' : 'var(--fg)'}">${driftMv} mV</div></div>
       <div><div class="pack-metric-label">Temp</div><div class="pack-metric-value">${fmt(p.temp_avg_c, 1)} °C</div></div>
       <div><div class="pack-metric-label">Cells</div><div class="pack-metric-value">${count}S</div></div>
-      <div><div class="pack-metric-label">Ah rem</div><div class="pack-metric-value">${fmt(p.rem_ah, 0)}/${fmt(p.full_ah, 0)}</div></div>
+      ${opts.ahRem ? `<div><div class="pack-metric-label">Ah rem</div><div class="pack-metric-value">${fmt(p.rem_ah, 0)}/${fmt(p.full_ah, 0)}</div></div>` : ''}
     </div>
-    <div class="cell-graph">${barsHtml}</div>
-  `;
+    <div class="cell-graph">${barsHtml}</div>`;
 }
 
-/* ── Energy + Runtime cards ─────────────────────────────────────────────────── */
-function updateEnergyRuntimeCards() {
-  const live   = g_live || {};
-  const energy = live.energy || {};
-
-  const inEl = document.getElementById('energy-in');
-  if (!inEl) return;  // not on dashboard
-
-  inEl.textContent = energy.today_in_kwh !== undefined ? energy.today_in_kwh.toFixed(2) : '—';
-  const outEl = document.getElementById('energy-out');
-  if (outEl) outEl.textContent = energy.today_out_kwh !== undefined ? energy.today_out_kwh.toFixed(2) : '—';
-
-  const weekEl = document.getElementById('energy-week');
-  if (weekEl) {
-    const wIn  = energy.week_in_kwh  !== undefined ? energy.week_in_kwh.toFixed(1)  : '—';
-    const wOut = energy.week_out_kwh !== undefined ? energy.week_out_kwh.toFixed(1) : '—';
-    weekEl.textContent = `Week: ${wIn} / ${wOut} kWh`;
-  }
-
-  const rtMin   = live.runtime_est_min;
-  const rtState = live.runtime_est_state || 'idle';
-  const rtEl  = document.getElementById('runtime-val');
-  const rtSub = document.getElementById('runtime-sub');
-  if (rtEl) rtEl.textContent = rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—';
-  if (rtSub) {
-    const labels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
-    rtSub.textContent = labels[rtState] || 'Idle';
-  }
+function renderPackCard(card, p) {
+  renderPackCardInner(card, p, { ahRem: true });
 }
 
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
@@ -608,6 +1016,7 @@ const SERIES_DEFS = {
   voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V' },
   temp:    { label: 'Temp',       color: '#E89C5C', dec: 1, unit: '°C' },
   drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV' },
+  solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
 
 function getChartConfig() {
@@ -635,6 +1044,30 @@ function buildUplotData(ser) {
   return [xs, ser.points];
 }
 
+// Transform /api/solar-day JSON into the [xs, ys] format shared with buildUplotData.
+// Returns {data, nowTs, peakW, peakTs, count, res} or null when the ring is empty.
+function buildSolarChartData(d) {
+  const pts     = d.points || [];
+  const count   = pts.length;
+  const res     = d.resolution_s || 300;
+  const t0      = d.t0_epoch || 0;
+  const midnight = d.midnight_epoch || t0;
+  const nowTs   = d.now_ts_s || Math.round(Date.now() / 1000);
+  if (count === 0 || t0 === 0) return null;
+  const xs = [], ys = [];
+  if (midnight < t0) { xs.push(midnight); ys.push(null); }
+  let peakW = 0, peakTs = 0;
+  for (let i = 0; i < count; i++) {
+    const ts = t0 + i * res;
+    const v  = pts[i];
+    xs.push(ts);
+    ys.push((v !== null && v !== undefined) ? v : null);
+    if (v != null && v > peakW) { peakW = v; peakTs = ts; }
+  }
+  if (nowTs > xs[xs.length - 1]) { xs.push(nowTs); ys.push(null); }
+  return { data: [xs, ys], nowTs, midnight, peakW, peakTs, count, res };
+}
+
 function makeChartOpts(width, def) {
   const cs = getComputedStyle(document.documentElement);
   const fgMuted   = cs.getPropertyValue('--text-muted').trim()   || '#8A7E69';
@@ -648,8 +1081,10 @@ function makeChartOpts(width, def) {
       {
         label: def.label,
         stroke: def.color,
+        ...(def.fill ? {fill: def.fill} : {}),
         width: 2,
         spanGaps: false,
+        points: { show: false },
         value: (u, v) => v != null ? v.toFixed(def.dec) + ' ' + def.unit : '—',
       },
     ],
@@ -681,12 +1116,30 @@ function makeChartOpts(width, def) {
   };
 }
 
+// Shared uPlot chart builder — dashboard charts AND solar chart both call this.
+// data: pre-built [xs, ys] (from buildUplotData or buildSolarChartData.data), or null.
+// chart/chartKey: existing uPlot instance and the series key it was built with, or null/''.
+// customizeOpts: optional function(opts) called before construction for series-specific overrides.
+// Returns { chart, key }.
+function buildOrUpdateChart(plotEl, key, data, chart, chartKey, customizeOpts) {
+  if (data && plotEl.offsetWidth > 0) {
+    if (chart && chartKey === key) {
+      chart.setData(data);
+      return { chart, key };
+    }
+    if (chart) { try { chart.destroy(); } catch (_) {} }
+    const opts = makeChartOpts(plotEl.offsetWidth, SERIES_DEFS[key]);
+    if (customizeOpts) customizeOpts(opts);
+    return { chart: new uPlot(opts, data, plotEl), key };
+  }
+  if (!data) plotEl.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
+  if (chart) { try { chart.destroy(); } catch (_) {} }
+  return { chart: null, key: null };
+}
+
 async function loadCharts() {
   if (typeof uPlot === 'undefined') return;
   if (!document.getElementById('chart-a-plot')) return;
-
-  if (g_chart_a) { try { g_chart_a.destroy(); } catch (_) {} g_chart_a = null; }
-  if (g_chart_b) { try { g_chart_b.destroy(); } catch (_) {} g_chart_b = null; }
 
   const cfg    = getChartConfig();
   const needed = [...new Set([cfg.a, cfg.b])];
@@ -701,38 +1154,169 @@ async function loadCharts() {
       fetched[s] = (d && d.series && d.series[0]) || null;
     }
 
-    const renderChart = (plotId, titleId, key) => {
-      const el = document.getElementById(plotId);
-      if (!el) return null;
-      const def  = SERIES_DEFS[key];
-      const data = buildUplotData(fetched[key] || null);
+    const doUpdate = (plotId, titleId, key, existing, existingKey) => {
+      const plotEl = document.getElementById(plotId);
+      if (!plotEl) return { chart: null, key: null };
       const titleEl = document.getElementById(titleId);
-      if (titleEl) titleEl.textContent = `${def.label} — last 2 h`;
-      if (data && el.offsetWidth > 0) {
-        return new uPlot(makeChartOpts(el.offsetWidth, def), data, el);
-      }
-      if (!data) el.innerHTML = `<p class="chart-empty">${chartEmptyMsg()}</p>`;
-      return null;
+      if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
+      return buildOrUpdateChart(plotEl, key, buildUplotData(fetched[key] || null), existing, existingKey, null);
     };
 
-    g_chart_a = renderChart('chart-a-plot', 'chart-a-title', cfg.a);
-    g_chart_b = renderChart('chart-b-plot', 'chart-b-title', cfg.b);
+    const ra = doUpdate('chart-a-plot', 'chart-a-title', cfg.a, g_chart_a, g_chart_a_key);
+    g_chart_a = ra.chart; g_chart_a_key = ra.key;
+
+    const rb = doUpdate('chart-b-plot', 'chart-b-title', cfg.b, g_chart_b, g_chart_b_key);
+    g_chart_b = rb.chart; g_chart_b_key = rb.key;
   } catch (_) { /* charts unavailable — silently ignore */ }
 }
 
 /* ── Battery overview page ──────────────────────────────────────────────────── */
+
+function batteryMBox(label, id) {
+  return `
+    <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
+      <div id="${id}" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
+    </div>`;
+}
+
+function batteryVDiv() {
+  return `<div style="width:1px;background:var(--border);margin:10px 0;align-self:stretch;flex-shrink:0"></div>`;
+}
+
 function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
+  const shuntMode    = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
+  const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
+
+  const shuntCard = shuntEnabled ? `
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
+    <div class="card" style="padding-top:14px">
+      <div style="padding:0 18px 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="pack-status-dot offline" id="shunt-strip-dot" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px" id="shunt-strip-text">—</span>
+        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="shunt-strip-age"></span>
+      </div>
+      <div style="border-top:1px solid var(--border)"></div>
+      <div style="display:flex;align-items:center">
+        ${batteryMBox('Current', 'sagg-curr')}
+        ${batteryVDiv()}
+        ${batteryMBox('Voltage', 'sagg-volt')}
+        ${batteryVDiv()}
+        ${batteryMBox('SOC', 'sagg-soc')}
+      </div>
+      <div style="border-top:1px solid var(--border);padding:16px 18px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Current Source Mode</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="shunt_mode" value="0" ${shuntMode===0?'checked':''} style="margin-top:2px;width:auto">
+            <span><strong>Auto</strong> <span style="color:var(--text-muted)">— BMS leads; shunt fills in below 0.5&thinsp;A dead-zone</span></span>
+          </label>
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="shunt_mode" value="1" ${shuntMode===1?'checked':''} style="margin-top:2px;width:auto">
+            <span><strong>Shunt leads</strong> <span style="color:var(--text-muted)">— SmartShunt always used when available, BMS fallback</span></span>
+          </label>
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="radio" name="shunt_mode" value="2" ${shuntMode===2?'checked':''} style="margin-top:2px;width:auto">
+            <span><strong>BMS leads</strong> <span style="color:var(--text-muted)">— BMS always used; shunt ignored</span></span>
+          </label>
+        </div>
+        <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" onclick="saveShuntMode()">Save</button>
+          <span id="shunt-mode-feedback" style="font-size:12px"></span>
+          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src">—</span></span>
+        </div>
+      </div>
+    </div>` : (g_config ? `
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
+    <div class="card" style="padding:18px">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="flex-shrink:0;width:10px;height:10px;border-radius:50%;background:var(--neutral-300)"></div>
+        <div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px">SmartShunt &mdash; coming in v3.2</div>
+          <div style="font-size:12px;color:var(--text-muted)">Battery-monitor integration (SOC, precise current, consumed Ah) is planned for the next release.</div>
+        </div>
+      </div>
+    </div>` : '');
+
   root.innerHTML = `
-    <div style="padding:24px">
-      <h2 style="margin:0 0 6px;font-size:20px">Battery Packs</h2>
-      <p id="battery-summary" style="font-size:13px;color:var(--text-muted);margin:0 0 20px"></p>
+    <div style="max-width:860px;margin:0 auto">
+      <!-- Status strip -->
+      <div class="card" style="margin-bottom:12px;padding:13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="pack-status-dot offline" id="batt-strip-dot" style="flex-shrink:0"></div>
+        <span style="font-weight:600;font-size:14px" id="batt-strip-text">—</span>
+        <span id="batt-strip-pill"></span>
+      </div>
+      <!-- Aggregate metrics -->
+      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
+        <div style="display:flex;align-items:center">
+          ${batteryMBox('Combined SOC', 'bagg-soc')}
+          ${batteryVDiv()}
+          ${batteryMBox('Pack Voltage', 'bagg-volt')}
+          ${batteryVDiv()}
+          ${batteryMBox('Combined Current', 'bagg-curr')}
+          ${batteryVDiv()}
+          ${batteryMBox('Combined Power', 'bagg-pow')}
+        </div>
+      </div>
+      <!-- Pack grid -->
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Battery Packs</div>
       <div class="packs-grid" id="battery-overview-grid">
         <div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>
       </div>
+      <!-- Drift Details section -->
+      <div style="margin-top:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:2px">Drift Details</div>
+            <div style="font-size:12px;color:var(--text-muted)">Per-cell balance &amp; drift behaviour &middot; extremes only (SoC &ge;90 % or &le;15 %)</div>
+          </div>
+          <button class="btn" style="font-size:11px;padding:4px 10px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);border-radius:6px;cursor:pointer" onclick="driftExpandAll()">Expand all</button>
+        </div>
+        <div id="drift-section-root">
+          <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">Loading drift data…</div>
+        </div>
+      </div>
+      ${shuntCard}
     </div>`;
   updateBatteryOverviewCards();
+  if (g_drift_timer) { clearInterval(g_drift_timer); g_drift_timer = null; }
+  loadDriftDetails();
+  g_drift_timer = setInterval(loadDriftDetails, 30000);
+}
+
+async function saveShuntMode() {
+  const fb = document.getElementById('shunt-mode-feedback');
+  const sel = document.querySelector('input[name="shunt_mode"]:checked');
+  if (!sel) return;
+  const mode = parseInt(sel.value, 10);
+  const cfg = Object.assign({}, g_config, { shunt_current_mode: mode, auth_hash: '' });
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (fb) { fb.style.color = 'var(--color-success)'; fb.textContent = 'Saved.'; }
+      setTimeout(() => { if (fb) fb.textContent = ''; }, 2000);
+    } else {
+      if (fb) { fb.style.color = 'var(--red)'; fb.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (fb) { fb.style.color = 'var(--red)'; fb.textContent = 'Network error.'; }
+  }
+}
+
+function setEl(id, text, color) {
+  const e = document.getElementById(id);
+  if (!e) return;
+  e.textContent = text;
+  if (color !== undefined) e.style.color = color;
 }
 
 function updateBatteryOverviewCards() {
@@ -742,22 +1326,49 @@ function updateBatteryOverviewCards() {
   const snap   = (g_live && g_live.snapshot) || {};
   const packs  = snap.packs || [];
   const safety = (g_live && g_live.safety)   || {};
+  const sources = (g_live && g_live.sources) || {};
 
-  const summary = document.getElementById('battery-summary');
-  if (summary) {
-    const online    = g_live ? (g_live.bms_count_online || 0) : 0;
-    const total     = g_live ? (g_live.bms_count_configured || 0) : 0;
-    const soc       = safety.soc_avg !== undefined ? fmt(safety.soc_avg, 0) + '% SOC' : '';
-    const volt      = safety.pack_voltage_avg !== undefined ? fmt(safety.pack_voltage_avg, 2) + ' V avg' : '';
-    summary.textContent = [online + '/' + total + ' online', soc, volt].filter(Boolean).join(' · ');
-  }
+  // ── Status strip ──
+  const online = g_live ? (g_live.bms_count_online || 0) : 0;
+  const total  = g_live ? (g_live.bms_count_configured || 0) : 0;
+  const dot = document.getElementById('batt-strip-dot');
+  if (dot) { dot.className = 'pack-status-dot ' + (online > 0 ? 'online' : 'offline'); }
+  setEl('batt-strip-text', `${online}/${total} packs online`);
+  const pillEl = document.getElementById('batt-strip-pill');
+  if (pillEl) pillEl.innerHTML = safety.pack_current_total !== undefined ? chargePill(safety.pack_current_total) : '';
+  // ── Aggregate metric boxes ──
+  const socAvg = safety.soc_avg;
+  const soc  = socAvg !== undefined ? socAvg : null;
+  const volt = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
+  const cur  = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
+  const pow  = (cur !== null && volt !== null) ? cur * volt : null;
 
+  setEl('bagg-soc',  soc  !== null ? fmt(soc,  0)  + ' %' : '—', soc  !== null ? socColor(soc)         : 'var(--text-muted)');
+  setEl('bagg-volt', volt !== null ? fmt(volt, 2) + ' V'  : '—', volt !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+  setEl('bagg-curr', cur  !== null ? fmtA(cur)  + ' A'   : '—', cur  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+  setEl('bagg-pow',  pow  !== null ? fmt(pow,  0)  + ' W' : '—', pow  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+
+  // ── SmartShunt live values ──
+  const shunt = sources.shunt || {};
+  const shuntSeen  = !!shunt.seen;
+  const shuntStale = shuntSeen && (shunt.ms_since_last_seen || 0) > 30000;
+  const shuntDot = document.getElementById('shunt-strip-dot');
+  if (shuntDot) shuntDot.className = 'pack-status-dot ' + (shuntSeen && !shuntStale ? 'online' : 'offline');
+  setEl('shunt-strip-text', shuntSeen ? (shuntStale ? 'Stale' : 'Receiving data') : 'Not seen');
+  setEl('shunt-strip-age', shuntSeen ? Math.round((shunt.ms_since_last_seen || 0) / 1000) + ' s ago' : '');
+  setEl('sagg-curr', shunt.current_a !== undefined ? fmtA(shunt.current_a) + ' A' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
+  setEl('sagg-volt', shunt.voltage_v !== undefined ? fmt(shunt.voltage_v, 2) + ' V' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
+  setEl('sagg-soc',  shunt.soc_pct  !== undefined ? fmt(shunt.soc_pct, 1) + ' %' : '—', shuntSeen ? socColor(shunt.soc_pct) : 'var(--text-muted)');
+  const curSrcId = sources.battery_current_src || 'bms';
+  const srcEl = document.getElementById('shunt-active-src');
+  if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; }
+
+  // ── Pack grid ──
   if (packs.length === 0) {
     grid.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)">Waiting for BMS data…</div>';
     return;
   }
 
-  // Recreate if count changed.
   const existing = grid.querySelectorAll('.battery-overview-card');
   if (existing.length !== packs.length) {
     grid.innerHTML = '';
@@ -778,51 +1389,8 @@ function updateBatteryOverviewCards() {
 }
 
 function renderBatteryOverviewCard(card, p) {
-  const online  = p.online;
-  const cells   = p.cells || [];
-  const count   = p.cell_count || cells.length;
-  const minIdx  = p.cell_min_idx;
-  const maxIdx  = p.cell_max_idx;
-  const driftMv = Math.round((p.cell_drift_v || 0) * 1000);
-  const power   = (p.pack_voltage && p.pack_current !== undefined)
-                  ? fmt(p.pack_voltage * p.pack_current, 0) : '—';
-
-  // Mini cell bar graph
-  let barsHtml = '';
-  if (online && count > 0) {
-    cells.slice(0, count).forEach((v, i) => {
-      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
-      let cls = 'cell-ok';
-      if (i === minIdx) cls = 'cell-min';
-      else if (i === maxIdx) cls = 'cell-max';
-      barsHtml += `<div class="cell-bar ${cls}" style="height:${pct.toFixed(0)}%">
-        <div class="cell-tooltip">C${i + 1}: ${v.toFixed(3)}V</div></div>`;
-    });
-  } else {
-    for (let i = 0; i < (count || 15); i++) {
-      barsHtml += `<div class="cell-bar cell-offline" style="height:30%"></div>`;
-    }
-  }
-
-  card.className = 'card battery-overview-card' + (online ? '' : ' pack-offline');
-  card.innerHTML = `
-    <div class="pack-header">
-      <span class="pack-id">BMS ${p.bms_id + 1}</span>
-      <div class="pack-status-dot ${online ? 'online' : 'offline'}"></div>
-      <span style="font-size:12px;color:var(--fg-muted)">${online ? 'Online' : 'Offline'}</span>
-      <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">tap for detail ›</span>
-    </div>
-    <div class="pack-metrics">
-      <div><div class="pack-metric-label">SOC</div><div class="pack-metric-value" style="color:var(--purple)">${p.soc !== undefined ? p.soc + '%' : '—'}</div></div>
-      <div><div class="pack-metric-label">Voltage</div><div class="pack-metric-value">${fmt(p.pack_voltage, 2)} V</div></div>
-      <div><div class="pack-metric-label">Current</div><div class="pack-metric-value">${fmtA(p.pack_current)} A</div></div>
-      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${power} W</div></div>
-      <div><div class="pack-metric-label">SOH</div><div class="pack-metric-value">${p.soh !== undefined ? p.soh + '%' : '—'}</div></div>
-      <div><div class="pack-metric-label">Drift</div><div class="pack-metric-value" style="color:${driftMv > 50 ? 'var(--amber)' : 'var(--fg)'}">${driftMv} mV</div></div>
-      <div><div class="pack-metric-label">Temp</div><div class="pack-metric-value">${fmt(p.temp_avg_c, 1)} °C</div></div>
-      <div><div class="pack-metric-label">Cells</div><div class="pack-metric-value">${count}S</div></div>
-    </div>
-    <div class="cell-graph">${barsHtml}</div>`;
+  card.className = 'card battery-overview-card' + (p.online ? '' : ' pack-offline');
+  renderPackCardInner(card, p, { detailBtn: true });
 }
 
 /* ── Battery detail page ────────────────────────────────────────────────────── */
@@ -899,11 +1467,8 @@ function renderBmsDetailContent(packId, d) {
   const maxIdx = d.cell_max_idx;
   let cellBarsHtml = '';
   if (online && count > 0) {
-    const vMin = cells.slice(0, count).reduce((a, b) => Math.min(a, b), Infinity);
-    const vMax = cells.slice(0, count).reduce((a, b) => Math.max(a, b), -Infinity);
-    const yPad = 0.02;
     cells.slice(0, count).forEach((v, i) => {
-      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
+      const pct = cellBarPct(v);
       let cls = 'cell-ok';
       if (i === minIdx) cls = 'cell-min';
       else if (i === maxIdx) cls = 'cell-max';
@@ -1036,6 +1601,8 @@ const SETTINGS_SECTIONS = [
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' },
+  { id: 'ble',     label: 'BLE',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5"/></svg>' },
   { id: 'notifications', label: 'Notify',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' },
   { id: 'account', label: 'Account',
@@ -1098,6 +1665,7 @@ function renderSettingsSection(id) {
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
     case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
+    case 'ble':           content.innerHTML = renderSettingsBle();           break;
     case 'notifications': content.innerHTML = renderSettingsNotifications(); loadNotifyData(); break;
     case 'account':       content.innerHTML = renderSettingsAccount();       break;
     case 'system':   content.innerHTML = renderSettingsSystem();   break;
@@ -1646,6 +2214,17 @@ function renderSettingsMqtt() {
         </div>
         <div id="mqtt-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Solar Passthrough (OpenDTU)</div>
+        <div class="form-group">
+          <label>Passthrough MQTT Topic</label>
+          <input type="text" id="cfg-mqtt_solar_passthrough_topic"
+            value="${escHtml(c.mqtt_solar_passthrough_topic || '')}"
+            placeholder="e.g. solar/AC_output_active">
+          <div class="help">Topic published by OpenDTU-OnBattery for the Solar Passthrough state.
+            Payload: 1/true = active, 0/false = inactive. Leave blank to disable.</div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -1719,6 +2298,21 @@ function renderSettingsNotifications() {
         </div>
         <div id="notify-test-result" style="display:none;margin-top:12px;padding:10px 12px;
              border-radius:6px;font-size:13px;border:1px solid var(--border)"></div>
+      </div>
+
+      <!-- ── Group 1b: Network self-test ─────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Network self-test</div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+          Checks the outbound TLS path stage-by-stage: WiFi association,
+          DNS resolution, TCP reachability, TLS handshake, and NTP clock.
+          No credentials or bot token required. Use this when "Send test" fails
+          to find exactly which stage is broken.
+        </p>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="net-diag-btn" onclick="runNetDiag()">Run self-test</button>
+        </div>
+        <div id="net-diag-result" style="display:none;margin-top:14px"></div>
       </div>
 
       <!-- ── Group 2: Alerts ───────────────────────────────────────────────── -->
@@ -1995,6 +2589,122 @@ async function testTelegramNotification() {
         resultEl.style.color = 'var(--color-alarm)';
         resultEl.style.borderColor = 'var(--color-alarm)';
         resultEl.textContent = d.message || 'Test failed.';
+      }
+    } catch (e) { /* ignore transient poll errors */ }
+  }, 1000);
+}
+
+/* ── Network self-test ───────────────────────────────────────────────────────── */
+
+let g_net_diag_poll      = null;
+let g_net_diag_lastStages = null;  // preserves last known stages so timeout can show them
+
+function renderNetDiagStages(stages) {
+  if (!stages || !stages.length) return '<span style="color:var(--text-muted)">No data</span>';
+  const colorFor = (s) =>
+    !s.run  ? 'var(--text-muted)'    :
+    s.pass  ? 'var(--color-success)' : 'var(--color-alarm)';
+  const iconFor  = (s) => !s.run ? '–' : s.pass ? '&#x2713;' : '&#x2717;';
+  const durationStr = (s) => {
+    if (!s.run || !s.duration_ms) return '';
+    return s.duration_ms >= 1000
+      ? ` <span style="color:var(--text-muted);font-size:11px">${(s.duration_ms / 1000).toFixed(1)} s</span>`
+      : ` <span style="color:var(--text-muted);font-size:11px">${s.duration_ms} ms</span>`;
+  };
+  return stages.map(s => `
+    <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;font-size:13px">
+      <span style="min-width:18px;font-weight:bold;color:${colorFor(s)}">${iconFor(s)}</span>
+      <div>
+        <strong style="color:${colorFor(s)}">${escHtml(s.label)}</strong>${durationStr(s)}<br>
+        <span style="color:var(--text-muted)">${escHtml(s.detail || (s.run ? '' : 'Not run'))}</span>
+      </div>
+    </div>`).join('');
+}
+
+function renderNetDiagResult(stages, headerHtml) {
+  const passed = stages ? stages.filter(s => s.run && s.pass).length : 0;
+  const total  = stages ? stages.filter(s => s.run).length : 0;
+  const summary = total > 0 ? `${passed}/${total} passed` : '';
+  return `<details open style="border:1px solid var(--border-color);border-radius:6px;padding:10px 14px">
+    <summary style="cursor:pointer;font-size:13px;font-weight:600;list-style:none;display:flex;align-items:center;gap:8px">
+      <span>Self-test results${summary ? ' — ' + summary : ''}</span>
+    </summary>
+    <div style="margin-top:10px">${headerHtml}${renderNetDiagStages(stages)}</div>
+  </details>`;
+}
+
+async function runNetDiag() {
+  if (g_net_diag_poll) { clearInterval(g_net_diag_poll); g_net_diag_poll = null; }
+  g_net_diag_lastStages = null;
+  const resultEl = document.getElementById('net-diag-result');
+  const btn      = document.getElementById('net-diag-btn');
+  if (!resultEl) return;
+
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = '<span class="spinner"></span> Running self-test…';
+  if (btn) btn.disabled = true;
+
+  try {
+    const r = await apiFetch('/api/net/self-test', { method: 'POST' });
+    if (!r) { if (btn) btn.disabled = false; return; }
+    if (r.status === 409) {
+      resultEl.innerHTML = '<span style="color:var(--text-muted)">Test already running…</span>';
+    } else if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      resultEl.innerHTML = `<span style="color:var(--color-alarm)">${escHtml(d.error || 'Failed to start')}</span>`;
+      if (btn) btn.disabled = false;
+      return;
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<span style="color:var(--color-alarm)">Network error: ${escHtml(e.message)}</span>`;
+    if (btn) btn.disabled = false;
+    return;
+  }
+
+  const STAGE_NAMES = ['WiFi / link', 'DNS resolution', 'TCP connect', 'TLS handshake', 'Time / cert sanity'];
+
+  // Poll until running=false, max 90 s (TLS can take up to ~45 s worst case;
+  // extra margin added for slow DNS + TCP on congested networks).
+  let polls = 0;
+  g_net_diag_poll = setInterval(async function() {
+    polls++;
+    if (polls > 90) {
+      clearInterval(g_net_diag_poll); g_net_diag_poll = null;
+      if (btn) btn.disabled = false;
+      // Show last known stage data so the hanging stage is visible.
+      const stuckStage = g_net_diag_lastStages
+        ? g_net_diag_lastStages.find(s => !s.run)
+        : null;
+      const stuckName = stuckStage ? stuckStage.label : 'unknown stage';
+      const timeoutHeader = `<div style="color:var(--color-alarm);font-size:13px;margin-bottom:8px">
+        Timed out (90 s) — last stage running: <strong>${escHtml(stuckName)}</strong>. Check serial log.
+      </div>`;
+      resultEl.innerHTML = renderNetDiagResult(
+        g_net_diag_lastStages || [],
+        timeoutHeader
+      );
+      return;
+    }
+    try {
+      const r2 = await apiFetch('/api/net/self-test');
+      if (!r2 || !r2.ok) return;
+      const d = await r2.json();
+      if (d.stages) {
+        g_net_diag_lastStages = d.stages;
+        if (d.running) {
+          const stageName = (d.current_stage >= 0 && d.current_stage < STAGE_NAMES.length)
+            ? STAGE_NAMES[d.current_stage] : null;
+          const header = stageName
+            ? `<div style="margin-bottom:8px;font-size:13px;color:var(--text-muted)"><span class="spinner"></span> Testing: <strong>${escHtml(stageName)}</strong>…</div>`
+            : '';
+          resultEl.innerHTML = `<div style="margin-bottom:8px">${header}${renderNetDiagStages(d.stages)}</div>`;
+        } else {
+          resultEl.innerHTML = renderNetDiagResult(d.stages, '');
+        }
+      }
+      if (!d.running) {
+        clearInterval(g_net_diag_poll); g_net_diag_poll = null;
+        if (btn) btn.disabled = false;
       }
     } catch (e) { /* ignore transient poll errors */ }
   }, 1000);
@@ -2321,13 +3031,14 @@ async function saveMqttSection() {
   cfg.auth_hash = '';
 
   const fields = [
-    ['cfg-mqtt_enabled',        'mqtt_enabled',        'bool'],
-    ['cfg-mqtt_host',           'mqtt_host',           'str'],
-    ['cfg-mqtt_port',           'mqtt_port',           'num'],
-    ['cfg-mqtt_user',           'mqtt_user',           'str'],
-    ['cfg-mqtt_base_topic',     'mqtt_base_topic',     'str'],
-    ['cfg-mqtt_level',          'mqtt_level',          'num'],
-    ['cfg-mqtt_diag_enabled',   'mqtt_diag_enabled',   'bool'],
+    ['cfg-mqtt_enabled',                    'mqtt_enabled',                    'bool'],
+    ['cfg-mqtt_host',                       'mqtt_host',                       'str'],
+    ['cfg-mqtt_port',                       'mqtt_port',                       'num'],
+    ['cfg-mqtt_user',                       'mqtt_user',                       'str'],
+    ['cfg-mqtt_base_topic',                 'mqtt_base_topic',                 'str'],
+    ['cfg-mqtt_level',                      'mqtt_level',                      'num'],
+    ['cfg-mqtt_diag_enabled',               'mqtt_diag_enabled',               'bool'],
+    ['cfg-mqtt_solar_passthrough_topic',    'mqtt_solar_passthrough_topic',    'str'],
     ['cfg-ha_discovery_enabled','ha_discovery_enabled','bool'],
   ];
   fields.forEach(([id, key, type]) => {
@@ -2354,6 +3065,158 @@ async function saveMqttSection() {
       g_config = data;
       if (passEl) passEl.value = '';
       if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved.'; }
+    } else {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (e) {
+    if (msg) { msg.className = 'feedback-msg err'; msg.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── BLE Sources section ────────────────────────────────────────────────────── */
+
+function renderSettingsBle() {
+  const c = g_config;
+  return `
+    <div class="settings-page">
+
+      <div class="settings-section" style="border-left:3px solid var(--accent,#3b82f6);background:rgba(59,130,246,.07);padding:12px 16px;border-radius:4px;margin-bottom:16px">
+        <strong>Restart required after saving.</strong>
+        The NimBLE stack is initialized once at boot; changes only take effect after a reboot.<br>
+        Keys come from <strong>VictronConnect</strong> &rarr; device &rarr; share icon &rarr; <em>Encryption key</em>.
+      </div>
+
+      <!-- ── SmartShunt ────────────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">SmartShunt (battery monitor) <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">planned for v3.2</span></div>
+        <div style="padding:12px 16px;background:color-mix(in srgb,var(--neutral-300) 30%,var(--bg-card));border-radius:6px;font-size:12px;color:var(--text-muted);margin-bottom:12px">
+          SmartShunt integration (SOC, precise current, consumed Ah) is planned for v3.2. The fields below are
+          preserved for migration; the BLE stack is not initialised until a shunt is enabled.
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px;opacity:.5">
+          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} disabled style="width:auto">
+          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source (v3.2)</label>
+        </div>
+        <div class="form-group">
+          <label>BLE MAC Address</label>
+          <input type="text" id="cfg-ble_shunt_mac" value="${escHtml(c.ble_shunt_mac || '')}"
+                 placeholder="e3:8d:48:c8:52:b4 or e38d48c852b4" maxlength="17" style="font-family:monospace">
+          <div class="help">Colons, hyphens, or no separators — all accepted.</div>
+        </div>
+        <div class="form-group">
+          <label>Encryption Key (32 hex chars)</label>
+          <div class="pw-wrap">
+            <input type="password" id="cfg-ble_shunt_key" autocomplete="new-password"
+                   placeholder="Leave blank to keep current" style="font-family:monospace">
+            <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_shunt_key')" title="Show/hide">${EYE_SVG}</button>
+          </div>
+          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+        </div>
+      </div>
+
+      <!-- ── Smart Solar MPPT ──────────────────────────────────────────────── -->
+      <div class="settings-section">
+        <div class="settings-section-title">Smart Solar MPPT</div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-ble_mppt_enabled" ${c.ble_mppt_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-ble_mppt_enabled" style="margin:0">Enable MPPT BLE source</label>
+        </div>
+        <div class="form-group">
+          <label>BLE MAC Address</label>
+          <input type="text" id="cfg-ble_mppt_mac" value="${escHtml(c.ble_mppt_mac || '')}"
+                 placeholder="e3:8d:48:c8:52:b4 or e38d48c852b4" maxlength="17" style="font-family:monospace">
+          <div class="help">Colons, hyphens, or no separators — all accepted.</div>
+        </div>
+        <div class="form-group">
+          <label>Encryption Key (32 hex chars)</label>
+          <div class="pw-wrap">
+            <input type="password" id="cfg-ble_mppt_key" autocomplete="new-password"
+                   placeholder="Leave blank to keep current" style="font-family:monospace">
+            <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_mppt_key')" title="Show/hide">${EYE_SVG}</button>
+          </div>
+          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+        </div>
+      </div>
+
+      <div id="ble-feedback" class="feedback-msg"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveBleSectionSettings()">Save</button>
+      </div>
+    </div>
+  `;
+}
+
+// Normalize a raw MAC input to canonical "xx:xx:xx:xx:xx:xx" (lowercase, colons).
+// Accepts colons, hyphens, or bare 12 hex chars.  Returns '' for empty/whitespace.
+// Returns null for anything that cannot be a valid 6-byte MAC.
+function normalizeMacInput(raw) {
+  if (!raw || raw.trim() === '') return '';
+  const bare = raw.trim().toLowerCase().replace(/[:\-]/g, '');
+  if (!/^[0-9a-f]{12}$/.test(bare)) return null;
+  return bare.match(/.{2}/g).join(':');
+}
+
+async function saveBleSectionSettings() {
+  const msg = document.getElementById('ble-feedback');
+  if (msg) { msg.className = 'feedback-msg'; msg.textContent = ''; }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash = '';
+
+  const fields = [
+    ['cfg-ble_shunt_enabled', 'ble_shunt_enabled', 'bool'],
+    ['cfg-ble_mppt_enabled',  'ble_mppt_enabled',  'bool'],
+    ['cfg-ble_shunt_mac',     'ble_shunt_mac',     'str'],
+    ['cfg-ble_mppt_mac',      'ble_mppt_mac',      'str'],
+  ];
+  fields.forEach(([id, key, type]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (type === 'str')  cfg[key] = el.value;
+    if (type === 'bool') cfg[key] = el.checked;
+  });
+
+  // Normalize and client-side validate MAC fields before the POST.
+  // The server also validates, but inline JS feedback is immediate.
+  const macFields = [
+    ['cfg-ble_shunt_mac', 'ble_shunt_mac', 'SmartShunt MAC'],
+    ['cfg-ble_mppt_mac',  'ble_mppt_mac',  'MPPT MAC'],
+  ];
+  for (const [id, key, label] of macFields) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const normalized = normalizeMacInput(el.value);
+    if (normalized === null) {
+      if (msg) {
+        msg.className = 'feedback-msg err';
+        msg.textContent = `${label}: must be 6 hex bytes, e.g. e3:8d:48:c8:52:b4 — colons and hyphens optional`;
+      }
+      return;
+    }
+    cfg[key] = normalized;   // send canonical form; server also normalizes
+  }
+
+  // Keys are write-only: blank = keep existing, non-blank = update.
+  ['ble_shunt_key', 'ble_mppt_key'].forEach(key => {
+    const el = document.getElementById('cfg-' + key);
+    cfg[key] = (el && el.value.length > 0) ? el.value : '';
+  });
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      ['cfg-ble_shunt_key', 'cfg-ble_mppt_key'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved. Reboot to apply BLE changes.'; }
     } else {
       if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
     }
@@ -2495,7 +3358,7 @@ async function renderNetwork() {
 
   const root = document.getElementById('page-root');
   root.innerHTML = `
-    <div class="network-page" style="max-width:680px;padding:0">
+    <div class="network-page" style="padding:0">
       <div class="settings-section card" style="margin-bottom:16px;padding:16px">
         <div class="settings-section-title">Current Connection</div>
         <div id="net-status-panel">
@@ -3078,8 +3941,27 @@ function loadMoreAlerts() {
 
 /* ── Diag page ──────────────────────────────────────────────────────────────── */
 
-function kvRow(k, v) {
-  return `<div class="diag-kv"><span>${escHtml(String(k))}</span><span>${escHtml(String(v))}</span></div>`;
+function kvRow(k, v, title) {
+  const t = title ? ' title="' + escHtml(String(title)) + '"' : '';
+  return `<div class="diag-kv"${t}><span>${escHtml(String(k))}</span><span>${escHtml(String(v))}</span></div>`;
+}
+
+// Storage sizes as MB, working memory as KB; raw bytes stay in the tooltip.
+function fmtKb(b) { return ((b || 0) / 1024).toFixed(1) + ' KB'; }
+function fmtMb(b) { return ((b || 0) / 1048576).toFixed(1) + ' MB'; }
+
+// Age in seconds -> human-readable above 2 minutes.
+function fmtAgeS(s) {
+  if (s == null || s < 0) return 'never';
+  if (s < 120) return s + ' s ago';
+  return formatUptime(s) + ' ago';
+}
+
+function rssiQuality(rssi) {
+  if (rssi == null) return '';
+  if (rssi >= -60) return ' (good)';
+  if (rssi >= -75) return ' (fair)';
+  return ' (weak)';
 }
 
 function renderDiagData(d) {
@@ -3099,8 +3981,16 @@ function renderDiagData(d) {
   const lfs = d.littlefs || {};
   const ene = d.energy || {};
   const his = d.history || {};
+  const ble = d.ble_status || {};
 
   const tasks = (d.tasks || []).slice().sort((a, b) => (a.stack_hwm||0) - (b.stack_hwm||0));
+
+  // Device time from the diag payload (F4: now_ts_s is current device time).
+  let deviceTime = '—';
+  if (ntp.now_ts_s) {
+    const dt = new Date(ntp.now_ts_s * 1000);
+    deviceTime = dt.toLocaleString();
+  }
 
   root.innerHTML = `
     <div class="diag-section">
@@ -3109,12 +3999,15 @@ function renderDiagData(d) {
         ${kvRow('Firmware', sys.fw || '—')}
         ${kvRow('Uptime', formatUptime(sys.uptime_s))}
         ${kvRow('Reset reason', sys.reset_reason || '—')}
-        ${kvRow('Free heap (all)', (sys.free_heap||0).toLocaleString() + ' B')}
-        ${kvRow('DRAM free', (sys.dram_free||0).toLocaleString() + ' B')}
-        ${kvRow('DRAM min ever', (sys.dram_min||0).toLocaleString() + ' B')}
-        ${kvRow('DRAM largest block', (sys.dram_largest_block||0).toLocaleString() + ' B')}
-        ${kvRow('PSRAM free', (sys.psram_free||0).toLocaleString() + ' B')}
-        ${kvRow('PSRAM largest block', (sys.psram_largest_block||0).toLocaleString() + ' B')}
+        ${kvRow('Free heap (all)', fmtKb(sys.free_heap), (sys.free_heap||0) + ' B')}
+        ${kvRow('DRAM free', fmtKb(sys.dram_free), (sys.dram_free||0) + ' B')}
+        ${kvRow('DRAM min ever', fmtKb(sys.dram_min), (sys.dram_min||0) + ' B')}
+        ${kvRow('DRAM largest block', fmtKb(sys.dram_largest_block), (sys.dram_largest_block||0) + ' B')}
+        ${kvRow('PSRAM free', fmtMb(sys.psram_free), (sys.psram_free||0) + ' B')}
+        ${kvRow('PSRAM largest block', fmtMb(sys.psram_largest_block), (sys.psram_largest_block||0) + ' B')}
+        ${kvRow('CPU temp', sys.cpu_temp_c != null ? sys.cpu_temp_c.toFixed(1) + ' °C' : '—')}
+        ${kvRow('/api/live latency (last / max)', (ble.handler_last_ms||0) + ' ms / ' + (ble.handler_max_ms||0) + ' ms',
+                '> 200 ms while BLE is active indicates CPU starvation of the HTTP task')}
         ${kvRow('Build', sys.build || '—')}
       </div>
     </div>
@@ -3124,7 +4017,7 @@ function renderDiagData(d) {
       <table class="diag-tasks-table">
         <thead><tr><th>Name</th><th>Stack HWM</th><th>Core</th><th>Priority</th></tr></thead>
         <tbody>
-          ${tasks.map(t => `<tr>
+          ${tasks.map(t => `<tr${(t.stack_hwm||0) < 512 ? ' class="diag-task-low"' : ''}>
             <td>${escHtml(t.name||'?')}</td>
             <td>${(t.stack_hwm||0).toLocaleString()} B</td>
             <td>${t.core >= 0 ? t.core : 'any'}</td>
@@ -3144,8 +4037,13 @@ function renderDiagData(d) {
         ${kvRow('RS485 ok', pol.rs485_ok||0)}
         ${kvRow('RS485 timeouts', pol.rs485_timeouts||0)}
         ${kvRow('RS485 parse err', pol.rs485_parse_err||0)}
-        ${kvRow('Alarm polls ok', pol.alarm_polls_ok||0)}
-        ${kvRow('Alarm polls err', pol.alarm_polls_err||0)}
+        ${kvRow('Alarm polls (ok / err)', (pol.alarm_polls_ok||0) + ' / ' + (pol.alarm_polls_err||0))}
+        ${kvRow('Sysparam polls (ok / err)', (pol.sysparam_polls_ok||0) + ' / ' + (pol.sysparam_polls_err||0),
+                'Sysparam freshness drives the Auto battery-config modes')}
+        ${kvRow('Wrong-address frames', pol.wrong_addr||0,
+                'Checksum-valid frames from a different pack than polled; discarded')}
+        ${kvRow('Snapshot bus (pub / read / retry)',
+                (sn.publishes||0) + ' / ' + (sn.reads||0) + ' / ' + (sn.retries||0))}
       </div>
     </div>
 
@@ -3154,7 +4052,8 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('TX ok', can.tx_ok||0)}
         ${kvRow('TX fail', can.tx_fail||0)}
-        ${kvRow('TX fail streak max', can.tx_fail_streak_max||0)}
+        ${kvRow('TX fail streak (max)', can.tx_fail_streak_max||0,
+                'Longest run of consecutive transmit failures since boot')}
         ${kvRow('Heartbeats', can.heartbeats||0)}
         ${kvRow('Express sends', can.express_sends||0)}
         ${kvRow('Bus-off count', can.bus_off_count||0)}
@@ -3163,15 +4062,22 @@ function renderDiagData(d) {
     </div>
 
     <div class="diag-section">
-      <h3>Snapshot Bus / MQTT / NTP</h3>
+      <h3>MQTT</h3>
       <div class="diag-kv-grid">
-        ${kvRow('SB publishes', sn.publishes||0)}
-        ${kvRow('SB reads', sn.reads||0)}
-        ${kvRow('SB retries', sn.retries||0)}
-        ${kvRow('MQTT state', mq.state||'—')}
-        ${kvRow('MQTT publish ok', mq.publish_ok||0)}
-        ${kvRow('MQTT publish fail', mq.publish_fail||0)}
-        ${kvRow('MQTT drops', mq.publish_drops||0)}
+        ${kvRow('Enabled', mq.enabled ? 'yes' : 'no')}
+        ${kvRow('State', mq.state||'—')}
+        ${kvRow('Base topic', mq.effective_base || '—')}
+        ${kvRow('Publish ok', mq.publish_ok||0)}
+        ${kvRow('Publish fail', mq.publish_fail||0)}
+        ${kvRow('Drops', mq.publish_drops||0)}
+        ${kvRow('Publish max', (mq.publish_max_ms||0) + ' ms')}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>Time</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Device time', deviceTime)}
         ${kvRow('NTP synced', ntp.synced ? 'yes' : 'no')}
         ${kvRow('NTP server', ntp.server||'—')}
       </div>
@@ -3180,16 +4086,86 @@ function renderDiagData(d) {
     <div class="diag-section">
       <h3>LittleFS / History / Energy</h3>
       <div class="diag-kv-grid">
-        ${kvRow('LFS total', (lfs.total_b||0).toLocaleString() + ' B')}
-        ${kvRow('LFS used', (lfs.used_b||0).toLocaleString() + ' B')}
-        ${kvRow('LFS free', (lfs.free_b||0).toLocaleString() + ' B')}
+        ${kvRow('LFS total', fmtMb(lfs.total_b), (lfs.total_b||0) + ' B')}
+        ${kvRow('LFS used', fmtMb(lfs.used_b), (lfs.used_b||0) + ' B')}
+        ${kvRow('LFS free', fmtMb(lfs.free_b), (lfs.free_b||0) + ' B')}
         ${kvRow('Fine samples', his.fine_samples||0)}
         ${kvRow('Coarse samples', his.coarse_samples||0)}
-        ${kvRow('Today in', (ene.today_in_kwh||0).toFixed(2) + ' kWh')}
-        ${kvRow('Today out', (ene.today_out_kwh||0).toFixed(2) + ' kWh')}
+        ${kvRow('Today (in / out)', (ene.today_in_kwh||0).toFixed(2) + ' / ' + (ene.today_out_kwh||0).toFixed(2) + ' kWh')}
+        ${kvRow('Total (in / out)', (ene.total_in_kwh||0).toFixed(2) + ' / ' + (ene.total_out_kwh||0).toFixed(2) + ' kWh')}
         ${kvRow('Stored alerts', d.alerts_count||0)}
       </div>
     </div>
+
+    ${(function() {
+      if (!d.ble_status) return '';
+      const mppt  = ble.mppt  || {};
+      const shunt = ble.shunt || {};
+      const dbg   = ble.ble_debug || {};
+      const fmtF  = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
+
+      // MPPT filter funnel — the fastest way to see WHY decoding fails
+      // (wrong MAC, wrong record type, wrong encryption key).
+      const funnelHtml = ble.ble_active ? `
+      <div class="diag-kv-grid">
+        ${kvRow('Configured MPPT MAC', dbg.configured_mac || '—')}
+        ${kvRow('MAC valid', dbg.mppt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
+                (dbg.victron_total||0) + ' -> ' + (dbg.mppt_type_match||0) + ' -> ' +
+                (dbg.mppt_mac_match||0) + ' -> ' + (dbg.mppt_decrypt_ok||0))}
+      </div>` : '';
+
+      return `
+    <div class="diag-section">
+      <h3>Bluetooth LE</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('Active', ble.ble_active ? 'yes' : 'no')}
+        ${kvRow('Stack', ble.stack || '—')}
+        ${kvRow('Advertisements (total / Victron / MPPT)',
+                `${(ble.ble_gap_events||0).toLocaleString()} / ${(ble.ble_victron_advs||0).toLocaleString()} / ${(ble.ble_mppt_advs||0).toLocaleString()}`)}
+      </div>
+      ${funnelHtml}
+    </div>
+
+    <div class="diag-section">
+      <h3>WiFi</h3>
+      <div class="diag-kv-grid">
+        ${kvRow('SSID', ble.wifi_ssid || '—')}
+        ${kvRow('IP', ble.wifi_ip || '—')}
+        ${kvRow('Hostname', ble.wifi_hostname || '—')}
+        ${kvRow('Connected for', formatUptime(ble.wifi_connected_for_s))}
+        ${kvRow('Disconnects', ble.wifi_disconnects||0)}
+        ${kvRow('BSSID', ble.wifi_bssid || '—')}
+        ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' + rssiQuality(ble.wifi_rssi) : '—')}
+        ${kvRow('BSSID lock', ble.wifi_bssid_pin_active ? 'active' : 'off')}
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>MPPT</h3>
+      ${mppt.enabled ? `
+      <div class="diag-kv-grid">
+        ${kvRow('Last seen', fmtAgeS(mppt.last_seen_s))}
+        ${kvRow('PV input power', fmtF(mppt.pv_power_w, 1) + ' W')}
+        ${kvRow('Charger output voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
+        ${kvRow('Charger output current', fmtF(mppt.batt_current_a, 2) + ' A')}
+        ${kvRow('Charger state', mppt.seen ? csLabel(mppt.charge_state) : '—')}
+        ${kvRow('Yield today', mppt.yield_today_wh != null ? (mppt.yield_today_wh / 1000).toFixed(2) + ' kWh' : '—')}
+      </div>` : `<div style="color:var(--text-muted);font-size:12px">MPPT disabled</div>`}
+    </div>
+
+    <div class="diag-section">
+      <h3>Shunt</h3>
+      ${shunt.enabled ? `
+      <div class="diag-kv-grid">
+        ${kvRow('Last seen', fmtAgeS(shunt.last_seen_s))}
+        ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
+        ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
+        ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
+        ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
+      </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}
+    </div>`;
+    })()}
 
     ${(function() {
       const cd = d.coredump || {};
@@ -3805,3 +4781,367 @@ async function checkAuthState() {
   updateAlertBadge();
   setInterval(updateAlertBadge, 60000);
 })();
+
+/* ── Drift Details ──────────────────────────────────────────────────────────── */
+
+// Voltage scale for cell bars: LiFePO4 typical operating range.
+const DRIFT_FLOOR_MV = 3200;
+const DRIFT_CEIL_MV  = 3680;
+const DRIFT_RANGE_MV = DRIFT_CEIL_MV - DRIFT_FLOOR_MV;  // 480 mV
+
+// Guide lines at balance-reference, near-full, and OVP-approach voltages.
+const DRIFT_GUIDES = [
+  { mv: 3350, label: '3.35' },
+  { mv: 3450, label: '3.45' },
+  { mv: 3600, label: '3.60' },
+];
+
+function driftPct(mv) {
+  return Math.max(0, Math.min(100, (mv - DRIFT_FLOOR_MV) / DRIFT_RANGE_MV * 100));
+}
+
+function driftBandColor(spreadMv) {
+  if (spreadMv >= 110) return 'var(--brand-coral)';
+  if (spreadMv >= 40)  return 'var(--color-warning)';
+  return 'var(--brand-teal)';
+}
+
+function driftStatusLabel(spreadMv) {
+  if (spreadMv >= 110) return 'Imbalanced';
+  if (spreadMv >= 40)  return 'Monitor drift';
+  return 'Balanced';
+}
+
+function driftStatusCls(spreadMv) {
+  if (spreadMv >= 110) return 'drift-pill-imbalanced';
+  if (spreadMv >= 40)  return 'drift-pill-monitor';
+  return 'drift-pill-balanced';
+}
+
+function driftRateStr(rate) {
+  if (rate === null || rate === undefined || isNaN(rate)) return '—';
+  const r = Math.round(rate * 10) / 10;
+  return (r >= 0 ? '+' : '') + r.toFixed(1);
+}
+
+async function loadDriftDetails() {
+  if (!document.getElementById('drift-section-root')) return;
+  try {
+    const r = await apiFetch('/api/drift');
+    if (!r || !r.ok) return;
+    g_drift_data = await r.json();
+    renderDriftSection();
+  } catch (_) {}
+}
+
+function renderDriftSection() {
+  const root = document.getElementById('drift-section-root');
+  if (!root || !g_drift_data) return;
+
+  const packs = g_drift_data.packs || [];
+  if (packs.length === 0) {
+    root.innerHTML = '<p style="padding:16px 4px;color:var(--text-muted);font-size:13px">No online packs — drift data will appear once packs connect.</p>';
+    return;
+  }
+
+  root.innerHTML = '';
+  packs.forEach(pack => root.appendChild(buildDriftCard(pack)));
+}
+
+function buildDriftCard(pack) {
+  // Pill always reflects the live (now) spread so it matches the battery cards.
+  // Historical at-full spread is shown as separate labeled context below.
+  const liveSpread = pack.spread_now || 0;
+  const isOpen  = g_drift_open.has(pack.id);
+  // Rate is meaningful from 2 full-charge days on; show progress before that.
+  const nToc = pack.n_toc_days || 0;
+  const rateHtml = (nToc >= 2)
+    ? '<strong>' + driftRateStr(pack.drift_rate) + '</strong>&thinsp;mV/day'
+    : 'trend&thinsp;<strong>' + nToc + '/2</strong>&thinsp;days';
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'drift-pack-card';
+
+  const pillLabel  = driftStatusLabel(liveSpread);
+  const atFullStr  = pack.has_toc ? (pack.toc_spread || 0) + '&thinsp;mV' : '—';
+
+  // Toggle header: Live pill + three clearly labeled metrics
+  const toggle = document.createElement('div');
+  toggle.className = 'drift-toggle';
+  toggle.dataset.driftToggle = pack.id;
+  toggle.innerHTML =
+    '<span class="drift-pack-name">' + escHtml(pack.name) + '</span>' +
+    '<div class="drift-summary-items">' +
+      '<span class="drift-pill ' + driftStatusCls(liveSpread) + '">' + pillLabel + '</span>' +
+      '<span class="drift-meta">Live&thinsp;<strong>' + liveSpread + '</strong>&thinsp;mV</span>' +
+      '<span class="drift-summary-sep">&middot;</span>' +
+      '<span class="drift-meta">At full&thinsp;<strong>' + atFullStr + '</strong></span>' +
+      '<span class="drift-summary-sep">&middot;</span>' +
+      '<span class="drift-meta">' + rateHtml + '</span>' +
+    '</div>' +
+    '<span class="drift-chevron' + (isOpen ? ' open' : '') + '">▼</span>';
+  toggle.addEventListener('click', () => toggleDriftPack(pack.id));
+  wrapper.appendChild(toggle);
+
+  // Expanded body
+  const body = document.createElement('div');
+  body.className = 'drift-body';
+  body.dataset.driftBody = pack.id;
+  body.style.display = isOpen ? '' : 'none';
+  body.innerHTML = pack.has_history
+    ? buildDriftBodyHtml(pack)
+    : buildDriftNoHistoryHtml(pack);
+  wrapper.appendChild(body);
+
+  return wrapper;
+}
+
+function buildDriftNoHistoryHtml(pack) {
+  return '<p class="drift-building">History building — 5-day band appears after the first day accrues. Live cell positions shown below.</p>' +
+    buildDriftCellRowsHtml(pack, true);
+}
+
+// Repetition rule (review 2.3): a first-full / first-empty cell is shown only
+// when the SAME cell won the per-day argmax on >= 2 days AND holds a majority
+// of the region days in the window. One-day winners are trivia and stay hidden.
+function driftRepeatWinner(modeIdx, daysWon, daysTotal) {
+  if (!daysTotal || !daysWon || daysWon < 2) return null;
+  if (daysWon * 2 <= daysTotal) return null;
+  return { cell: 'C' + (modeIdx + 1), won: daysWon, total: daysTotal };
+}
+
+function buildDriftBodyHtml(pack) {
+  const cells = pack.cells || [];
+  const nc    = Math.min(pack.cell_count || cells.length, 15);
+
+  // Conditional warning strip (review 2.4): cells at/above 3.60 V right now.
+  // Zero is the expected state and renders nothing; nonzero is urgent.
+  const highCells = cells.slice(0, nc)
+    .map((c, i) => ({ i, mv: c.now || 0 }))
+    .filter(x => x.mv >= 3600);
+  let stripHtml = '';
+  if (highCells.length > 0) {
+    const crit = highCells.some(x => x.mv >= 3650);
+    const list = highCells.map(x => 'C' + (x.i + 1) + ': ' + x.mv + ' mV').join(', ');
+    stripHtml = '<div class="drift-warn-strip' + (crit ? ' crit' : '') + '">' +
+      highCells.length + (highCells.length === 1 ? ' cell' : ' cells') +
+      ' at or above 3.60&thinsp;V (' + escHtml(list) + ')</div>';
+  }
+
+  // KPI 1: balance now (anchor tile; matches the header pill).
+  const liveSpread = pack.spread_now || 0;
+  const kpiNow = driftKpiSub('Balance now', liveSpread + ' mV', driftStatusLabel(liveSpread));
+
+  // KPI 2: at full — worst 5-day spread at top-of-charge, with the worst cell.
+  let kpiFull;
+  if (pack.has_toc) {
+    const worst = (pack.first_full_mv > 0) ? 'worst cell C' + (pack.first_full_idx + 1) : '';
+    kpiFull = driftKpiSub('At full', (pack.toc_spread || 0) + ' mV', worst);
+  } else {
+    kpiFull = driftKpiSub('At full', '—', 'no full charge in 5 days');
+  }
+
+  // KPI 3: trend — a rate once 2 full-charge days exist, progress before that
+  // (review 2.1: an indefinite "building" reads as a stuck spinner).
+  const nToc = pack.n_toc_days || 0;
+  let kpiTrend;
+  if (nToc >= 2) {
+    kpiTrend = driftKpiSub('Trend', driftRateStr(pack.drift_rate) + ' mV/day',
+                           'between full-charge days');
+  } else {
+    kpiTrend = driftKpiSub('Trend', nToc + ' of 2', 'full-charge days collected');
+  }
+
+  // Optional KPI: at empty — rendered only when low-SoC data exists
+  // (hide-until-data policy, review 2.2). A solar setup may never dip below
+  // 15% SoC; a permanent placeholder would be a false promise.
+  let kpiEmpty = '';
+  if (pack.has_bod) {
+    const feWin = driftRepeatWinner(pack.fe_mode_idx, pack.fe_days_won, pack.fe_days_total);
+    const sub = feWin
+      ? feWin.cell + ' empties first (' + feWin.won + ' of ' + feWin.total + ' days)'
+      : (pack.first_empty_mv > 0 ? 'worst cell C' + (pack.first_empty_idx + 1) : '');
+    kpiEmpty = driftKpiSub('At empty', (pack.bod_spread || 0) + ' mV', sub);
+  }
+
+  // Repetition callout for the fills-first pattern (review 2.3): shown only
+  // when the same cell wins repeatedly; a one-day winner is omitted entirely.
+  const ffWin = driftRepeatWinner(pack.ff_mode_idx, pack.ff_days_won, pack.ff_days_total);
+  let calloutHtml = '';
+  if (ffWin) {
+    calloutHtml = '<div class="drift-repeat-note">' + ffWin.cell + ' fills first (' +
+      ffWin.won + ' of ' + ffWin.total + ' full-charge days)</div>';
+  }
+
+  // Capability note when the at-empty region has never been visited.
+  const bodNote = pack.has_bod ? '' :
+    '<div class="drift-cap-note">No low-SoC data in the 5-day window. ' +
+    'At-empty stats appear if SoC dips below 15&thinsp;%.</div>';
+
+  return stripHtml +
+    '<div class="drift-kpis">' + kpiNow + kpiFull + kpiTrend + kpiEmpty + '</div>' +
+    calloutHtml + bodNote +
+    buildDriftCellRowsHtml(pack, false);
+}
+
+// KPI with an optional muted sub-label (used for "no data yet" states).
+function driftKpiSub(label, value, sub) {
+  const subHtml = sub ? '<div class="drift-kpi-sub">' + sub + '</div>' : '';
+  return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
+    '<div class="drift-kpi-value">' + value + '</div>' + subHtml + '</div>';
+}
+
+function buildDriftCellRowsHtml(pack, noHistory) {
+  const cells  = pack.cells || [];
+  const nc     = Math.min(pack.cell_count || cells.length, 15);
+  const spread = pack.spread_now || 0;
+  const color  = driftBandColor(spread);
+
+  const guideHtml = DRIFT_GUIDES.map(g =>
+    '<div class="drift-guide" style="left:' + driftPct(g.mv).toFixed(1) + '%"></div>'
+  ).join('');
+
+  // Outlier detection (review 2.5): rows are dimmed by default; full opacity
+  // goes to the cells that define the pack spread (window worst at full /
+  // empty) and to cells whose 5-day band center deviates > 15 mV from the
+  // pack median. Keeps the eye on the two or three rows that matter.
+  const OUTLIER_MV = 15;
+  const centers = [];
+  for (let ci = 0; ci < nc; ci++) {
+    const c = cells[ci] || {};
+    if (!noHistory && c.d5min && c.d5max) centers.push((c.d5min + c.d5max) / 2);
+    else if (c.now) centers.push(c.now);
+    else centers.push(null);
+  }
+  const sorted = centers.filter(v => v !== null).sort((a, b) => a - b);
+  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+
+  const ffWin = driftRepeatWinner(pack.ff_mode_idx, pack.ff_days_won, pack.ff_days_total);
+
+  const isOutlier = ci => {
+    if (nc <= 2) return true;  // tiny packs: nothing to dim
+    if (pack.has_toc && ci === pack.first_full_idx) return true;
+    if (pack.has_bod && ci === pack.first_empty_idx) return true;
+    if (ffWin && ci === pack.ff_mode_idx) return true;
+    if (median !== null && centers[ci] !== null &&
+        Math.abs(centers[ci] - median) > OUTLIER_MV) return true;
+    return false;
+  };
+
+  let rows = '';
+  for (let ci = 0; ci < nc; ci++) {
+    const c = cells[ci] || {};
+    const nowMv  = c.now  || 0;
+    const nowPct = nowMv  ? driftPct(nowMv).toFixed(1)  : null;
+
+    const atHtml = (!noHistory && c.evMin && c.evMax) ? (() => {
+      const l = driftPct(c.evMin).toFixed(1);
+      const w = Math.max(0, driftPct(c.evMax) - driftPct(c.evMin)).toFixed(1);
+      return '<div class="drift-band-at" style="left:' + l + '%;width:' + w + '%"></div>';
+    })() : '';
+
+    const d5Html = (!noHistory && c.d5min && c.d5max) ? (() => {
+      const l = driftPct(c.d5min).toFixed(1);
+      const w = Math.max(0, driftPct(c.d5max) - driftPct(c.d5min)).toFixed(1);
+      return '<div class="drift-band-d5" style="left:' + l + '%;width:' + w + '%;background:' + color + '"></div>';
+    })() : '';
+
+    const dotHtml = nowPct !== null
+      ? '<div class="drift-dot" data-drift-dot="' + pack.id + '-' + ci +
+        '" style="left:' + nowPct + '%;background:' + color + '"></div>'
+      : '';
+
+    // Right column: the 5-day band WIDTH is the number this section is about;
+    // the endpoints are already encoded by the band position (review 2.5).
+    // Raw endpoints stay available as a tooltip.
+    const hasBand = !noHistory && c.d5min && c.d5max;
+    const numsStr = hasBand
+      ? ((c.d5max - c.d5min) + ' mV')
+      : (nowMv ? nowMv + ' mV' : '—');
+    const numsTitle = hasBand ? (c.d5min + '-' + c.d5max + ' mV over 5 days') : '';
+
+    const tagHtml = (ffWin && ci === pack.ff_mode_idx)
+      ? '<span class="drift-cell-tag">fills first</span>' : '';
+
+    rows += '<div class="drift-cell-row' + (isOutlier(ci) ? '' : ' dim') + '">' +
+      '<div class="drift-cell-lbl">C' + (ci + 1) + tagHtml + '</div>' +
+      '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
+      '<div class="drift-cell-nums"' +
+        (numsTitle ? ' title="' + numsTitle + '"' : '') + '>' + numsStr + '</div>' +
+      '</div>';
+  }
+
+  // Scale axis
+  const ticksHtml =
+    '<div class="drift-scale-tick" style="left:0%">' + (DRIFT_FLOOR_MV / 1000).toFixed(2) + '</div>' +
+    DRIFT_GUIDES.map(g =>
+      '<div class="drift-scale-tick" style="left:' + driftPct(g.mv).toFixed(1) + '%">' + g.label + '</div>'
+    ).join('') +
+    '<div class="drift-scale-tick" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
+
+  // Band legend: the grey band is all-time at ANY SoC while the colored band
+  // is 5-day at extremes only — two gates in one graphic need labels.
+  const legendHtml = noHistory ? '' :
+    '<div class="drift-legend">' +
+      '<span><span class="drift-legend-swatch swatch-at"></span>all-time (any SoC)</span>' +
+      '<span><span class="drift-legend-swatch" style="background:' + color + '"></span>5-day at extremes</span>' +
+      '<span><span class="drift-legend-swatch swatch-dot" style="background:' + color + '"></span>now</span>' +
+    '</div>';
+
+  return rows +
+    '<div class="drift-scale-row">' +
+      '<div class="drift-scale-lbl-spacer"></div>' +
+      '<div class="drift-scale-axis">' + ticksHtml + '</div>' +
+      '<div class="drift-scale-nums-spacer"></div>' +
+    '</div>' +
+    legendHtml;
+}
+
+function toggleDriftPack(packId) {
+  const isOpen = g_drift_open.has(packId);
+  if (isOpen) g_drift_open.delete(packId);
+  else        g_drift_open.add(packId);
+
+  const body    = document.querySelector('[data-drift-body="' + packId + '"]');
+  const chevron = document.querySelector('[data-drift-toggle="' + packId + '"] .drift-chevron');
+  if (body)    body.style.display = isOpen ? 'none' : '';
+  if (chevron) chevron.className  = 'drift-chevron' + (isOpen ? '' : ' open');
+}
+
+function driftExpandAll() {
+  if (!g_drift_data) return;
+  const packs   = g_drift_data.packs || [];
+  const allOpen = packs.every(p => g_drift_open.has(p.id));
+  packs.forEach(p => {
+    if (allOpen) g_drift_open.delete(p.id);
+    else         g_drift_open.add(p.id);
+    const body    = document.querySelector('[data-drift-body="' + p.id + '"]');
+    const chevron = document.querySelector('[data-drift-toggle="' + p.id + '"] .drift-chevron');
+    if (body)    body.style.display = allOpen ? 'none' : '';
+    if (chevron) chevron.className  = 'drift-chevron' + (allOpen ? '' : ' open');
+  });
+}
+
+// Called on every 2-s live poll when on the battery page to update the "now"
+// dot positions in-place without re-fetching drift history.
+function updateDriftNow() {
+  if (!g_live || !g_drift_data) return;
+  const livePacks  = (g_live.snapshot && g_live.snapshot.packs) || [];
+  const driftPacks = g_drift_data.packs || [];
+
+  driftPacks.forEach(dp => {
+    const lp = livePacks.find(p => p.bms_id === dp.id);
+    if (!lp || !lp.cells) return;
+    const spread = Math.round((lp.cell_drift_v || 0) * 1000);
+    const color  = driftBandColor(spread);
+
+    lp.cells.forEach((v, ci) => {
+      const mv = Math.round(v * 1000);
+      if (mv < 2000 || mv > 5000) return;
+      const dotEl = document.querySelector('[data-drift-dot="' + dp.id + '-' + ci + '"]');
+      if (!dotEl) return;
+      dotEl.style.left       = driftPct(mv).toFixed(1) + '%';
+      dotEl.style.background = color;
+    });
+  });
+}

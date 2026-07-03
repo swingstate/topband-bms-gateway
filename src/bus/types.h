@@ -59,3 +59,16 @@ constexpr uint32_t HISTORY_FINE_CAPACITY      = 720;   // 720 × 10s = 2 h
 // Coarse ring: 5-minute samples, 7-day window.
 constexpr uint32_t HISTORY_COARSE_RESOLUTION_S = 300;
 constexpr uint32_t HISTORY_COARSE_CAPACITY      = 2016; // 2016 × 5min = 7 d
+
+// ── Solar day ring: one day of PV power, PSRAM-only ───────────────────────────
+// 5-minute cadence matches the coarse ring — no new sampler needed.
+// EXT_RAM_BSS_ATTR placement: 288 × 8 B = 2304 B in PSRAM, zero DRAM cost.
+struct SolarDayPoint {  // 8 bytes
+  uint32_t t_epoch;     // unix seconds (0 = empty slot)
+  uint16_t pv_power_w;  // W; 0xFFFF = not-valid sentinel (MPPT not seen this slot)
+  uint16_t _pad;
+};
+static_assert(sizeof(SolarDayPoint) == 8, "SolarDayPoint must be 8 bytes");
+
+constexpr uint32_t SOLAR_DAY_CAPACITY     = 288;  // 24 h × (3600/300) = 288 pts
+constexpr uint32_t SOLAR_DAY_RESOLUTION_S = 300;  // 5 min, matches coarse cadence

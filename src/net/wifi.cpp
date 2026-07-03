@@ -22,15 +22,49 @@ static constexpr EventBits_t BIT_CONNECTED = BIT0;
 static constexpr EventBits_t BIT_FAILED    = BIT1;
 static constexpr EventBits_t BIT_SCAN_DONE = BIT2;
 
-static net::wifi::Mode g_mode        = net::wifi::Mode::Off;
-static bool            g_connected   = false;
-static int             g_retry       = 0;
-static constexpr int   MAX_RETRY     = 5;
-static int64_t         g_connect_us  = 0;          // esp_timer_get_time() at connect
-static char            g_hostname[32] = {};
+static net::wifi::Mode g_mode           = net::wifi::Mode::Off;
+static bool            g_connected      = false;
+static int             g_retry          = 0;
+static constexpr int   MAX_RETRY        = 5;
+static int64_t         g_connect_us     = 0;       // esp_timer_get_time() at connect
+static char            g_hostname[32]   = {};
+// Coexistence diagnostic: counts every STA disconnection since boot.
+static uint32_t        g_disconnect_count = 0;
+
+// BSSID pin state — managed by start_sta() and the disconnect event handler.
+// g_bssid_pin_active: true while the driver config has bssid_set=true for the pin.
+// Cleared on fallback (BSSID_PIN_MAX_RETRY exceeded) and on post-connection reconnect
+// (so a reconnect after being connected always uses pure signal-based selection).
+static bool    g_bssid_pin_active = false;
 
 static esp_netif_t* g_sta_netif = nullptr;
 static esp_netif_t* g_ap_netif  = nullptr;
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+// Parse a canonical "xx:xx:xx:xx:xx:xx" BSSID string into 6 bytes.
+// Returns false if the string is empty, malformed, or all-zero.
+static bool parse_bssid(const char* canonical, uint8_t out[6]) {
+  if (!canonical || canonical[0] == '\0') return false;
+  unsigned b[6] = {};
+  if (sscanf(canonical, "%2x:%2x:%2x:%2x:%2x:%2x",
+             &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) return false;
+  bool all_zero = true;
+  for (int i = 0; i < 6; i++) {
+    if (b[i]) { all_zero = false; break; }
+  }
+  if (all_zero) return false;
+  for (int i = 0; i < 6; i++) out[i] = (uint8_t)b[i];
+  return true;
+}
+
+// Apply scan/sort/RSSI settings to an existing sta config struct.
+// Does NOT write to esp_wifi — caller does that.
+static void apply_selection_settings(wifi_config_t& cfg, int8_t rssi_floor) {
+  cfg.sta.scan_method    = WIFI_ALL_CHANNEL_SCAN;
+  cfg.sta.sort_method    = WIFI_CONNECT_AP_BY_SIGNAL;
+  cfg.sta.threshold.rssi = rssi_floor;
+}
 
 // ── Event handler ─────────────────────────────────────────────────────────────
 
@@ -39,19 +73,72 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    g_disconnect_count++;
     bool was_connected = g_connected;
     g_connected = false;
-    if (g_mode == net::wifi::Mode::StaConnecting && g_retry < MAX_RETRY) {
-      g_retry++;
-      ESP_LOGW(TAG, "STA disconnected — retry %d/%d", g_retry, MAX_RETRY);
-      esp_wifi_connect();
-    } else {
-      ESP_LOGE(TAG, "STA connect failed after %d retries", g_retry);
-      if (g_events) xEventGroupSetBits(g_events, BIT_FAILED);
-    }
+
+    auto* ev = static_cast<wifi_event_sta_disconnected_t*>(data);
+    uint8_t reason = ev ? ev->reason : 0;
+
     if (was_connected) {
+      // Post-connection disconnect (AP reboot, range loss, etc.).
+      // Reconnect immediately; with WIFI_ALL_CHANNEL_SCAN + WIFI_CONNECT_AP_BY_SIGNAL
+      // already in the driver config this naturally picks the best available AP of
+      // the SSID — this is the "roaming" mechanism for this ESP32 implementation.
+      // Note: 802.11r/k/v seamless BSS transition is not supported by ESP-IDF 5.x;
+      // roaming here is explicit disconnect+reconnect with signal-based re-selection.
+      g_mode  = net::wifi::Mode::StaConnecting;
+      g_retry = 0;
+      // Do not clear g_bssid_pin_active here: if pin was set, let it try again;
+      // the BSSID_PIN_MAX_RETRY fallback below handles the case where the pinned
+      // AP is truly unreachable after reconnect too.
+      ESP_LOGW(TAG, "STA disconnected (was connected, reason=%d) — reconnecting", (int)reason);
       diag::alerts::emit(diag::alerts::Severity::Warn, "wifi", "disconnected");
+      esp_wifi_connect();
+
+    } else if (g_mode == net::wifi::Mode::StaConnecting) {
+      // Initial or recovery connection attempt failed.
+      if (g_bssid_pin_active && g_retry >= net::wifi::WIFI_BSSID_PIN_MAX_RETRY) {
+        // Pinned BSSID tried WIFI_BSSID_PIN_MAX_RETRY times without success.
+        // Fall back to strongest-AP selection so the gateway always gets online.
+        g_bssid_pin_active = false;
+        wifi_config_t cfg = {};
+        if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+          cfg.sta.bssid_set = false;
+          memset(cfg.sta.bssid, 0, sizeof(cfg.sta.bssid));
+          esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        }
+        g_retry = 0;
+        ESP_LOGW(TAG,
+                 "wifi: BSSID pin fallback — pinned AP unreachable after %d tries; "
+                 "switching to strongest-AP selection of same SSID",
+                 net::wifi::WIFI_BSSID_PIN_MAX_RETRY);
+        diag::alerts::emit(diag::alerts::Severity::Warn, "wifi",
+                           "BSSID pin fallback — using strongest-AP selection");
+        esp_wifi_connect();
+
+      } else if (g_retry < MAX_RETRY) {
+        g_retry++;
+        ESP_LOGW(TAG, "STA disconnected (reason=%d) — retry %d/%d",
+                 (int)reason, g_retry, MAX_RETRY);
+        esp_wifi_connect();
+
+      } else {
+        ESP_LOGE(TAG, "STA connect failed after %d retries", g_retry);
+        g_mode = net::wifi::Mode::StaFailed;
+        if (g_events) xEventGroupSetBits(g_events, BIT_FAILED);
+      }
+
     }
+    // If g_mode is StaFailed / ApActive / Off we have nothing useful to do.
+
+    if (was_connected) {
+      // Alert already emitted inside the was_connected block above.
+    } else if (g_mode == net::wifi::Mode::StaFailed) {
+      diag::alerts::emit(diag::alerts::Severity::Warn, "wifi",
+                         "connect failed after %d retries", MAX_RETRY);
+    }
+
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     g_connected  = true;
     g_retry      = 0;
@@ -59,6 +146,18 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
     g_mode       = net::wifi::Mode::StaConnected;
     ip_event_got_ip_t* ev = (ip_event_got_ip_t*)data;
     ESP_LOGI(TAG, "STA connected — IP " IPSTR, IP2STR(&ev->ip_info.ip));
+
+    // Log which AP we ended up on for instant diagnosis of sticky-client scenarios.
+    wifi_ap_record_t ap_info = {};
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+      ESP_LOGI(TAG, "STA AP: SSID=\"%s\" BSSID=%02x:%02x:%02x:%02x:%02x:%02x RSSI=%d dBm%s",
+               (char*)ap_info.ssid,
+               ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2],
+               ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5],
+               (int)ap_info.rssi,
+               g_bssid_pin_active ? " [BSSID pinned]" : "");
+    }
+
     char ssid[33] = {};
     wifi_config_t wc = {};
     if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK) {
@@ -70,6 +169,7 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
                        "connected to %s, IP=%s", ssid, ip_str);
     app::self_test::mark_passed(app::self_test::WIFI_CONNECTED);
     if (g_events) xEventGroupSetBits(g_events, BIT_CONNECTED);
+
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
     auto* ev = (wifi_event_ap_staconnected_t*)data;
     ESP_LOGI(TAG, "AP: client " MACSTR " joined (AID=%d)",
@@ -104,19 +204,28 @@ bool init() {
     return false;
   }
 
-  esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                      on_wifi_event, NULL, NULL);
-  esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                      on_wifi_event, NULL, NULL);
+  ret = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                            on_wifi_event, NULL, NULL);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "register WIFI_EVENT handler: %s", esp_err_to_name(ret));
+    return false;
+  }
+  ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            on_wifi_event, NULL, NULL);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "register IP_EVENT handler: %s", esp_err_to_name(ret));
+    return false;
+  }
   return true;
 }
 
 // ── STA ───────────────────────────────────────────────────────────────────────
 
-bool start_sta(uint32_t timeout_ms) {
+bool start_sta(uint32_t timeout_ms, const char* bssid_pin, int8_t rssi_floor) {
   if (!g_events) return false;
   xEventGroupClearBits(g_events, BIT_CONNECTED | BIT_FAILED);
-  g_retry = 0;
+  g_retry            = 0;
+  g_bssid_pin_active = false;
 
   if (!g_sta_netif) {
     g_sta_netif = esp_netif_create_default_wifi_sta();
@@ -133,7 +242,30 @@ bool start_sta(uint32_t timeout_ms) {
     return false;
   }
 
-  ESP_LOGI(TAG, "STA connecting to \"%s\"…", (char*)sta_cfg.sta.ssid);
+  // Override scan/sort/RSSI settings so we always get signal-based AP selection.
+  // This is the core fix for the sticky-client problem: WIFI_FAST_SCAN (IDF default)
+  // connects to the first matching AP; WIFI_ALL_CHANNEL_SCAN scans all and picks best.
+  apply_selection_settings(sta_cfg, rssi_floor);
+
+  // Apply BSSID pin if provided and parseable.
+  uint8_t bssid_bytes[6] = {};
+  if (parse_bssid(bssid_pin, bssid_bytes)) {
+    memcpy(sta_cfg.sta.bssid, bssid_bytes, 6);
+    sta_cfg.sta.bssid_set  = true;
+    g_bssid_pin_active     = true;
+    ESP_LOGI(TAG,
+             "start_sta: BSSID pin=%s (fallback to strongest-AP after %d failures)",
+             bssid_pin, WIFI_BSSID_PIN_MAX_RETRY);
+  } else {
+    sta_cfg.sta.bssid_set = false;
+    memset(sta_cfg.sta.bssid, 0, sizeof(sta_cfg.sta.bssid));
+  }
+
+  ESP_LOGI(TAG,
+           "STA connecting to \"%s\" (scan=ALL_CHANNEL, sort=BY_SIGNAL, rssi_floor=%d dBm)%s",
+           (char*)sta_cfg.sta.ssid, (int)rssi_floor,
+           g_bssid_pin_active ? " [BSSID pinned]" : "");
+
   g_mode = Mode::StaConnecting;
   esp_wifi_set_mode(WIFI_MODE_STA);
   esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
@@ -203,6 +335,9 @@ bool save_creds(const char* ssid, const char* pass) {
   // Allow WPA2/WPA3 and open networks.
   cfg.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
   cfg.sta.pmf_cfg.capable    = true;
+  // Note: scan_method/sort_method/rssi_threshold are applied at start_sta() time,
+  // not here, so they always reflect the current Config without requiring save_creds
+  // to be re-called when the BSSID pin or RSSI threshold changes.
 
   esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &cfg);
   if (ret != ESP_OK) {
@@ -254,6 +389,8 @@ static void connect_task(void* arg) {
   }
   cfg.sta.threshold.authmode = a->pass[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
   cfg.sta.pmf_cfg.capable    = true;
+  // Apply signal-based selection even for the captive-portal test connection.
+  apply_selection_settings(cfg, -127);  // no RSSI floor during initial setup scan
   esp_wifi_set_config(WIFI_IF_STA, &cfg);
 
   // In APSTA mode the STA interface is already started; just connect.
@@ -333,8 +470,13 @@ std::vector<ScanResult> scan(uint32_t timeout_ms) {
     if (records[i].ssid[0] == '\0') continue;
     ScanResult r;
     r.ssid   = std::string((char*)records[i].ssid);
-    r.rssi   = records[i].rssi;
     r.secure = (records[i].authmode != WIFI_AUTH_OPEN);
+    r.rssi   = records[i].rssi;
+    char bssid_str[18] = {};
+    snprintf(bssid_str, sizeof(bssid_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+             records[i].bssid[0], records[i].bssid[1], records[i].bssid[2],
+             records[i].bssid[3], records[i].bssid[4], records[i].bssid[5]);
+    r.bssid = std::string(bssid_str);
     out.push_back(std::move(r));
   }
   // Sort by signal strength, strongest first.
@@ -348,6 +490,7 @@ std::vector<ScanResult> scan(uint32_t timeout_ms) {
 Mode get_state()     { return g_mode; }
 bool is_connected()  { return g_connected; }
 bool is_ap_mode()    { return g_mode == Mode::ApActive; }
+bool is_bssid_pin_active() { return g_bssid_pin_active; }
 
 void get_ip(char* buf, size_t len) {
   if (!g_connected || !g_sta_netif) {
@@ -379,6 +522,17 @@ int8_t get_rssi() {
   wifi_ap_record_t info = {};
   if (esp_wifi_sta_get_ap_info(&info) != ESP_OK) return 0;
   return info.rssi;
+}
+
+std::string get_bssid() {
+  if (!g_connected) return {};
+  wifi_ap_record_t info = {};
+  if (esp_wifi_sta_get_ap_info(&info) != ESP_OK) return {};
+  char buf[18] = {};
+  snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x",
+           info.bssid[0], info.bssid[1], info.bssid[2],
+           info.bssid[3], info.bssid[4], info.bssid[5]);
+  return std::string(buf);
 }
 
 void get_hostname(char* buf, size_t len) {
@@ -417,5 +571,7 @@ uint32_t connected_for_s() {
   int64_t diff = (now - g_connect_us) / 1000000LL;
   return (diff > 0) ? (uint32_t)diff : 0;
 }
+
+uint32_t get_disconnect_count() { return g_disconnect_count; }
 
 }  // namespace net::wifi

@@ -5,6 +5,84 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-07-03
+
+Second feature release of the V3.x line. Adds Bluetooth LE support for a Victron
+MPPT solar charger, a dedicated Solar page, per-cell Battery Drift Details, a
+reorganized Diagnostics page, and a safety-relevant RS485 correctness fix.
+Supersedes the `v3.1.0-preview.1` through `v3.1.0-preview.4` pre-release builds;
+no functional change was made for the final cut beyond version finalization.
+
+### Added
+
+- **Bluetooth LE / Victron MPPT integration.** The gateway reads a Victron MPPT
+  solar charger directly over BLE (PV power, PV voltage, PV current, yield today,
+  charger output, charger state) — no Cerbo, no extra wiring. Enable from
+  **Settings > BLE Sources**. BLE scanning is coexistence-hardened against WiFi:
+  the scanner pauses during TLS handshakes, and NimBLE runs observer-only.
+- **Solar page.** A day chart of solar power (up to 30 days, PSRAM-backed ring
+  buffer), the MPPT charger's DC output, and a Solar-Passthrough indicator for
+  setups running OpenDTU-onBattery.
+- **Battery Drift Details.** Collapsible per-pack panel showing per-cell drift
+  over the last 5 days, measured at the charge extremes (SoC >= 95% for "at
+  full", SoC <= 5% for "at empty") instead of the flat mid-range where all
+  cells look the same. Day-aware drift rate and the completed-day ring persist
+  across reboots.
+- **WiFi strongest-AP selection + BSSID pin.** When multiple APs share an SSID,
+  the gateway connects to the strongest signal instead of the first one found,
+  with an optional BSSID pin to lock to a specific AP.
+
+### Changed
+
+- **Diagnostics page reorganized** (`web/diag: restructure sections, honest
+  units, missing rows`). Fields grouped into collapsible sections (Bluetooth LE,
+  WiFi, MPPT, Shunt), mislabeled/misplaced fields corrected (BSSID lock moved
+  into WiFi, total current moved into Shunt), units stated honestly, ESP32-S3
+  CPU temperature added. Coredump detection now probes once at boot instead of
+  on every `/api/diag` request; stale, undecodable coredumps are erased
+  automatically.
+- **Drift Details: separate "now" from "at full", live status pill**
+  (`feature/drift-live-vs-atfull`). The status pill (Balanced / Monitor /
+  Imbalanced) previously used the last full-charge (ToC) spread, so a pack
+  balanced right now could read "IMBALANCED at full" — contradicting the live
+  battery card next to it. The pill now always reflects the **live spread**.
+  Expanded KPI tiles restructured as **Now / At full / At empty / Trend**, the
+  per-cell live "now" dot enlarged (9 px -> 12 px) with a contrasting ring.
+- **MPPT Charger Output rename.** `solar_batt_*` MQTT topics/HA entities renamed
+  to `solar_output_*` to correctly reflect the charger's DC output rather than
+  PV input. HA ghost-entity cleanup runs automatically on first boot after
+  upgrade.
+- **No chart flicker.** Chart cards update data in place each poll instead of
+  tearing down and rebuilding the DOM node.
+- **Persistent session cookie.** The login session now carries an explicit
+  lifetime, so you stay logged in across browser restarts.
+- **No build-version churn.** `UI_VERSION` is derived from a SHA-256 content
+  hash of the web assets; a routine `pio run` that doesn't touch web files
+  leaves the generated provisioner header unchanged and the tree git-clean.
+
+### Fixed
+
+- **SAFETY: RS485 responder-address validation on all reply paths**
+  (`bms: validate responder address on all RS485 reply paths`). A checksum-valid
+  frame can still be a late reply from a previously polled pack (timeout on
+  pack N, frame arrives during the poll of pack N+1). Without an address check,
+  such a frame was silently attributed to the wrong pack, feeding foreign data
+  into safety aggregation. The analog, alarm, and sysparam paths now discard
+  frames whose responder address doesn't match the polled pack, counted in a
+  new `wrong_addr` stat (`/api/diag` `poller.wrong_addr`), expected to stay 0 on
+  a healthy bus.
+- **MQTT task stack raised 6144 -> 8192 bytes** after field high-water-mark data
+  showed a 256-byte overflow risk.
+- **TLS regression caught before release.** `SPIRAM_MALLOC_ALWAYSINTERNAL` was
+  briefly lowered to 8192 during the preview cycle to reduce internal DRAM
+  pressure, which silently moved the mbedTLS input buffer to PSRAM and broke
+  TLS on some AP configurations. Reverted to 16384 before this release.
+
+### Memory
+
+- `BmsSystemSnapshot` and the `/api/live` JSON document moved to PSRAM, freeing
+  internal DRAM previously under pressure.
+
 ## [3.0.0] - 2026-06-23
 
 First stable release of the V3.0 rewrite. All V3.0 features from the

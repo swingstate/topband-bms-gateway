@@ -10,6 +10,8 @@ idf_component_register(
     "app/boot.cpp"
     "app/smoke_reader.cpp"
     "app/history_task.cpp"
+    "app/solar_day_ring.cpp"
+    "app/drift_ring.cpp"
     "app/self_test.cpp"
     "storage/config.cpp"
     "storage/nvs_store.cpp"
@@ -21,6 +23,7 @@ idf_component_register(
     "storage/alerts_store.cpp"
     "diag/log_ring.cpp"
     "diag/alerts.cpp"
+    "diag/coredump_probe.cpp"
     "bus/queues.cpp"
     "bus/snapshot_bus.cpp"
     "bms/protocol.cpp"
@@ -38,6 +41,7 @@ idf_component_register(
     "net/wifi.cpp"
     "net/captdns.cpp"
     "net/ntp.cpp"
+    "net/net_diag.cpp"
     "web/server.cpp"
     "web/auth.cpp"
     "web/captive.cpp"
@@ -46,14 +50,22 @@ idf_component_register(
     "web/handlers_config.cpp"
     "web/handlers_actions.cpp"
     "web/handlers_history.cpp"
+    "web/handlers_drift.cpp"
     "web/handlers_diag.cpp"
     "web/handlers_alerts.cpp"
     "web/handlers_ota.cpp"
     "web/handlers_notify.cpp"
+    "web/handlers_net_diag.cpp"
     "web/handlers_static.cpp"
     "net/http_post.cpp"
     "notify/notify.cpp"
     "notify/telegram.cpp"
+    "sources/registry.cpp"
+    "sources/bms_source.cpp"
+    "sources/shunt_source.cpp"
+    "sources/mppt_source.cpp"
+    "sources/aggregator.cpp"
+    "sources/ble_scanner.cpp"
     "mqtt/topics.cpp"
     "mqtt/payloads.cpp"
     "mqtt/publisher.cpp"
@@ -85,4 +97,5 @@ idf_component_register(
     esp_http_client
     mqtt
     app_update
+    bt
 )
