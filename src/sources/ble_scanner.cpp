@@ -737,10 +737,12 @@ void get_adv_debug(AdvDebugState& out) {
   out.mppt_mac_match   = s_mppt_mac_match;
   out.mppt_decrypt_ok  = s_mppt_decrypt_ok;
   out.mppt_mac_valid   = s_mppt_mac_valid;
+  out.mppt_key_valid   = s_mppt_key_valid;
   out.shunt_type_match   = s_shunt_type_match;
   out.shunt_mac_match    = s_shunt_mac_match;
   out.shunt_decrypt_ok   = s_shunt_decrypt_ok;
   out.shunt_mac_valid    = s_shunt_mac_valid;
+  out.shunt_key_valid    = s_shunt_key_valid;
   out.shunt_last_mfg_len = s_shunt_last_mfg_len;
   out.shunt_last_new_fmt = s_shunt_last_new_fmt;
 

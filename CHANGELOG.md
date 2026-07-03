@@ -25,6 +25,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   from "not receiving any data at all". Diag now shows the configured shunt
   MAC and its own type/MAC/decrypt counters (`src/sources/ble_scanner.h/.cpp`,
   `handlers_diag.cpp`, diag page).
+- **Robust BLE encryption-key entry + a "Key valid" diagnostic.** Pasting a
+  Victron encryption key from a phone photo (Live Text / OCR) often captures
+  surrounding text — a label, spaces, a trailing period — which silently
+  corrupted the stored key so decode never ran (no data, no obvious reason).
+  The Settings > Bluetooth LE key fields (both SmartShunt and MPPT) now extract
+  the 32-hex key out of noisy pasted input, validate it live as you type, and
+  reject anything with no recoverable key instead of storing junk. The diag
+  page's BLE section now also shows a **Key valid** row for each device, so a
+  bad key is visible at a glance rather than looking like a dead radio.
 
 ## [3.1.0] - 2026-07-03
 

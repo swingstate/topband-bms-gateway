@@ -3170,10 +3170,11 @@ function renderSettingsBle() {
           <label>Encryption Key (32 hex chars)</label>
           <div class="pw-wrap">
             <input type="password" id="cfg-ble_shunt_key" autocomplete="new-password"
-                   placeholder="Leave blank to keep current" style="font-family:monospace">
+                   placeholder="Leave blank to keep current" style="font-family:monospace"
+                   oninput="updateKeyHint('cfg-ble_shunt_key','ble-shunt-key-hint')">
             <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_shunt_key')" title="Show/hide">${EYE_SVG}</button>
           </div>
-          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+          <div class="help" id="ble-shunt-key-hint">Write-only — leave blank to keep the saved key. Extra text (label, spaces) is stripped automatically.</div>
         </div>
       </div>
 
@@ -3194,10 +3195,11 @@ function renderSettingsBle() {
           <label>Encryption Key (32 hex chars)</label>
           <div class="pw-wrap">
             <input type="password" id="cfg-ble_mppt_key" autocomplete="new-password"
-                   placeholder="Leave blank to keep current" style="font-family:monospace">
+                   placeholder="Leave blank to keep current" style="font-family:monospace"
+                   oninput="updateKeyHint('cfg-ble_mppt_key','ble-mppt-key-hint')">
             <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_mppt_key')" title="Show/hide">${EYE_SVG}</button>
           </div>
-          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+          <div class="help" id="ble-mppt-key-hint">Write-only — leave blank to keep the saved key. Extra text (label, spaces) is stripped automatically.</div>
         </div>
       </div>
 
@@ -3217,6 +3219,61 @@ function normalizeMacInput(raw) {
   const bare = raw.trim().toLowerCase().replace(/[:\-]/g, '');
   if (!/^[0-9a-f]{12}$/.test(bare)) return null;
   return bare.match(/.{2}/g).join(':');
+}
+
+// Extract a clean 32-hex-char Victron encryption key from possibly-noisy input.
+// Copy-pasting the key from a phone photo (macOS Live Text / OCR) frequently
+// captures surrounding text too — a "VE.Direct encryption key" label, a trailing
+// period, inserted spaces/newlines — which silently corrupts the stored key so
+// the firmware's parse_hex_key() rejects it and decode never runs. Rather than
+// trust the raw paste, pull the 32-hex key out of it.
+// Returns { key, error, extracted }:
+//   key ''      → input left blank (keep the existing stored key)
+//   key <32hex> → a clean lowercase key to send (extracted=true if it had to be
+//                 recovered from longer pasted text)
+//   key null    → non-blank input with no recoverable 32-hex key (error is set)
+function extractVictronKey(raw) {
+  if (!raw || raw.trim() === '') return { key: '', error: null, extracted: false };
+  const stripped = raw.replace(/\s+/g, '');
+  if (/^[0-9a-fA-F]{32}$/.test(stripped)) {
+    return { key: stripped.toLowerCase(), error: null, extracted: false };
+  }
+  // A standalone 32-hex run bounded by non-hex (or string edges): handles
+  // "label: <key>", "<key>.", "<key>\n…". A 33+ contiguous hex blob is
+  // ambiguous and deliberately NOT matched (reject rather than guess wrong).
+  const m = stripped.match(/(?:^|[^0-9a-fA-F])([0-9a-fA-F]{32})(?:[^0-9a-fA-F]|$)/);
+  if (m) return { key: m[1].toLowerCase(), error: null, extracted: true };
+  const hexCount = (stripped.match(/[0-9a-fA-F]/g) || []).length;
+  return {
+    key: null,
+    error: `no 32-character key found (${hexCount} hex character${hexCount === 1 ? '' : 's'} in input). ` +
+           `Paste exactly the 32-char key shown in VictronConnect.`,
+    extracted: false,
+  };
+}
+
+// Live feedback under a key input as the user types/pastes. Shows whether a
+// clean 32-hex key was found, or was auto-extracted from noisier pasted text.
+function updateKeyHint(inputId, hintId) {
+  const el = document.getElementById(inputId);
+  const hint = document.getElementById(hintId);
+  if (!el || !hint) return;
+  if (el.value.trim() === '') {
+    hint.textContent = 'Write-only — leave blank to keep the saved key. Extra text (label, spaces) is stripped automatically.';
+    hint.style.color = '';
+    return;
+  }
+  const res = extractVictronKey(el.value);
+  if (res.key === null) {
+    hint.textContent = '✗ ' + res.error;
+    hint.style.color = 'var(--red)';
+  } else if (res.extracted) {
+    hint.textContent = '✓ extracted the 32-char key from pasted text (extra characters ignored)';
+    hint.style.color = 'var(--color-success)';
+  } else {
+    hint.textContent = '✓ 32 hex characters';
+    hint.style.color = 'var(--color-success)';
+  }
 }
 
 async function saveBleSectionSettings() {
@@ -3260,10 +3317,23 @@ async function saveBleSectionSettings() {
   }
 
   // Keys are write-only: blank = keep existing, non-blank = update.
-  ['ble_shunt_key', 'ble_mppt_key'].forEach(key => {
-    const el = document.getElementById('cfg-' + key);
-    cfg[key] = (el && el.value.length > 0) ? el.value : '';
-  });
+  // Extract a clean 32-hex key from the (possibly OCR/photo-pasted) input and
+  // validate before sending, so surrounding text never gets stored as the key.
+  let keyExtracted = false;
+  const keyFields = [
+    ['cfg-ble_shunt_key', 'ble_shunt_key', 'SmartShunt key'],
+    ['cfg-ble_mppt_key',  'ble_mppt_key',  'MPPT key'],
+  ];
+  for (const [id, key, label] of keyFields) {
+    const el = document.getElementById(id);
+    const res = extractVictronKey(el ? el.value : '');
+    if (res.key === null) {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = `${label}: ${res.error}`; }
+      return;
+    }
+    cfg[key] = res.key;
+    if (res.extracted) keyExtracted = true;
+  }
 
   try {
     const r = await apiFetch('/api/config', {
@@ -3279,7 +3349,11 @@ async function saveBleSectionSettings() {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
-      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved. Reboot to apply BLE changes.'; }
+      if (msg) {
+        msg.className = 'feedback-msg ok';
+        msg.textContent = 'Saved. Reboot to apply BLE changes.' +
+          (keyExtracted ? ' (key auto-extracted from pasted text)' : '');
+      }
     } else {
       if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
     }
@@ -4173,6 +4247,7 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('Configured MPPT MAC', dbg.configured_mac || '—')}
         ${kvRow('MAC valid', dbg.mppt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Key valid', dbg.mppt_key_valid ? 'yes' : 'NO — re-enter encryption key')}
         ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
                 (dbg.victron_total||0) + ' -> ' + (dbg.mppt_type_match||0) + ' -> ' +
                 (dbg.mppt_mac_match||0) + ' -> ' + (dbg.mppt_decrypt_ok||0))}
@@ -4223,6 +4298,7 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('Configured Shunt MAC', dbg.configured_shunt_mac || '—')}
         ${kvRow('MAC valid', dbg.shunt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Key valid', dbg.shunt_key_valid ? 'yes' : 'NO — re-enter encryption key')}
         ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
                 (dbg.victron_total||0) + ' -> ' + (dbg.shunt_type_match||0) + ' -> ' +
                 (dbg.shunt_mac_match||0) + ' -> ' + (dbg.shunt_decrypt_ok||0))}
