@@ -1315,6 +1315,46 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   gap: 8px;
   margin-bottom: 5px;
 }
+/* Non-outlier rows are dimmed so the defining cells stand out (review 2.5) */
+.drift-cell-row.dim { opacity: 0.55; }
+
+/* Tag on the repeated first-full cell's row */
+.drift-cell-tag {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+/* Band legend under the scale axis */
+.drift-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+.drift-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 6px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.drift-legend-swatch.swatch-at { background: var(--neutral-300); }
+.drift-legend-swatch.swatch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
 
 .drift-cell-lbl {
   font-size: 10px;

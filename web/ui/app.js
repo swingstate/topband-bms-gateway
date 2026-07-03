@@ -5026,6 +5026,33 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     '<div class="drift-guide" style="left:' + driftPct(g.mv).toFixed(1) + '%"></div>'
   ).join('');
 
+  // Outlier detection (review 2.5): rows are dimmed by default; full opacity
+  // goes to the cells that define the pack spread (window worst at full /
+  // empty) and to cells whose 5-day band center deviates > 15 mV from the
+  // pack median. Keeps the eye on the two or three rows that matter.
+  const OUTLIER_MV = 15;
+  const centers = [];
+  for (let ci = 0; ci < nc; ci++) {
+    const c = cells[ci] || {};
+    if (!noHistory && c.d5min && c.d5max) centers.push((c.d5min + c.d5max) / 2);
+    else if (c.now) centers.push(c.now);
+    else centers.push(null);
+  }
+  const sorted = centers.filter(v => v !== null).sort((a, b) => a - b);
+  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+
+  const ffWin = driftRepeatWinner(pack.ff_mode_idx, pack.ff_days_won, pack.ff_days_total);
+
+  const isOutlier = ci => {
+    if (nc <= 2) return true;  // tiny packs: nothing to dim
+    if (pack.has_toc && ci === pack.first_full_idx) return true;
+    if (pack.has_bod && ci === pack.first_empty_idx) return true;
+    if (ffWin && ci === pack.ff_mode_idx) return true;
+    if (median !== null && centers[ci] !== null &&
+        Math.abs(centers[ci] - median) > OUTLIER_MV) return true;
+    return false;
+  };
+
   let rows = '';
   for (let ci = 0; ci < nc; ci++) {
     const c = cells[ci] || {};
@@ -5049,14 +5076,23 @@ function buildDriftCellRowsHtml(pack, noHistory) {
         '" style="left:' + nowPct + '%;background:' + color + '"></div>'
       : '';
 
-    const numsStr = (!noHistory && c.d5min && c.d5max)
-      ? (c.d5min + '→' + c.d5max)
-      : (nowMv ? nowMv + ' mV' : '—');
+    // Right column: the 5-day band WIDTH is the number this section is about;
+    // the endpoints are already encoded by the band position (review 2.5).
+    // Raw endpoints stay available as a tooltip.
+    const hasBand = !noHistory && c.d5min && c.d5max;
+    const numsStr = hasBand
+      ? ((c.d5max - c.d5min) + ' mV')
+      : (nowMv ? nowMv + ' mV' : '—');
+    const numsTitle = hasBand ? (c.d5min + '-' + c.d5max + ' mV over 5 days') : '';
 
-    rows += '<div class="drift-cell-row">' +
-      '<div class="drift-cell-lbl">C' + (ci + 1) + '</div>' +
+    const tagHtml = (ffWin && ci === pack.ff_mode_idx)
+      ? '<span class="drift-cell-tag">fills first</span>' : '';
+
+    rows += '<div class="drift-cell-row' + (isOutlier(ci) ? '' : ' dim') + '">' +
+      '<div class="drift-cell-lbl">C' + (ci + 1) + tagHtml + '</div>' +
       '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
-      '<div class="drift-cell-nums">' + numsStr + '</div>' +
+      '<div class="drift-cell-nums"' +
+        (numsTitle ? ' title="' + numsTitle + '"' : '') + '>' + numsStr + '</div>' +
       '</div>';
   }
 
@@ -5068,12 +5104,22 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     ).join('') +
     '<div class="drift-scale-tick" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
 
+  // Band legend: the grey band is all-time at ANY SoC while the colored band
+  // is 5-day at extremes only — two gates in one graphic need labels.
+  const legendHtml = noHistory ? '' :
+    '<div class="drift-legend">' +
+      '<span><span class="drift-legend-swatch swatch-at"></span>all-time (any SoC)</span>' +
+      '<span><span class="drift-legend-swatch" style="background:' + color + '"></span>5-day at extremes</span>' +
+      '<span><span class="drift-legend-swatch swatch-dot" style="background:' + color + '"></span>now</span>' +
+    '</div>';
+
   return rows +
     '<div class="drift-scale-row">' +
       '<div class="drift-scale-lbl-spacer"></div>' +
       '<div class="drift-scale-axis">' + ticksHtml + '</div>' +
       '<div class="drift-scale-nums-spacer"></div>' +
-    '</div>';
+    '</div>' +
+    legendHtml;
 }
 
 function toggleDriftPack(packId) {
