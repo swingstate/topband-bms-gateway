@@ -21,6 +21,9 @@ static constexpr uint32_t INITIAL_LAST_TX       = static_cast<uint32_t>(0u - 100
 static uint32_t  s_last_tx_ms    = INITIAL_LAST_TX;
 static uint8_t   s_last_alarm    = 0xFF;  // sentinel: forces alarm-state initialisation on first call
 static can::tx::CanStats s_stats {};
+// Current consecutive-failure run; its historical peak is published as
+// stats.tx_fail_streak_max (review F11: the peak was never actually tracked).
+static uint32_t  s_fail_streak   = 0;
 
 // ── TWAI driver ───────────────────────────────────────────────────────────────
 
@@ -61,7 +64,7 @@ bool can::tx::enqueue(uint32_t id, const uint8_t data[8]) {
 #ifdef NATIVE_BUILD
   // Host stub: unconditionally succeed, count the send.
   s_stats.tx_ok++;
-  s_stats.tx_fail_streak_max = 0;  // no fail streak in host build
+  s_fail_streak = 0;
   return true;
 #else
   twai_message_t msg{};
@@ -75,14 +78,12 @@ bool can::tx::enqueue(uint32_t id, const uint8_t data[8]) {
 
   if (ok) {
     s_stats.tx_ok++;
-    uint32_t old_streak = s_stats.tx_fail_streak_max;
-    s_stats.tx_fail_streak_max = 0;
-    // Preserve the historical maximum: tx_fail_streak_max holds the peak, not current streak.
-    // Use a separate local to track current streak if needed — for now mirror V2.67 simplicity.
-    (void)old_streak;
+    s_fail_streak = 0;
   } else {
     s_stats.tx_fail++;
-    // tx_fail_streak_max updated by busoff module which has fuller context
+    s_fail_streak++;
+    if (s_fail_streak > s_stats.tx_fail_streak_max)
+      s_stats.tx_fail_streak_max = s_fail_streak;
   }
 
   can::busoff::on_tx_result(ok);
@@ -142,8 +143,9 @@ void can::tx::get_stats(CanStats& out) {
 
 #ifdef NATIVE_BUILD
 void can::tx::test_reset() {
-  s_last_tx_ms = INITIAL_LAST_TX;
-  s_last_alarm = 0xFF;
+  s_last_tx_ms  = INITIAL_LAST_TX;
+  s_last_alarm  = 0xFF;
+  s_fail_streak = 0;
   memset(&s_stats, 0, sizeof(s_stats));
 }
 #endif

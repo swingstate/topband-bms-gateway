@@ -1021,6 +1021,8 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 .diag-tasks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .diag-tasks-table th { text-align: left; padding: 4px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
 .diag-tasks-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); }
+/* Task with < 512 B stack headroom — worth a second look */
+.diag-tasks-table tr.diag-task-low td { color: var(--color-warning); font-weight: 600; }
 
 /* ── Settings sub-nav responsive ───────────────────────────────────────────── */
 @media (max-width: 1023px) and (min-width: 768px) {
@@ -1270,33 +1272,42 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   font-style: italic;
 }
 
-/* Callout chips */
-.drift-callouts {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
+/* Conditional warning strip: cells at/above 3.60 V right now (review 2.4).
+   Rendered only when the count is nonzero; .crit escalates at 3.65 V (OVP). */
+.drift-warn-strip {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: rgba(232, 156, 92, 0.12);
+  border-left: 3px solid var(--color-warning);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
 }
-.drift-callout {
-  font-size: 11px;
+.drift-warn-strip.crit {
+  background: rgba(226, 85, 72, 0.12);
+  border-left-color: var(--brand-coral);
+}
+
+/* Repeated first-full pattern callout (review 2.3) */
+.drift-repeat-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
   background: var(--bg-page);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 6px 10px;
-  flex: 1;
-  min-width: 130px;
+  margin-bottom: 12px;
+  display: inline-block;
 }
-.drift-callout-label {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+
+/* Capability note: whole data region absent on this installation profile */
+.drift-cap-note {
+  font-size: 11px;
   color: var(--text-muted);
-  margin-bottom: 3px;
-}
-.drift-callout-val {
-  color: var(--text-primary);
-  font-weight: 600;
+  font-style: italic;
+  margin-bottom: 12px;
 }
 
 /* Per-cell row */
@@ -1305,6 +1316,46 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   align-items: center;
   gap: 8px;
   margin-bottom: 5px;
+}
+/* Non-outlier rows are dimmed so the defining cells stand out (review 2.5) */
+.drift-cell-row.dim { opacity: 0.55; }
+
+/* Tag on the repeated first-full cell's row */
+.drift-cell-tag {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+/* Band legend under the scale axis */
+.drift-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+.drift-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 6px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.drift-legend-swatch.swatch-at { background: var(--neutral-300); }
+.drift-legend-swatch.swatch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
 }
 
 .drift-cell-lbl {

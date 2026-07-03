@@ -13,14 +13,17 @@
 //
 // All bulk storage is EXT_RAM_BSS_ATTR (PSRAM) — zero net internal-DRAM increase.
 //
-// Storage: ~23 KB PSRAM total.
-//   DayBucket: 4 + 3×(16×16×4) + 2×(16×2) + 16 = 3124 B
-//   6 completed-day ring + 1 today accumulator = 7 × 3124 = 21868 B
+// Storage: ~20 KB PSRAM total.
+//   DayBucket: 4 + 3×(16×16×4) + 2×(16×2) + 16 = 3156 B
+//   5 completed-day ring + 1 today accumulator = 6 × 3156 = 18936 B
 //   All-time bands: 1024 B
-//   Grand total: ~22.8 KB PSRAM.
 //
 // Granularity: updated every 5-min coarse boundary from HistoryTask.
-// Persistence: in-RAM only. History rebuilds after reboot.
+// Persistence: completed-day ring + all-time bands are saved to LittleFS on
+// every day commit and restored at boot by load(). Today's partial accumulator
+// is NOT persisted; it rebuilds within the current day. Without persistence a
+// reboot (e.g. an OTA flash) would reset the trend to "building" for days
+// (review Part 2.1).
 //
 // Concurrency: single-writer (HistoryTask, Core 1) / single-reader (HttpTask,
 // Core 0). No lock held; benign torn-read acceptable for display-only data.
@@ -54,6 +57,18 @@ struct PackDrift {
   uint8_t  first_empty_idx;
   uint16_t first_empty_mv;  // its 5-day bod_min (mV); 0 if !has_bod
 
+  // Repetition detection (review Part 2.3): a first-full cell is only a
+  // pattern when the SAME cell wins the per-day argmax repeatedly. Computed
+  // at read time from the per-day ToC/BoD bands; no extra storage.
+  // *_days_total = days in window (incl. today) with region data;
+  // *_mode_idx   = most frequent winner; *_days_won = its win count.
+  uint8_t ff_mode_idx;
+  uint8_t ff_days_won;
+  uint8_t ff_days_total;
+  uint8_t fe_mode_idx;
+  uint8_t fe_days_won;
+  uint8_t fe_days_total;
+
   struct Cell {
     uint16_t d5min;   // 5-day union of high+low region min (mV); 0 = no data
     uint16_t d5max;   // 5-day union of high+low region max (mV); 0 = no data
@@ -67,8 +82,10 @@ struct PackDrift {
 
   // Max ToC spread per day, oldest first; length = n_days.
   // Indices 0..n_days-2 are completed days; index n_days-1 is today (partial).
-  // Drift rate is computed from this slope (mV/day).
+  // trend_day carries the UTC day number (epoch/86400) of each entry so the
+  // rate can honor real day spacing (gaps from cloudy days or downtime).
   uint16_t trend_spread[DRIFT_HISTORY_DAYS + 1];
+  uint32_t trend_day[DRIFT_HISTORY_DAYS + 1];
 };
 
 // Called from HistoryTask every 5 min at the coarse boundary.
@@ -82,5 +99,13 @@ bool read_pack(uint8_t pack_idx, PackDrift& out);
 
 // Number of complete UTC days committed to the ring (0..DRIFT_HISTORY_DAYS).
 uint8_t complete_days();
+
+// Restore the completed-day ring + all-time bands from LittleFS.
+// Call once at boot after lfs::init(); no-op when no file exists.
+void load();
+
+// Persist the completed-day ring + all-time bands to LittleFS (atomic
+// tmp+rename). Called internally on every day commit; exposed for tests.
+void save();
 
 }  // namespace app::drift_ring

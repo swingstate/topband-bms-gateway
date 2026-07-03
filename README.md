@@ -261,7 +261,7 @@ V3.x MQTT topic names and payload fields differ from V2.67.x. Existing V2 HA das
 - Telegram is the only supported notification channel for now
 - SD card logging is not supported
 - The Victron SmartShunt is not yet integrated (planned for a later release)
-- Drift history is kept in RAM and rebuilds after a reboot; the 5-day view fills in over time
+- Drift history: completed days persist across reboots; the current day's partial data rebuilds after a restart
 
 ## License
 

@@ -301,6 +301,36 @@ Download full history as CSV. Each row is one history sample with all channels.
 
 ---
 
+### GET /api/solar-day
+
+Today's MPPT PV power curve (5-minute resolution, PSRAM ring persisted to
+LittleFS across reboots). Points are watts; null marks slots without a valid
+MPPT reading.
+
+**Response** `200 application/json` with `t0_epoch`, `midnight_epoch`,
+`resolution_s` and a `points` array.
+
+---
+
+### GET /api/drift
+
+Per-cell voltage-band data for the Battery page Drift Details section. Per
+online pack: live spread (`spread_now`), SoC-gated 5-day spreads at
+top-of-charge and bottom-of-discharge (`toc_spread` / `bod_spread` with
+`has_toc` / `has_bod`), the drift rate in mV/day computed between the first
+and latest full-charge day (`drift_rate`, meaningful when `n_toc_days >= 2`),
+first-full / first-empty window extremes, repetition tallies
+(`ff_/fe_mode_idx`, `_days_won`, `_days_total`: which cell won the per-day
+argmax how often), and per-cell band arrays (5-day, all-time, per-region
+min/max in mV).
+
+The completed-day ring behind this endpoint persists to LittleFS on every
+UTC day commit, so reboots do not reset the trend.
+
+**Response** `200 application/json` — chunked transfer.
+
+---
+
 ### GET /api/diag
 
 Full diagnostics snapshot: firmware version, build date, reset reason, uptime,

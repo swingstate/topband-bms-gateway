@@ -29,6 +29,24 @@ static const char* TAG = "web_live";
 static volatile uint32_t s_handler_last_ms = 0;
 static volatile uint32_t s_handler_max_ms  = 0;
 
+// ArduinoJson allocator backed by PSRAM. The default allocator (plain malloc)
+// stays below the SPIRAM_MALLOC_ALWAYSINTERNAL threshold, so every /api/live
+// poll allocated and freed a few KB of INTERNAL heap — the last periodic
+// internal-heap churn in steady state (review M1). Internal fallback keeps
+// the handler working if PSRAM is ever exhausted.
+struct PsramJsonAllocator : ArduinoJson::Allocator {
+  void* allocate(size_t n) override {
+    void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : malloc(n);
+  }
+  void deallocate(void* p) override { free(p); }
+  void* reallocate(void* p, size_t n) override {
+    // heap_caps_realloc accepts pointers from any heap and migrates them.
+    return heap_caps_realloc(p, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+};
+static PsramJsonAllocator s_json_psram_alloc;
+
 namespace web {
 
 uint32_t live_handler_last_ms() { return s_handler_last_ms; }
@@ -51,7 +69,7 @@ esp_err_t handle_live(httpd_req_t* req) {
 
   uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
 
-  JsonDocument doc;
+  JsonDocument doc(&s_json_psram_alloc);
 
   doc["uptime_s"]             = uptime_s;
   doc["bms_count_configured"] = snap.pack_count_configured;
@@ -326,8 +344,8 @@ static void hs_jstr(HS& s, const char* v) {
   hs_str(s, "\"");
 }
 
-// Temperature label for each sensor index.
-// First 5 positions: T1..T5, then BAL, ENV, MOS.
+// Temperature label for regular sensor indices (T1..T8). The named BAL/ENV/
+// MOS sensors are appended separately by handle_bms_id when non-zero.
 static const char* temp_label(int idx) {
   static const char* const labels[] = { "T1","T2","T3","T4","T5","T6","T7","T8" };
   if (idx < 0 || idx >= 8) return "T?";

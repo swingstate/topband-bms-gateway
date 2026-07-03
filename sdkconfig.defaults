@@ -96,9 +96,14 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 # ── Core dump ─────────────────────────────────────────────────────────────────
 # Write panic coredump to the dedicated 64 KB flash partition. Readable via
 # espcoredump.py or GET /api/diag/coredump.bin.
+# ELF (not BIN): esp_core_dump_get_summary() requires the ELF format. With BIN
+# the crashing-task / exception-PC summary block in handlers_diag.cpp was
+# compiled out and the diag panic card only ever showed dashes (review F5).
+# ELF dumps are larger but the partition is 64 KB either way.
+# Requires a config regen after changing: rm sdkconfig.esp32s3 && pio run.
 CONFIG_ESP_COREDUMP_ENABLE=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
-CONFIG_ESP_COREDUMP_DATA_FORMAT_BIN=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECK_BOOT=y
 
 # ── TWAI (CAN) driver ─────────────────────────────────────────────────────────

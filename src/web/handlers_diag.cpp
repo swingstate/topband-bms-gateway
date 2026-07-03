@@ -12,6 +12,7 @@
 #include "storage/boot_reasons.h"
 #include "storage/alerts_store.h"
 #include "diag/log_ring.h"
+#include "diag/coredump_probe.h"
 #include "app/version.h"
 #include "app/boot.h"
 #include "app/housekeeping.h"
@@ -172,7 +173,6 @@ esp_err_t handle_diag(httpd_req_t* req) {
   }
   hs_str(s, ",\"reset_reason\":"); hs_json_str(s, reset_reason);
   hs_str(s, ",\"build\":"); hs_json_str(s, BUILD_DATE " " BUILD_TIME);
-  hs_str(s, ",\"version\":"); hs_json_str(s, FW_VERSION_FULL);
   // ESP32-S3 internal die temperature (-128.0f sentinel = unavailable).
   if (cpu_temp_c > -100.0f) {
     char t[16]; snprintf(t, sizeof(t), "%.1f", cpu_temp_c);
@@ -193,6 +193,9 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"rs485_parse_err\":"); hs_uint(s, ps.analog_polls_parse_err);
   hs_str(s, ",\"alarm_polls_ok\":"); hs_uint(s, ps.alarm_polls_ok);
   hs_str(s, ",\"alarm_polls_err\":"); hs_uint(s, ps.alarm_polls_err);
+  hs_str(s, ",\"sysparam_polls_ok\":"); hs_uint(s, ps.sysparam_polls_ok);
+  hs_str(s, ",\"sysparam_polls_err\":"); hs_uint(s, ps.sysparam_polls_err);
+  hs_str(s, ",\"wrong_addr\":"); hs_uint(s, ps.wrong_addr);
   hs_str(s, "}");
 
   // ── can ───────────────────────────────────────────────────────────────────
@@ -228,12 +231,22 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"publish_ok\":"); hs_uint(s, mqtt::publisher::get_publish_ok());
   hs_str(s, ",\"publish_fail\":"); hs_uint(s, mqtt::publisher::get_publish_fail());
   hs_str(s, ",\"publish_drops\":"); hs_uint(s, mqtt::publisher::get_publish_drops());
+  hs_str(s, ",\"publish_max_ms\":"); hs_uint(s, mqtt::publisher::get_publish_max_ms());
+  // Effective base topic (configured prefix + MAC suffix) — needed when
+  // debugging HA discovery; previously only visible in the boot log.
+  {
+    char base[80] = {};
+    mqtt::publisher::get_effective_base(base, sizeof(base));
+    hs_str(s, ",\"effective_base\":"); hs_json_str(s, base);
+  }
   hs_str(s, "}");
 
   // ── ntp ───────────────────────────────────────────────────────────────────
+  // now_ts_s is the CURRENT device time (review F4: the old field name
+  // last_sync_ts was a lie — the module does not track sync time).
   hs_str(s, ",\"ntp\":{");
   hs_str(s, "\"synced\":"); hs_bool(s, net::ntp::is_synced());
-  hs_str(s, ",\"last_sync_ts\":"); hs_uint(s, net::ntp::now_unix_s());
+  hs_str(s, ",\"now_ts_s\":"); hs_uint(s, net::ntp::now_unix_s());
   hs_str(s, ",\"server\":"); hs_json_str(s, app::get_config().ntp_server);
   hs_str(s, "}");
 
@@ -263,27 +276,22 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"alerts_count\":"); hs_uint(s, storage::alerts_store::stored_count());
 
   // ── coredump ──────────────────────────────────────────────────────────────
-  // Present when the previous boot left a valid coredump in flash (ELF format).
-  hs_str(s, ",\"coredump\":{");
-  bool cd_valid = (esp_core_dump_image_check() == ESP_OK);
-  hs_str(s, "\"present\":"); hs_bool(s, cd_valid);
-  if (cd_valid) {
-#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
-    esp_core_dump_summary_t sum{};
-    if (esp_core_dump_get_summary(&sum) == ESP_OK) {
-      hs_str(s, ",\"crashing_task\":");  hs_json_str(s, sum.exc_task);
-      hs_str(s, ",\"build_sha256\":");
-      // app_elf_sha256 is already a null-terminated hex string.
-      hs_json_str(s, reinterpret_cast<const char*>(sum.app_elf_sha256));
-      // exc_pc as a readable hex string.
-      char pc_buf[16];
-      snprintf(pc_buf, sizeof(pc_buf), "0x%08lx", (unsigned long)sum.exc_pc);
-      hs_str(s, ",\"exc_pc\":"); hs_json_str(s, pc_buf);
-      hs_str(s, ",\"core_dump_version\":"); hs_uint(s, sum.core_dump_version);
+  // Cached boot-time probe. NEVER parse the dump per request: the summary
+  // parse reads flash, and a stale BIN-era dump under the ELF config cost
+  // ~33 s per /api/diag request, starving the single-threaded HTTP server
+  // (preview.3 field regression).
+  {
+    const diag::coredump::ProbeResult& cd = diag::coredump::probe();
+    hs_str(s, ",\"coredump\":{");
+    hs_str(s, "\"present\":"); hs_bool(s, cd.present);
+    if (cd.has_summary) {
+      hs_str(s, ",\"crashing_task\":");     hs_json_str(s, cd.task);
+      hs_str(s, ",\"build_sha256\":");      hs_json_str(s, cd.sha256);
+      hs_str(s, ",\"exc_pc\":");            hs_json_str(s, cd.pc_hex);
+      hs_str(s, ",\"core_dump_version\":"); hs_uint(s, cd.version);
     }
-#endif
+    hs_str(s, "}");
   }
-  hs_str(s, "}");
 
   // ── ble_status — BLE scanner, MPPT, and Shunt status ────────────────────
   {
@@ -297,6 +305,15 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, ",\"wifi_bssid\":"); hs_json_str(s, bssid.empty() ? "" : bssid.c_str()); }
     hs_str(s, ",\"wifi_rssi\":"); { char t[8]; snprintf(t,sizeof(t),"%d",(int)net::wifi::get_rssi()); hs_str(s,t); }
     hs_str(s, ",\"wifi_bssid_pin_active\":"); hs_bool(s, net::wifi::is_bssid_pin_active());
+    // Connection identity — a diagnosing user should not need the router UI
+    // to see which network/IP the gateway is on (review Part 3.2).
+    { std::string ssid = net::wifi::get_ssid();
+      hs_str(s, ",\"wifi_ssid\":"); hs_json_str(s, ssid.empty() ? "" : ssid.c_str()); }
+    { char ip[24] = {}; net::wifi::get_ip(ip, sizeof(ip));
+      hs_str(s, ",\"wifi_ip\":"); hs_json_str(s, ip); }
+    { char hn[48] = {}; net::wifi::get_hostname(hn, sizeof(hn));
+      hs_str(s, ",\"wifi_hostname\":"); hs_json_str(s, hn); }
+    hs_str(s, ",\"wifi_connected_for_s\":"); hs_uint(s, net::wifi::connected_for_s());
     hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
     hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
     hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());
