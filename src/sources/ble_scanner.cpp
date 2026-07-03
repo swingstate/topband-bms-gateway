@@ -1,4 +1,5 @@
 #include "ble_scanner.h"
+#include "victron_shunt_decode.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <cstring>
@@ -67,13 +68,29 @@ static const char* TAG = "ble_scanner";
 // All three of {pv_power, pv_voltage, pv_current} are transmitted directly.
 // pv_v and pv_i are present when enc_len >= 12/14; decoded conditionally (not fatal if absent).
 //
-// SmartShunt (BATTERY_MONITOR, 0x02) decrypted payload layout (old-format):
-//   plain[0-1] battery_voltage  (uint16 LE, /100 → V)
-//   plain[2-3] battery_current  (int16 LE, /1000 → A)
-//   plain[4-5] remaining_Ah     (uint16 LE, /10 → Ah)
-//   plain[6-7] SoC              (uint16 LE, /10 → %)
-//   NOTE: new-format SmartShunt field layout not yet verified; check
-//         keshavdv/victron-ble battery_monitor.py if decrypted values look wrong.
+// SmartShunt (BATTERY_MONITOR, 0x02) decrypted payload layout:
+//
+//   OLD format (pre-2022 firmware, single-byte IV envelope) — byte-aligned:
+//     plain[0-1] battery_voltage  (uint16 LE, /100 → V)
+//     plain[2-3] battery_current  (int16 LE, /1000 → A)
+//     plain[4-5] remaining_Ah     (uint16 LE, /10 → Ah)
+//     plain[6-7] SoC              (uint16 LE, /10 → %)
+//     Not hardware-verified against a real legacy device; best-effort only.
+//
+//   NEW format (Product Advertisement, 2022+ firmware) — BIT-PACKED, NOT
+//   byte-aligned (this bit it self used to be misread with the OLD-format
+//   byte offsets above, which is a confirmed bug: it silently decodes
+//   remaining_mins as if it were voltage). See victron_shunt_decode.h/.cpp
+//   for the LSB-first bit layout, verified against keshavdv/victron-ble
+//   battery_monitor.py (authoritative open-source reference):
+//     bits   0-15  remaining_mins   (sentinel 0xFFFF)
+//     bits  16-31  battery_voltage  (/100 → V, sentinel 0x7FFF)
+//     bits  32-47  alarm_reason     (unused)
+//     bits  48-63  aux_input        (unused)
+//     bits  64-65  aux_mode         (unused)
+//     bits  66-87  battery_current  (/1000 → A, sentinel 0x3FFFFF)
+//     bits  88-107 consumed_ah      (unused)
+//     bits 108-117 SoC              (/10 → %, sentinel 0x3FF = not synchronized)
 //
 // References:
 //   keshavdv/victron-ble (Python, authoritative Instant Readout spec)
@@ -331,12 +348,12 @@ static bool decode_mppt(const uint8_t* md, size_t len, bool new_fmt, uint32_t no
 }
 
 // ── Decode SmartShunt / Battery Monitor (record_type 0x02) ───────────────────
-// new_fmt flag selects correct IV/payload offsets (same as decode_mppt).
-// Field layout below matches the old-format spec; new-format field layout for
-// BATTERY_MONITOR has not been hardware-verified — check keshavdv/victron-ble
-// battery_monitor.py if values look wrong with a new-firmware SmartShunt.
-// Returns true when AES decrypt succeeded and values were pushed to ShuntSource
-// (mirrors decode_mppt's return so the caller can count it in the filter funnel).
+// new_fmt flag selects correct IV/payload offsets (same as decode_mppt) AND a
+// completely different plaintext layout: new-format BATTERY_MONITOR payloads
+// are bit-packed (see victron_shunt_decode.h), not byte-aligned like the old
+// format. Returns true when AES decrypt succeeded and values were pushed to
+// ShuntSource (mirrors decode_mppt's return so the caller can count it in the
+// filter funnel).
 static bool decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t now_ms) {
   if (!s_shunt || !s_shunt_key_valid) return false;
 
@@ -350,7 +367,9 @@ static bool decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t n
     nonce[1] = md[8];
     enc     = md + 10;
     enc_len = len - 10;
-    if (enc_len < 8) return false;
+    // Bit-packed payload needs 15 bytes (bit 117 falls in byte 14) — more
+    // than the old format's 8-byte byte-aligned layout.
+    if (enc_len < 15) return false;
   } else {
     if (len < 4) return false;
     nonce[0]  = md[3];
@@ -364,19 +383,35 @@ static bool decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t n
   size_t  dec_len = enc_len < sizeof(plain) ? enc_len : sizeof(plain);
   if (!aes_ctr_decrypt(s_shunt_key, nonce, enc, plain, dec_len)) return false;
 
-  uint16_t batt_v_raw  = (uint16_t)((uint16_t)plain[0] | ((uint16_t)plain[1] << 8));
-  int16_t  curr_raw    = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
-  // plain[4-5]: remaining_Ah * 10 (not used)
-  uint16_t soc_raw     = (uint16_t)((uint16_t)plain[6] | ((uint16_t)plain[7] << 8));
+  float voltage_v;
+  float current_a;
+  float soc_pct;
+  bool  soc_valid;
 
-  float voltage_v = (float)batt_v_raw / 100.0f;   // V
-  float current_a = (float)curr_raw   / 1000.0f;  // A (mA resolution)
-  float soc_pct   = (float)soc_raw    / 10.0f;    // %
+  if (new_fmt) {
+    sources::ShuntDecodedNewFmt d;
+    if (!sources::decode_shunt_new_fmt(plain, dec_len, d)) return false;
+    voltage_v = d.voltage_valid ? d.voltage_v : 0.0f;
+    current_a = d.current_valid ? d.current_a : 0.0f;
+    soc_pct   = d.soc_pct;
+    soc_valid = d.soc_valid;
+  } else {
+    uint16_t batt_v_raw = (uint16_t)((uint16_t)plain[0] | ((uint16_t)plain[1] << 8));
+    int16_t  curr_raw   = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
+    // plain[4-5]: remaining_Ah * 10 (not used)
+    uint16_t soc_raw    = (uint16_t)((uint16_t)plain[6] | ((uint16_t)plain[7] << 8));
 
-  s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, now_ms);
+    voltage_v = (float)batt_v_raw / 100.0f;   // V
+    current_a = (float)curr_raw   / 1000.0f;  // A (mA resolution)
+    soc_pct   = (float)soc_raw    / 10.0f;    // %
+    soc_valid = true;  // no documented "unsynced" sentinel for the old format
+  }
 
-  ESP_LOGD(TAG, "Shunt(%s): %.3f A  %.2f V  %.1f%%",
-           new_fmt ? "new" : "old", current_a, voltage_v, soc_pct);
+  s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, soc_valid, now_ms);
+
+  ESP_LOGD(TAG, "Shunt(%s): %.3f A  %.2f V  %s%.1f%%",
+           new_fmt ? "new" : "old", current_a, voltage_v,
+           soc_valid ? "" : "(unsynced) ", soc_pct);
   return true;
 }
 

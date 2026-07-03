@@ -1413,7 +1413,12 @@ function updateBatteryOverviewCards() {
   setEl('shunt-strip-age', shuntSeen ? Math.round((shunt.ms_since_last_seen || 0) / 1000) + ' s ago' : '');
   setEl('sagg-curr', shunt.current_a !== undefined ? fmtA(shunt.current_a) + ' A' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
   setEl('sagg-volt', shunt.voltage_v !== undefined ? fmt(shunt.voltage_v, 2) + ' V' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
-  setEl('sagg-soc',  shunt.soc_pct  !== undefined ? fmt(shunt.soc_pct, 1) + ' %' : '—', shuntSeen ? socColor(shunt.soc_pct) : 'var(--text-muted)');
+  // soc_valid=false: shunt has never been synchronized (VictronConnect app) —
+  // show that plainly rather than a misleading bare "0.0 %".
+  const shuntSocSynced = shunt.soc_valid !== false;
+  setEl('sagg-soc',
+        !shuntSeen ? '—' : (shuntSocSynced ? fmt(shunt.soc_pct, 1) + ' %' : 'Not synced'),
+        shuntSeen ? (shuntSocSynced ? socColor(shunt.soc_pct) : 'var(--text-muted)') : 'var(--text-muted)');
   const curSrcId = sources.battery_current_src || 'bms';
   const srcEl = document.getElementById('shunt-active-src');
   if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; }
@@ -4305,12 +4310,12 @@ function renderDiagData(d) {
         ${(dbg.shunt_mac_match||0) > 0 && (dbg.shunt_decrypt_ok||0) === 0 ? kvRow(
                 'Last matched ad (diagnosing decrypt failure)',
                 (dbg.shunt_last_mfg_len||0) + ' bytes, ' + (dbg.shunt_last_new_fmt ? 'new format' : 'old format') +
-                ' (needs ≥ ' + (dbg.shunt_last_new_fmt ? '18' : '12') + ' bytes)') : ''}
+                ' (needs ≥ ' + (dbg.shunt_last_new_fmt ? '25' : '12') + ' bytes)') : ''}
         ${kvRow('Last seen', fmtAgeS(shunt.last_seen_s))}
         ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
         ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
         ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
-        ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
+        ${kvRow('SOC', shunt.soc_valid === false ? 'Not synced (raw sentinel)' : fmtF(shunt.soc_pct, 1) + ' %')}
         ${kvRow('BMS SOC avg (cross-check)', fmtF(g_live && g_live.safety && g_live.safety.soc_avg, 0) + ' %')}
         ${kvRow('Active source (bank SOC)', ((g_live && g_live.sources && g_live.sources.battery_soc_src) || 'bms').toUpperCase())}
       </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — enable in Settings &rarr; Bluetooth LE</div>`}

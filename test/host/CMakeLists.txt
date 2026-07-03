@@ -338,3 +338,21 @@ target_link_libraries(test_config_json PRIVATE
   ArduinoJson
 )
 catch_discover_tests(test_config_json)
+
+# ── test_victron_shunt_decode ─────────────────────────────────────────────────
+# victron_shunt_decode.cpp is a pure bit-math module: no IDF, no FreeRTOS,
+# no mbedTLS dependency (it operates on already-decrypted plaintext).
+add_executable(test_victron_shunt_decode
+  test_victron_shunt_decode.cpp
+  ../../src/sources/victron_shunt_decode.cpp
+)
+
+target_include_directories(test_victron_shunt_decode PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_victron_shunt_decode PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_victron_shunt_decode PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_victron_shunt_decode PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_victron_shunt_decode)

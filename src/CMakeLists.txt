@@ -64,6 +64,7 @@ idf_component_register(
     "sources/bms_source.cpp"
     "sources/shunt_source.cpp"
     "sources/mppt_source.cpp"
+    "sources/victron_shunt_decode.cpp"
     "sources/aggregator.cpp"
     "sources/ble_scanner.cpp"
     "mqtt/topics.cpp"

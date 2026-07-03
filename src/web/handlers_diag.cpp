@@ -387,6 +387,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
         { char t[16]; snprintf(t,sizeof(t),"%.2f",d.voltage_v); hs_str(s,t); }
         hs_str(s, ",\"soc_pct\":");
         { char t[16]; snprintf(t,sizeof(t),"%.1f",d.soc_pct);   hs_str(s,t); }
+        hs_str(s, ",\"soc_valid\":"); hs_bool(s, d.soc_valid);
       }
       hs_str(s, "}");
     }

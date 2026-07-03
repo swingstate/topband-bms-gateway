@@ -244,6 +244,7 @@ esp_err_t handle_live(httpd_req_t* req) {
       js["current_a"]          = ds.current_a;
       js["voltage_v"]          = ds.voltage_v;
       js["soc_pct"]            = ds.soc_pct;
+      js["soc_valid"]          = ds.soc_valid;
       js["ms_since_last_seen"] = shunt->ms_since_last_seen(now_ms);
     } else {
       js["enabled"] = false;

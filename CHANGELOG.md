@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **SmartShunt voltage decode bug: new-firmware shunts read a wrong field
+  scaled ~2x off.** The BLE decode path (`src/sources/ble_scanner.cpp`) used
+  the legacy byte-aligned SmartShunt payload layout for both old- and
+  new-format (2022+ firmware) advertisements. New-format BATTERY_MONITOR
+  payloads are bit-packed, not byte-aligned, so the "voltage" bytes actually
+  held `remaining_mins` (time-to-go) — on a real 48 V/~50 V bank this showed
+  as ~half the true voltage on both the Battery page and the Diag page, and
+  drifted between reads because time-to-go tracks load, not voltage. Fixed
+  with a correct bit-packed decoder (`src/sources/victron_shunt_decode.h/.cpp`,
+  verified against `keshavdv/victron-ble`, with host unit tests). Both display
+  paths already read the same underlying `ShuntSource` field, so no separate
+  source-of-truth fix was needed once the decode itself was correct.
+- **SmartShunt SOC stuck at 0.0% after a VictronConnect sync.** Same root
+  cause as the voltage bug: SOC was read from the wrong (bit-unaligned) byte
+  range, landing on an unrelated field that is typically zero on a shunt with
+  no auxiliary sensor. The real SOC field lives 10 bits further in and uses
+  its own "not yet synchronized" sentinel, now decoded correctly. A shunt that
+  genuinely has never been synchronized shows **Not synced** instead of a
+  bare misleading "0.0%" on both the Battery page and the Diag page
+  (`ShuntSource::m_soc_valid`), and the bank-SOC fusion (`fuse_bank_soc()`)
+  now treats an unsynced shunt reading as `Unavailable`, so it never gets
+  promoted to the primary bank SOC ahead of the BMS average.
+
 ### Added
 
 - **SmartShunt bank-level SOC fusion.** When SmartShunt BLE is enabled
