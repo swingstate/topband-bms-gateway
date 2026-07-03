@@ -2,9 +2,17 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include <cstring>
+#include <cstdio>
 #include <algorithm>
 
 static const char* TAG = "drift_ring";
+
+// Persistence format — bump PERSIST_VERSION if DayBucket layout changes.
+// The header additionally stores sizeof(DayBucket) as a layout guard.
+static constexpr uint32_t PERSIST_MAGIC   = 0x44524654u;  // "DRFT"
+static constexpr uint32_t PERSIST_VERSION = 1u;
+static constexpr const char* PERSIST_PATH     = "/lfs/drift_days.bin";
+static constexpr const char* PERSIST_PATH_TMP = "/lfs/drift_days.bin.tmp";
 
 namespace app::drift_ring {
 
@@ -67,6 +75,25 @@ static void commit_today() {
   memset(&s_today, 0, sizeof(s_today));
 }
 
+// ── prune_stale_days ──────────────────────────────────────────────────────────
+// Drop completed days that fell out of the DRIFT_HISTORY_DAYS window. Only
+// relevant after load(): the device may have been off for longer than the
+// window, and stale buckets must not masquerade as recent band data.
+// The ring is ordered oldest-first, so pruning always advances the head.
+static void prune_stale_days(uint32_t today) {
+  while (s_day_count > 0) {
+    const DayBucket& oldest = s_days[s_day_head];
+    const bool too_old = (today > oldest.day_utc) &&
+                         (today - oldest.day_utc > DRIFT_HISTORY_DAYS);
+    const bool corrupt = (oldest.day_utc == 0) || (oldest.day_utc >= today);
+    if (!too_old && !corrupt) break;
+    ESP_LOGI(TAG, "prune: dropping day %u (today=%u)",
+             (unsigned)oldest.day_utc, (unsigned)today);
+    s_day_head = (s_day_head + 1u) % DRIFT_HISTORY_DAYS;
+    s_day_count--;
+  }
+}
+
 // ── update ────────────────────────────────────────────────────────────────────
 void update(const BmsSystemSnapshot& snap, uint32_t t_epoch) {
   if (t_epoch == 0) return;
@@ -79,7 +106,10 @@ void update(const BmsSystemSnapshot& snap, uint32_t t_epoch) {
              (unsigned)s_day_count,
              (unsigned)(s_day_count < DRIFT_HISTORY_DAYS ? s_day_count + 1 : DRIFT_HISTORY_DAYS));
     commit_today();
+    save();  // once per UTC day; HistoryTask context, file I/O is fine here
   }
+  // Cheap when nothing is stale (single compare); matters after load().
+  prune_stale_days(day);
   s_today.day_utc = day;
 
   for (uint8_t pi = 0; pi < snap.pack_count_configured && pi < DRIFT_MAX_PACKS; pi++) {
@@ -253,5 +283,78 @@ bool read_pack(uint8_t pack_idx, PackDrift& out) {
 
 // ── complete_days ─────────────────────────────────────────────────────────────
 uint8_t complete_days() { return s_day_count; }
+
+// ── save ──────────────────────────────────────────────────────────────────────
+// Persist completed days + all-time bands (atomic tmp+rename, same pattern as
+// solar_day_ring::save). Today's accumulator is intentionally not persisted.
+void save() {
+  FILE* f = fopen(PERSIST_PATH_TMP, "wb");
+  if (!f) {
+    ESP_LOGW(TAG, "save: fopen(%s) failed", PERSIST_PATH_TMP);
+    return;
+  }
+  uint32_t hdr[5] = { PERSIST_MAGIC, PERSIST_VERSION,
+                      (uint32_t)sizeof(DayBucket), s_day_head, s_day_count };
+  bool ok = (fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr));
+  ok      = ok && (fwrite(s_days, 1, sizeof(s_days), f) == sizeof(s_days));
+  ok      = ok && (fwrite(s_alltime, 1, sizeof(s_alltime), f) == sizeof(s_alltime));
+  fclose(f);
+  if (!ok) {
+    ESP_LOGW(TAG, "save: short write — discarding");
+    remove(PERSIST_PATH_TMP);
+    return;
+  }
+  remove(PERSIST_PATH);
+  if (rename(PERSIST_PATH_TMP, PERSIST_PATH) != 0) {
+    ESP_LOGW(TAG, "save: rename failed");
+    remove(PERSIST_PATH_TMP);
+    return;
+  }
+  ESP_LOGI(TAG, "save: %u completed days persisted", (unsigned)s_day_count);
+}
+
+// ── load ──────────────────────────────────────────────────────────────────────
+// Restore completed days + all-time bands. Validates magic/version/layout and
+// count bounds; falls through to a fresh start on any mismatch. Stale days are
+// pruned by the first update() call once NTP time is available (load() runs at
+// boot, before time sync, so "today" is unknown here).
+void load() {
+  FILE* f = fopen(PERSIST_PATH, "rb");
+  if (!f) return;  // no file on first boot — expected
+
+  uint32_t hdr[5] = {};
+  bool ok = (fread(hdr, 1, sizeof(hdr), f) == sizeof(hdr));
+  if (!ok || hdr[0] != PERSIST_MAGIC || hdr[1] != PERSIST_VERSION ||
+      hdr[2] != (uint32_t)sizeof(DayBucket)) {
+    fclose(f);
+    ESP_LOGW(TAG, "load: stale or corrupt header, starting fresh");
+    return;
+  }
+
+  const uint32_t head  = hdr[3];
+  const uint32_t count = hdr[4];
+  if (count > DRIFT_HISTORY_DAYS || head >= DRIFT_HISTORY_DAYS) {
+    fclose(f);
+    ESP_LOGW(TAG, "load: corrupt counts (%u/%u), starting fresh",
+             (unsigned)count, (unsigned)head);
+    return;
+  }
+
+  // Read directly into PSRAM BSS — no intermediate buffer.
+  ok = (fread(s_days, 1, sizeof(s_days), f) == sizeof(s_days));
+  ok = ok && (fread(s_alltime, 1, sizeof(s_alltime), f) == sizeof(s_alltime));
+  fclose(f);
+  if (!ok) {
+    memset(s_days, 0, sizeof(s_days));
+    memset(s_alltime, 0, sizeof(s_alltime));
+    ESP_LOGW(TAG, "load: short read, starting fresh");
+    return;
+  }
+
+  s_day_head  = (uint8_t)head;
+  s_day_count = (uint8_t)count;
+  ESP_LOGI(TAG, "load: restored %u completed days (head=%u)",
+           (unsigned)s_day_count, (unsigned)s_day_head);
+}
 
 }  // namespace app::drift_ring

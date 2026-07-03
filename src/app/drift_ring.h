@@ -13,14 +13,17 @@
 //
 // All bulk storage is EXT_RAM_BSS_ATTR (PSRAM) — zero net internal-DRAM increase.
 //
-// Storage: ~23 KB PSRAM total.
-//   DayBucket: 4 + 3×(16×16×4) + 2×(16×2) + 16 = 3124 B
-//   6 completed-day ring + 1 today accumulator = 7 × 3124 = 21868 B
+// Storage: ~20 KB PSRAM total.
+//   DayBucket: 4 + 3×(16×16×4) + 2×(16×2) + 16 = 3156 B
+//   5 completed-day ring + 1 today accumulator = 6 × 3156 = 18936 B
 //   All-time bands: 1024 B
-//   Grand total: ~22.8 KB PSRAM.
 //
 // Granularity: updated every 5-min coarse boundary from HistoryTask.
-// Persistence: in-RAM only. History rebuilds after reboot.
+// Persistence: completed-day ring + all-time bands are saved to LittleFS on
+// every day commit and restored at boot by load(). Today's partial accumulator
+// is NOT persisted; it rebuilds within the current day. Without persistence a
+// reboot (e.g. an OTA flash) would reset the trend to "building" for days
+// (review Part 2.1).
 //
 // Concurrency: single-writer (HistoryTask, Core 1) / single-reader (HttpTask,
 // Core 0). No lock held; benign torn-read acceptable for display-only data.
@@ -82,5 +85,13 @@ bool read_pack(uint8_t pack_idx, PackDrift& out);
 
 // Number of complete UTC days committed to the ring (0..DRIFT_HISTORY_DAYS).
 uint8_t complete_days();
+
+// Restore the completed-day ring + all-time bands from LittleFS.
+// Call once at boot after lfs::init(); no-op when no file exists.
+void load();
+
+// Persist the completed-day ring + all-time bands to LittleFS (atomic
+// tmp+rename). Called internally on every day commit; exposed for tests.
+void save();
 
 }  // namespace app::drift_ring
