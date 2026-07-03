@@ -4087,6 +4087,7 @@ function renderDiagData(d) {
         ${kvRow('RS485 parse err', pol.rs485_parse_err||0)}
         ${kvRow('Alarm polls ok', pol.alarm_polls_ok||0)}
         ${kvRow('Alarm polls err', pol.alarm_polls_err||0)}
+        ${kvRow('Wrong-address frames', pol.wrong_addr||0)}
       </div>
     </div>
 

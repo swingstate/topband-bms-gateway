@@ -193,6 +193,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"rs485_parse_err\":"); hs_uint(s, ps.analog_polls_parse_err);
   hs_str(s, ",\"alarm_polls_ok\":"); hs_uint(s, ps.alarm_polls_ok);
   hs_str(s, ",\"alarm_polls_err\":"); hs_uint(s, ps.alarm_polls_err);
+  hs_str(s, ",\"wrong_addr\":"); hs_uint(s, ps.wrong_addr);
   hs_str(s, "}");
 
   // ── can ───────────────────────────────────────────────────────────────────
