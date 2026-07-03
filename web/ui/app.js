@@ -171,13 +171,15 @@ function chargePill(current) {
   return pill('Idle', 'pill-idle');
 }
 
-function csPill(cs) {
-  const labels = {0:'Off',1:'Low pwr',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavail'};
-  const label = labels[cs] !== undefined ? labels[cs] : `State ${cs}`;
-  const cls = (cs === 3 || cs === 4) ? 'pill-charging'
-            : (cs === 5 || cs === 6) ? 'pill-idle'
-            : cs === 2 ? 'pill-discharging' : 'pill-idle';
-  return `<span class="charging-pill ${cls}">${label}</span>`;
+const CS_LABELS = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
+function csLabel(cs)     { return CS_LABELS[cs] !== undefined ? CS_LABELS[cs] : `State ${cs}`; }
+function csPillClass(cs) {
+  return (cs === 3 || cs === 4) ? 'pill-charging'
+       : cs === 2 ? 'pill-discharging' : 'pill-idle';
+}
+function csPill(cs, extraStyle) {
+  const st = extraStyle ? ` style="${extraStyle}"` : '';
+  return `<span class="charging-pill ${csPillClass(cs)}"${st}>${csLabel(cs)}</span>`;
 }
 
 function formatRuntime(min) {
@@ -409,6 +411,16 @@ function driftColor(driftV) {
   if (mv >= 100) return 'var(--amber)';
   return 'var(--accent)';
 }
+// Cell bar height for a LiFePO4 cell voltage. The old 2.5-4.2 V mapping was
+// a Li-ion range: LiFePO4 cells live between ~3.0 and 3.45 V, so all bars
+// rendered in a compressed upper band and looked identical (review U6).
+// 2.95-3.65 V spreads the working range across the full bar height.
+const CELL_BAR_MIN_V = 2.95;
+const CELL_BAR_MAX_V = 3.65;
+function cellBarPct(v) {
+  return Math.max(5, Math.min(100, ((v - CELL_BAR_MIN_V) / (CELL_BAR_MAX_V - CELL_BAR_MIN_V)) * 100));
+}
+
 function cellVColor(v) {
   if (v === null || v === undefined) return 'var(--text-primary)';
   if (v < 2.80 || v > 3.55)                               return 'var(--red)';
@@ -729,7 +741,6 @@ function updateSolarValues() {
   }
 
   // ── Status strip ─────────────────────────────────────────────────────────────
-  const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
   const cs      = m.charge_state;
   const seen    = !!m.seen;
   const staleMs = m.ms_since_last_seen || 0;
@@ -742,17 +753,7 @@ function updateSolarValues() {
   if (textEl) textEl.textContent = seen && !stale ? 'Receiving data' : seen ? 'Stale' : 'No data';
 
   const pillEl = document.getElementById('solar-charge-pill');
-  if (pillEl) {
-    if (seen) {
-      const csText    = csLabels[cs] !== undefined ? csLabels[cs] : `State ${cs}`;
-      const csPillCls = (cs === 3 || cs === 4) ? 'pill-charging'
-                      : (cs === 5 || cs === 6) ? 'pill-idle'
-                      : (cs === 2) ? 'pill-discharging' : 'pill-idle';
-      pillEl.innerHTML = `<span class="charging-pill ${csPillCls}" style="margin:0">${csText}</span>`;
-    } else {
-      pillEl.innerHTML = '';
-    }
-  }
+  if (pillEl) pillEl.innerHTML = seen ? csPill(cs, 'margin:0') : '';
 
   const lastSeenEl = document.getElementById('solar-last-seen');
   if (lastSeenEl) lastSeenEl.textContent = 'Last seen: ' + (seen ? Math.round(staleMs / 1000) + ' s ago' : '—');
@@ -952,24 +953,24 @@ function updatePackCards() {
   });
 }
 
-function renderPackCard(card, p) {
+// Shared renderer for the dashboard and battery-overview pack cards
+// (review U4: the two copies had already drifted apart in rounding and the
+// Ah metric). Variants: detailBtn adds the Details chevron; ahRem appends
+// the remaining-capacity metric on the dashboard card.
+function renderPackCardInner(card, p, opts) {
   const online  = p.online;
   const cells   = p.cells || [];
   const count   = p.cell_count || cells.length;
   const minIdx  = p.cell_min_idx;
   const maxIdx  = p.cell_max_idx;
-  const driftMv = ((p.cell_drift_v || 0) * 1000).toFixed(0);
+  const driftMv = Math.round((p.cell_drift_v || 0) * 1000);
+  const power   = (p.pack_voltage && p.pack_current !== undefined)
+                  ? fmt(p.pack_voltage * p.pack_current, 0) : '—';
 
-  // Success rate from snapshot stats (not available here yet — show polls from global stats).
-  const rs485 = p.rs485_ok_count !== undefined
-    ? `${p.rs485_ok_count}/${p.rs485_total_count}`
-    : '—';
-
-  // Build cell bars.
   let barsHtml = '';
   if (online && count > 0) {
     cells.slice(0, count).forEach((v, i) => {
-      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
+      const pct = cellBarPct(v);
       let cls = 'cell-ok';
       if (i === minIdx) cls = 'cell-min';
       else if (i === maxIdx) cls = 'cell-max';
@@ -987,20 +988,24 @@ function renderPackCard(card, p) {
       <span class="pack-id">BMS ${p.bms_id + 1}</span>
       <div class="pack-status-dot ${online ? 'online' : 'offline'}"></div>
       <span style="font-size:12px;color:var(--fg-muted)">${online ? 'Online' : 'Offline'}</span>
+      ${opts.detailBtn ? '<span class="pack-detail-btn">Details ›</span>' : ''}
     </div>
     <div class="pack-metrics">
       <div><div class="pack-metric-label">SOC</div><div class="pack-metric-value" style="color:var(--purple)">${p.soc !== undefined ? p.soc + '%' : '—'}</div></div>
       <div><div class="pack-metric-label">Voltage</div><div class="pack-metric-value">${fmt(p.pack_voltage, 2)} V</div></div>
       <div><div class="pack-metric-label">Current</div><div class="pack-metric-value">${fmtA(p.pack_current)} A</div></div>
-      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${p.pack_voltage && p.pack_current !== undefined ? fmt(p.pack_voltage * p.pack_current, 0) : '—'} W</div></div>
+      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${power} W</div></div>
       <div><div class="pack-metric-label">SOH</div><div class="pack-metric-value">${p.soh !== undefined ? p.soh + '%' : '—'}</div></div>
       <div><div class="pack-metric-label">Drift</div><div class="pack-metric-value" style="color:${driftMv > 50 ? 'var(--amber)' : 'var(--fg)'}">${driftMv} mV</div></div>
       <div><div class="pack-metric-label">Temp</div><div class="pack-metric-value">${fmt(p.temp_avg_c, 1)} °C</div></div>
       <div><div class="pack-metric-label">Cells</div><div class="pack-metric-value">${count}S</div></div>
-      <div><div class="pack-metric-label">Ah rem</div><div class="pack-metric-value">${fmt(p.rem_ah, 0)}/${fmt(p.full_ah, 0)}</div></div>
+      ${opts.ahRem ? `<div><div class="pack-metric-label">Ah rem</div><div class="pack-metric-value">${fmt(p.rem_ah, 0)}/${fmt(p.full_ah, 0)}</div></div>` : ''}
     </div>
-    <div class="cell-graph">${barsHtml}</div>
-  `;
+    <div class="cell-graph">${barsHtml}</div>`;
+}
+
+function renderPackCard(card, p) {
+  renderPackCardInner(card, p, { ahRem: true });
 }
 
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
@@ -1384,51 +1389,8 @@ function updateBatteryOverviewCards() {
 }
 
 function renderBatteryOverviewCard(card, p) {
-  const online  = p.online;
-  const cells   = p.cells || [];
-  const count   = p.cell_count || cells.length;
-  const minIdx  = p.cell_min_idx;
-  const maxIdx  = p.cell_max_idx;
-  const driftMv = Math.round((p.cell_drift_v || 0) * 1000);
-  const power   = (p.pack_voltage && p.pack_current !== undefined)
-                  ? fmt(p.pack_voltage * p.pack_current, 0) : '—';
-
-  // Mini cell bar graph
-  let barsHtml = '';
-  if (online && count > 0) {
-    cells.slice(0, count).forEach((v, i) => {
-      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
-      let cls = 'cell-ok';
-      if (i === minIdx) cls = 'cell-min';
-      else if (i === maxIdx) cls = 'cell-max';
-      barsHtml += `<div class="cell-bar ${cls}" style="height:${pct.toFixed(0)}%">
-        <div class="cell-tooltip">C${i + 1}: ${v.toFixed(3)}V</div></div>`;
-    });
-  } else {
-    for (let i = 0; i < (count || 15); i++) {
-      barsHtml += `<div class="cell-bar cell-offline" style="height:30%"></div>`;
-    }
-  }
-
-  card.className = 'card battery-overview-card' + (online ? '' : ' pack-offline');
-  card.innerHTML = `
-    <div class="pack-header">
-      <span class="pack-id">BMS ${p.bms_id + 1}</span>
-      <div class="pack-status-dot ${online ? 'online' : 'offline'}"></div>
-      <span style="font-size:12px;color:var(--fg-muted)">${online ? 'Online' : 'Offline'}</span>
-      <span class="pack-detail-btn">Details ›</span>
-    </div>
-    <div class="pack-metrics">
-      <div><div class="pack-metric-label">SOC</div><div class="pack-metric-value" style="color:var(--purple)">${p.soc !== undefined ? p.soc + '%' : '—'}</div></div>
-      <div><div class="pack-metric-label">Voltage</div><div class="pack-metric-value">${fmt(p.pack_voltage, 2)} V</div></div>
-      <div><div class="pack-metric-label">Current</div><div class="pack-metric-value">${fmtA(p.pack_current)} A</div></div>
-      <div><div class="pack-metric-label">Power</div><div class="pack-metric-value">${power} W</div></div>
-      <div><div class="pack-metric-label">SOH</div><div class="pack-metric-value">${p.soh !== undefined ? p.soh + '%' : '—'}</div></div>
-      <div><div class="pack-metric-label">Drift</div><div class="pack-metric-value" style="color:${driftMv > 50 ? 'var(--amber)' : 'var(--fg)'}">${driftMv} mV</div></div>
-      <div><div class="pack-metric-label">Temp</div><div class="pack-metric-value">${fmt(p.temp_avg_c, 1)} °C</div></div>
-      <div><div class="pack-metric-label">Cells</div><div class="pack-metric-value">${count}S</div></div>
-    </div>
-    <div class="cell-graph">${barsHtml}</div>`;
+  card.className = 'card battery-overview-card' + (p.online ? '' : ' pack-offline');
+  renderPackCardInner(card, p, { detailBtn: true });
 }
 
 /* ── Battery detail page ────────────────────────────────────────────────────── */
@@ -1506,7 +1468,7 @@ function renderBmsDetailContent(packId, d) {
   let cellBarsHtml = '';
   if (online && count > 0) {
     cells.slice(0, count).forEach((v, i) => {
-      const pct = Math.max(5, Math.min(100, ((v - 2.5) / (4.2 - 2.5)) * 100));
+      const pct = cellBarPct(v);
       let cls = 'cell-ok';
       if (i === minIdx) cls = 'cell-min';
       else if (i === maxIdx) cls = 'cell-max';
@@ -4140,7 +4102,6 @@ function renderDiagData(d) {
       const mppt  = ble.mppt  || {};
       const shunt = ble.shunt || {};
       const dbg   = ble.ble_debug || {};
-      const csLabels = {0:'Off',1:'Low power',2:'Fault',3:'Bulk',4:'Absorption',5:'Float',6:'Storage',7:'Equalize',252:'ESS',255:'Unavailable'};
       const fmtF  = (v, dec) => (v == null ? '—' : Number(v).toFixed(dec));
 
       // MPPT filter funnel — the fastest way to see WHY decoding fails
@@ -4188,7 +4149,7 @@ function renderDiagData(d) {
         ${kvRow('PV input power', fmtF(mppt.pv_power_w, 1) + ' W')}
         ${kvRow('Charger output voltage', fmtF(mppt.batt_voltage_v, 2) + ' V')}
         ${kvRow('Charger output current', fmtF(mppt.batt_current_a, 2) + ' A')}
-        ${kvRow('Charger state', mppt.seen ? (csLabels[mppt.charge_state] || ('State ' + mppt.charge_state)) : '—')}
+        ${kvRow('Charger state', mppt.seen ? csLabel(mppt.charge_state) : '—')}
         ${kvRow('Yield today', mppt.yield_today_wh != null ? (mppt.yield_today_wh / 1000).toFixed(2) + ' kWh' : '—')}
       </div>` : `<div style="color:var(--text-muted);font-size:12px">MPPT disabled</div>`}
     </div>
