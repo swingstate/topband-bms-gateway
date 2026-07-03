@@ -90,6 +90,11 @@ struct AdvDebugState {
   uint32_t      shunt_decrypt_ok;   // type 0x02 + MAC match + AES decrypt ok
   char          configured_shunt_mac[18]; // shunt MAC as stored internally for comparison
   bool          shunt_mac_valid;    // configured shunt MAC parsed successfully at startup
+  // Raw shape of the last MAC-matched shunt advertisement, so a decrypt_ok==0
+  // funnel (mac_match > 0, decrypt_ok == 0) can be diagnosed without serial
+  // access: is it even long enough to hold the fields we expect?
+  uint16_t      shunt_last_mfg_len; // fields.mfg_data_len of the last matched shunt ad
+  bool          shunt_last_new_fmt; // true = 2022+ Product Advertisement, false = old format
 };
 
 // Fill out with a diagnostic snapshot of the last ≤8 Victron advertisements and

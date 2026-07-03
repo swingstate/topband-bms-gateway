@@ -4226,6 +4226,10 @@ function renderDiagData(d) {
         ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
                 (dbg.victron_total||0) + ' -> ' + (dbg.shunt_type_match||0) + ' -> ' +
                 (dbg.shunt_mac_match||0) + ' -> ' + (dbg.shunt_decrypt_ok||0))}
+        ${(dbg.shunt_mac_match||0) > 0 && (dbg.shunt_decrypt_ok||0) === 0 ? kvRow(
+                'Last matched ad (diagnosing decrypt failure)',
+                (dbg.shunt_last_mfg_len||0) + ' bytes, ' + (dbg.shunt_last_new_fmt ? 'new format' : 'old format') +
+                ' (needs ≥ ' + (dbg.shunt_last_new_fmt ? '18' : '12') + ' bytes)') : ''}
         ${kvRow('Last seen', fmtAgeS(shunt.last_seen_s))}
         ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
         ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}

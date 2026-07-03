@@ -409,6 +409,8 @@ esp_err_t handle_diag(httpd_req_t* req) {
       hs_str(s, ",\"shunt_type_match\":"); hs_uint(s, dbg.shunt_type_match);
       hs_str(s, ",\"shunt_mac_match\":"); hs_uint(s, dbg.shunt_mac_match);
       hs_str(s, ",\"shunt_decrypt_ok\":"); hs_uint(s, dbg.shunt_decrypt_ok);
+      hs_str(s, ",\"shunt_last_mfg_len\":"); hs_uint(s, dbg.shunt_last_mfg_len);
+      hs_str(s, ",\"shunt_last_new_fmt\":"); hs_bool(s, dbg.shunt_last_new_fmt);
       hs_str(s, ",\"adv_ring\":[");
       for (uint8_t i = 0; i < dbg.count; i++) {
         const sources::ble_scanner::AdvDebugEntry& e = dbg.entries[i];

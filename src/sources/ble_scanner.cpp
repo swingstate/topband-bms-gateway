@@ -105,6 +105,10 @@ static uint32_t s_mppt_decrypt_ok    = 0;
 static uint32_t s_shunt_type_match   = 0;
 static uint32_t s_shunt_mac_match    = 0;
 static uint32_t s_shunt_decrypt_ok   = 0;
+// Raw shape of the last MAC-matched shunt ad — lets a decrypt_ok==0 funnel be
+// diagnosed (length-guard rejection vs. genuine AES/key failure) without serial.
+static uint16_t s_shunt_last_mfg_len = 0;
+static bool     s_shunt_last_new_fmt = false;
 
 // ── Per-advertisement debug ring buffer ───────────────────────────────────────
 // Written from the NimBLE host task (Core 1) for every advertisement that passes
@@ -471,9 +475,18 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
       cur.mac_match = matched;
       if (matched) {
         s_shunt_mac_match++;
+        s_shunt_last_mfg_len = (uint16_t)fields.mfg_data_len;
+        s_shunt_last_new_fmt = new_fmt;
         bool ok = decode_shunt(md, fields.mfg_data_len, new_fmt, now_ms);
         cur.decrypt_ok = ok;
-        if (ok) s_shunt_decrypt_ok++;
+        if (ok) {
+          s_shunt_decrypt_ok++;
+        } else if (s_shunt_mac_match % 10 == 1) {
+          ESP_LOGW(TAG, "Shunt adv MAC-matched but decode_shunt failed: fmt=%s mfg_len=%u "
+                        "(need >= %u) — length guard rejection or AES failure",
+                   new_fmt ? "new" : "old", (unsigned)fields.mfg_data_len,
+                   new_fmt ? 11u : 4u);
+        }
       } else {
         if (s_shunt_type_match % 10 == 1) {
           ESP_LOGI(TAG, "Shunt adv (rec=0x02 fmt=%s) MAC %02X:%02X:%02X:%02X:%02X:%02X "
@@ -724,10 +737,12 @@ void get_adv_debug(AdvDebugState& out) {
   out.mppt_mac_match   = s_mppt_mac_match;
   out.mppt_decrypt_ok  = s_mppt_decrypt_ok;
   out.mppt_mac_valid   = s_mppt_mac_valid;
-  out.shunt_type_match = s_shunt_type_match;
-  out.shunt_mac_match  = s_shunt_mac_match;
-  out.shunt_decrypt_ok = s_shunt_decrypt_ok;
-  out.shunt_mac_valid  = s_shunt_mac_valid;
+  out.shunt_type_match   = s_shunt_type_match;
+  out.shunt_mac_match    = s_shunt_mac_match;
+  out.shunt_decrypt_ok   = s_shunt_decrypt_ok;
+  out.shunt_mac_valid    = s_shunt_mac_valid;
+  out.shunt_last_mfg_len = s_shunt_last_mfg_len;
+  out.shunt_last_new_fmt = s_shunt_last_new_fmt;
 
   // Render the configured MAC exactly as the internal comparison bytes
   // (network order, MSB first — same representation as the config string).
