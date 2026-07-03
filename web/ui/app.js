@@ -4877,9 +4877,12 @@ function buildDriftCard(pack) {
   // Pill always reflects the live (now) spread so it matches the battery cards.
   // Historical at-full spread is shown as separate labeled context below.
   const liveSpread = pack.spread_now || 0;
-  const color   = driftBandColor(liveSpread);
-  const rate    = driftRateStr(pack.drift_rate);
   const isOpen  = g_drift_open.has(pack.id);
+  // Rate is meaningful from 2 full-charge days on; show progress before that.
+  const nToc = pack.n_toc_days || 0;
+  const rateHtml = (nToc >= 2)
+    ? '<strong>' + driftRateStr(pack.drift_rate) + '</strong>&thinsp;mV/day'
+    : 'trend&thinsp;<strong>' + nToc + '/2</strong>&thinsp;days';
 
   const wrapper = document.createElement('div');
   wrapper.className = 'drift-pack-card';
@@ -4899,7 +4902,7 @@ function buildDriftCard(pack) {
       '<span class="drift-summary-sep">&middot;</span>' +
       '<span class="drift-meta">At full&thinsp;<strong>' + atFullStr + '</strong></span>' +
       '<span class="drift-summary-sep">&middot;</span>' +
-      '<span class="drift-meta"><strong>' + rate + '</strong>&thinsp;mV/day</span>' +
+      '<span class="drift-meta">' + rateHtml + '</span>' +
     '</div>' +
     '<span class="drift-chevron' + (isOpen ? ' open' : '') + '">▼</span>';
   toggle.addEventListener('click', () => toggleDriftPack(pack.id));
@@ -4923,92 +4926,87 @@ function buildDriftNoHistoryHtml(pack) {
     buildDriftCellRowsHtml(pack, true);
 }
 
+// Repetition rule (review 2.3): a first-full / first-empty cell is shown only
+// when the SAME cell won the per-day argmax on >= 2 days AND holds a majority
+// of the region days in the window. One-day winners are trivia and stay hidden.
+function driftRepeatWinner(modeIdx, daysWon, daysTotal) {
+  if (!daysTotal || !daysWon || daysWon < 2) return null;
+  if (daysWon * 2 <= daysTotal) return null;
+  return { cell: 'C' + (modeIdx + 1), won: daysWon, total: daysTotal };
+}
+
 function buildDriftBodyHtml(pack) {
-  const cells   = pack.cells || [];
-  const nc      = Math.min(pack.cell_count || cells.length, 15);
-  const rateStr = driftRateStr(pack.drift_rate);
+  const cells = pack.cells || [];
+  const nc    = Math.min(pack.cell_count || cells.length, 15);
 
-  // KPI: cells >= 3.60 V
-  const cellsHigh = cells.slice(0, nc).filter(c => (c.now || 0) >= 3600).length;
-
-  // Live spread (now) — always available.
-  const liveSpreadStr = (pack.spread_now || 0) + ' mV';
-
-  // At-full spread (only when high-SoC region was visited in the 5-day window).
-  const tocSpreadStr = pack.has_toc ? (pack.toc_spread || 0) + ' mV' : '—';
-  const tocSubStr    = pack.has_toc ? '' : 'no full-charge data yet';
-
-  // At-empty spread (only when low-SoC region was visited).
-  const bodSpreadStr = pack.has_bod ? (pack.bod_spread || 0) + ' mV' : '—';
-  const bodSubStr    = pack.has_bod ? '' : 'no low-SoC data yet';
-
-  // Trend rate (from ToC slope; "building" when no ToC data yet).
-  const rateDisplay = (!pack.has_toc || pack.n_trend < 2) ? 'building' : rateStr;
-
-  // First full: cell that hits ceiling first at top-of-charge.
-  let firstFullStr = '—';
-  if (pack.has_toc && pack.first_full_mv) {
-    firstFullStr = 'C' + (pack.first_full_idx + 1) + ' · ' + pack.first_full_mv + ' mV';
+  // Conditional warning strip (review 2.4): cells at/above 3.60 V right now.
+  // Zero is the expected state and renders nothing; nonzero is urgent.
+  const highCells = cells.slice(0, nc)
+    .map((c, i) => ({ i, mv: c.now || 0 }))
+    .filter(x => x.mv >= 3600);
+  let stripHtml = '';
+  if (highCells.length > 0) {
+    const crit = highCells.some(x => x.mv >= 3650);
+    const list = highCells.map(x => 'C' + (x.i + 1) + ': ' + x.mv + ' mV').join(', ');
+    stripHtml = '<div class="drift-warn-strip' + (crit ? ' crit' : '') + '">' +
+      highCells.length + (highCells.length === 1 ? ' cell' : ' cells') +
+      ' at or above 3.60&thinsp;V (' + escHtml(list) + ')</div>';
   }
 
-  // First empty: cell that empties first at bottom-of-discharge (optional).
-  let firstEmptyStr = '—';
-  if (pack.has_bod && pack.first_empty_mv) {
-    firstEmptyStr = 'C' + (pack.first_empty_idx + 1) + ' · ' + pack.first_empty_mv + ' mV';
+  // KPI 1: balance now (anchor tile; matches the header pill).
+  const liveSpread = pack.spread_now || 0;
+  const kpiNow = driftKpiSub('Balance now', liveSpread + ' mV', driftStatusLabel(liveSpread));
+
+  // KPI 2: at full — worst 5-day spread at top-of-charge, with the worst cell.
+  let kpiFull;
+  if (pack.has_toc) {
+    const worst = (pack.first_full_mv > 0) ? 'worst cell C' + (pack.first_full_idx + 1) : '';
+    kpiFull = driftKpiSub('At full', (pack.toc_spread || 0) + ' mV', worst);
+  } else {
+    kpiFull = driftKpiSub('At full', '—', 'no full charge in 5 days');
   }
 
-  // Fills first: cells with highest tocMax (top-of-charge), fallback to d5max.
-  const byTocMax = cells.slice(0, nc)
-    .map((c, i) => ({ i, v: c.tocMax || 0 }))
-    .filter(x => x.v > 0)
-    .sort((a, b) => b.v - a.v);
-  const byD5Max = cells.slice(0, nc)
-    .map((c, i) => ({ i, v: c.d5max || 0 }))
-    .filter(x => x.v > 0)
-    .sort((a, b) => b.v - a.v);
-  const fillsSrc = byTocMax.length > 0 ? byTocMax : byD5Max;
-  const fillsFirst = fillsSrc.length > 0
-    ? fillsSrc.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ')
-    : '—';
+  // KPI 3: trend — a rate once 2 full-charge days exist, progress before that
+  // (review 2.1: an indefinite "building" reads as a stuck spinner).
+  const nToc = pack.n_toc_days || 0;
+  let kpiTrend;
+  if (nToc >= 2) {
+    kpiTrend = driftKpiSub('Trend', driftRateStr(pack.drift_rate) + ' mV/day',
+                           'between full-charge days');
+  } else {
+    kpiTrend = driftKpiSub('Trend', nToc + ' of 2', 'full-charge days collected');
+  }
 
-  // Lagging / empties first: cells with lowest bodMin (bottom-of-discharge), fallback to d5min.
-  const byBodMin = cells.slice(0, nc)
-    .map((c, i) => ({ i, v: c.bodMin || 0 }))
-    .filter(x => x.v > 0)
-    .sort((a, b) => a.v - b.v);
-  const byD5Min = cells.slice(0, nc)
-    .map((c, i) => ({ i, v: c.d5min || 0 }))
-    .filter(x => x.v > 0)
-    .sort((a, b) => a.v - b.v);
-  const laggingSrc = byBodMin.length > 0 ? byBodMin : byD5Min;
-  const lagging = laggingSrc.length > 0
-    ? laggingSrc.slice(0, 3).map(x => 'C' + (x.i + 1)).join(', ')
-    : '—';
+  // Optional KPI: at empty — rendered only when low-SoC data exists
+  // (hide-until-data policy, review 2.2). A solar setup may never dip below
+  // 15% SoC; a permanent placeholder would be a false promise.
+  let kpiEmpty = '';
+  if (pack.has_bod) {
+    const feWin = driftRepeatWinner(pack.fe_mode_idx, pack.fe_days_won, pack.fe_days_total);
+    const sub = feWin
+      ? feWin.cell + ' empties first (' + feWin.won + ' of ' + feWin.total + ' days)'
+      : (pack.first_empty_mv > 0 ? 'worst cell C' + (pack.first_empty_idx + 1) : '');
+    kpiEmpty = driftKpiSub('At empty', (pack.bod_spread || 0) + ' mV', sub);
+  }
 
-  return '<div class="drift-kpis">' +
-    driftKpiSub('Now',        liveSpreadStr, '') +
-    driftKpiSub('At full',    tocSpreadStr,  tocSubStr) +
-    driftKpiSub('At empty',   bodSpreadStr,  bodSubStr) +
-    driftKpi('Trend', rateDisplay, rateDisplay === 'building' ? '' : ' mV/d') +
-    driftKpiRaw('First full',  '<span style="font-size:13px">' + firstFullStr  + '</span>') +
-    driftKpiRaw('First empty', '<span style="font-size:13px">' + firstEmptyStr + '</span>') +
-    driftKpiRaw('&ge;&thinsp;3.60&thinsp;V', cellsHigh + '<span class="drift-kpi-unit"> cells</span>') +
-    '</div>' +
-    '<div class="drift-callouts">' +
-      '<div class="drift-callout"><div class="drift-callout-label">Fills first</div><div class="drift-callout-val">' + fillsFirst + '</div></div>' +
-      '<div class="drift-callout"><div class="drift-callout-label">Empties first</div><div class="drift-callout-val">' + lagging + '</div></div>' +
-    '</div>' +
+  // Repetition callout for the fills-first pattern (review 2.3): shown only
+  // when the same cell wins repeatedly; a one-day winner is omitted entirely.
+  const ffWin = driftRepeatWinner(pack.ff_mode_idx, pack.ff_days_won, pack.ff_days_total);
+  let calloutHtml = '';
+  if (ffWin) {
+    calloutHtml = '<div class="drift-repeat-note">' + ffWin.cell + ' fills first (' +
+      ffWin.won + ' of ' + ffWin.total + ' full-charge days)</div>';
+  }
+
+  // Capability note when the at-empty region has never been visited.
+  const bodNote = pack.has_bod ? '' :
+    '<div class="drift-cap-note">No low-SoC data in the 5-day window. ' +
+    'At-empty stats appear if SoC dips below 15&thinsp;%.</div>';
+
+  return stripHtml +
+    '<div class="drift-kpis">' + kpiNow + kpiFull + kpiTrend + kpiEmpty + '</div>' +
+    calloutHtml + bodNote +
     buildDriftCellRowsHtml(pack, false);
-}
-
-function driftKpi(label, value, unit) {
-  return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
-    '<div class="drift-kpi-value">' + value + '<span class="drift-kpi-unit">' + unit + '</span></div></div>';
-}
-
-function driftKpiRaw(label, valueHtml) {
-  return '<div class="drift-kpi"><div class="drift-kpi-label">' + label + '</div>' +
-    '<div class="drift-kpi-value">' + valueHtml + '</div></div>';
 }
 
 // KPI with an optional muted sub-label (used for "no data yet" states).
