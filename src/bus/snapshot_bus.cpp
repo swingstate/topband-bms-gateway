@@ -99,11 +99,13 @@ BmsSystemSnapshot* begin_publish() {
   uint32_t new_seq = seq_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
   slot_seq_[inactive].store(new_seq, std::memory_order_relaxed);
 
-  // Acquire fence: prevents the compiler (at -O3) and the hardware from
-  // reordering the caller's fill_sentinel() data stores to BEFORE the seq=ODD
-  // store above. Without this, a relaxed store can be sinked past the
-  // subsequent data writes, letting readers see new data with the old even seq.
-  std::atomic_thread_fence(std::memory_order_acquire);
+  // seq_cst fence: the odd seq store above must become visible BEFORE the
+  // caller's subsequent data stores (StoreStore ordering). An acquire fence
+  // does NOT provide that — it orders prior loads against later accesses,
+  // not a prior relaxed store against later plain stores (review F9). The
+  // exposure window was tiny (swap-based double buffer + seq re-check), but
+  // this is the one primitive every consumer trusts, so use the full fence.
+  std::atomic_thread_fence(std::memory_order_seq_cst);
 
   return slots_[inactive];
 }

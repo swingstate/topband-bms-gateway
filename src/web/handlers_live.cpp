@@ -344,8 +344,8 @@ static void hs_jstr(HS& s, const char* v) {
   hs_str(s, "\"");
 }
 
-// Temperature label for each sensor index.
-// First 5 positions: T1..T5, then BAL, ENV, MOS.
+// Temperature label for regular sensor indices (T1..T8). The named BAL/ENV/
+// MOS sensors are appended separately by handle_bms_id when non-zero.
 static const char* temp_label(int idx) {
   static const char* const labels[] = { "T1","T2","T3","T4","T5","T6","T7","T8" };
   if (idx < 0 || idx >= 8) return "T?";

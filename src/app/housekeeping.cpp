@@ -299,7 +299,7 @@ static void housekeeping_task_entry(void* /*arg*/) {
           post_mqtt(s_req);
         };
 
-        static char sv[32];
+        char sv[32];
 
         if (stale || !d.pv_power_valid) {
           post_solar("/solar/pv_power", "unavailable");
@@ -428,25 +428,27 @@ static void housekeeping_task_entry(void* /*arg*/) {
         }
         s_cell_cursor = (s_cell_cursor + 2) % total_slots;
 
-        // Cells JSON blob: round-robin one pack per tick when due (30 s each).
-        // Feeds value_template entities in HA that reference cells_v array.
-        for (uint8_t tries = 0; tries < n_packs; ++tries) {
+        // Cells JSON blob: consider ONE cursor-selected pack per tick; publish
+        // when online and due (30 s each). Deliberately no retry with other
+        // packs this tick — the cursor advances every second, so a skipped
+        // pack is considered again within n_packs ticks. (The previous loop
+        // syntax suggested retries but every branch broke out — review F8.)
+        {
           uint8_t pi = (s_cell_cursor / 2) % n_packs;  // reuse cursor as pack selector
-          if (!s_snap.pack[pi].online) { break; }
-          if ((now_ms - last_cells_ms[pi]) < CELLS_JSON_PERIOD_MS &&
-              last_cells_ms[pi] != 0) { break; }
-
-          s_req.topic    = MqttPublishRequest::Topic::Cells;
-          s_req.pack_id  = pi;
-          s_req.retained = false;
-          size_t nb = mqtt::payloads::build_cells(s_snap.pack[pi], ts_ms,
-                                                   s_req.payload, sizeof(s_req.payload));
-          if (nb > 0) {
-            s_req.payload_len = (uint16_t)nb;
-            post_mqtt(s_req);
+          bool due = (last_cells_ms[pi] == 0) ||
+                     ((now_ms - last_cells_ms[pi]) >= CELLS_JSON_PERIOD_MS);
+          if (s_snap.pack[pi].online && due) {
+            s_req.topic    = MqttPublishRequest::Topic::Cells;
+            s_req.pack_id  = pi;
+            s_req.retained = false;
+            size_t nb = mqtt::payloads::build_cells(s_snap.pack[pi], ts_ms,
+                                                     s_req.payload, sizeof(s_req.payload));
+            if (nb > 0) {
+              s_req.payload_len = (uint16_t)nb;
+              post_mqtt(s_req);
+            }
+            last_cells_ms[pi] = now_ms;
           }
-          last_cells_ms[pi] = now_ms;
-          break;
         }
       }
     }

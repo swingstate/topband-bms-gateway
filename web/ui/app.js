@@ -4090,6 +4090,8 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('TX ok', can.tx_ok||0)}
         ${kvRow('TX fail', can.tx_fail||0)}
+        ${kvRow('TX fail streak (max)', can.tx_fail_streak_max||0,
+                'Longest run of consecutive transmit failures since boot')}
         ${kvRow('Heartbeats', can.heartbeats||0)}
         ${kvRow('Express sends', can.express_sends||0)}
         ${kvRow('Bus-off count', can.bus_off_count||0)}

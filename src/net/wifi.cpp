@@ -204,10 +204,18 @@ bool init() {
     return false;
   }
 
-  esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                      on_wifi_event, NULL, NULL);
-  esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                      on_wifi_event, NULL, NULL);
+  ret = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                            on_wifi_event, NULL, NULL);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "register WIFI_EVENT handler: %s", esp_err_to_name(ret));
+    return false;
+  }
+  ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            on_wifi_event, NULL, NULL);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "register IP_EVENT handler: %s", esp_err_to_name(ret));
+    return false;
+  }
   return true;
 }
 

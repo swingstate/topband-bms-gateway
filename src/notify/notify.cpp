@@ -345,9 +345,40 @@ static SafetyState::SafetyEvent begin_for_clear(SafetyState::SafetyEvent ev) {
   }
 }
 
-// Returns true if this event is a "begin" (condition starting).
-static bool is_begin_event(SafetyState::SafetyEvent ev) {
-  return begin_for_clear(ev) == SafetyState::SafetyEvent::None && ev != SafetyState::SafetyEvent::None;
+// ── Pending-table insert (shared by the begin path) ──────────────────────────
+// Inserts under s_pending_mux with per-(type, pack) dedup: per-cycle events
+// (CellImbalanceStart, BmsReportedAlarm) fire every cycle while active and
+// must not consume a new slot each time — the root cause of the June 2026
+// production crash loop. Returns true when a genuinely new (type, pack) pair
+// found no free slot and was dropped (counted, never fatal).
+static bool insert_pending(const SafetyState::EventEntry& entry, uint32_t now_ms) {
+  bool dropped = false;
+  portENTER_CRITICAL(&s_pending_mux);
+  int slot = -1;
+  bool dup = false;
+  for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
+    if (s_pending[i].active &&
+        s_pending[i].begin_type == entry.type &&
+        s_pending[i].bms_id    == entry.bms_id) {
+      dup = true;  // same (type, pack) already pending — skip
+      break;
+    }
+    if (!s_pending[i].active && slot < 0) slot = i;
+  }
+  if (!dup) {
+    if (slot >= 0) {
+      s_pending[slot].active     = true;
+      s_pending[slot].begin_type = entry.type;
+      s_pending[slot].bms_id     = entry.bms_id;
+      s_pending[slot].entry      = entry;
+      s_pending[slot].start_ms   = now_ms;
+    } else {
+      ++s_dropped_count;
+      dropped = true;
+    }
+  }
+  portEXIT_CRITICAL(&s_pending_mux);
+  return dropped;
 }
 
 namespace notify {
@@ -361,7 +392,6 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
 
   SafetyState::SafetyEvent pair_begin = begin_for_clear(entry.type);
   bool is_clear = (pair_begin != SafetyState::SafetyEvent::None);
-  bool is_begin = is_begin_event(entry.type);
 
   if (is_clear) {
     // Check if the corresponding begin is pending (not yet fired).
@@ -388,99 +418,25 @@ void on_safety_event(const SafetyState::EventEntry& entry, uint32_t now_ms) {
     return;
   }
 
-  if (is_begin) {
-    if (debounce_ms == 0) {
-      // Debounce disabled: emit immediately.
-      fire_alert_and_notify(entry, now_ms);
-      return;
-    }
-    // Debounce enabled: add to pending table unless a duplicate is already pending.
-    // Deduplication: per-cycle events (CellImbalanceStart, BmsReportedAlarm) fire
-    // every cycle while the condition is active.  Without this check those events
-    // would fill the table on the very first cycle and overflow on every subsequent
-    // cycle — the root cause of the June 2026 production crash loop.
-    portENTER_CRITICAL(&s_pending_mux);
-    int slot = -1;
-    bool dup = false;
-    for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
-      if (s_pending[i].active &&
-          s_pending[i].begin_type == entry.type &&
-          s_pending[i].bms_id    == entry.bms_id) {
-        dup = true;  // same (type, pack) already pending — skip
-        break;
-      }
-      if (!s_pending[i].active && slot < 0) {
-        slot = i;
-      }
-    }
-    bool dropped = false;
-    if (!dup) {
-      if (slot >= 0) {
-        s_pending[slot].active     = true;
-        s_pending[slot].begin_type = entry.type;
-        s_pending[slot].bms_id     = entry.bms_id;
-        s_pending[slot].entry      = entry;
-        s_pending[slot].start_ms   = now_ms;
-      } else {
-        // True overflow after dedup: a new distinct (type, pack) pair has nowhere
-        // to go.  Drop with counter — never abort, never crash the device.
-        ++s_dropped_count;
-        dropped = true;
-      }
-    }
-    portEXIT_CRITICAL(&s_pending_mux);
-
-    // Rate-limited warning outside the critical section.
-    if (dropped && (now_ms - s_last_overflow_warn_ms) >= 10000u) {
-      s_last_overflow_warn_ms = now_ms;
-      portENTER_CRITICAL(&s_pending_mux);
-      uint32_t cnt = s_dropped_count;
-      portEXIT_CRITICAL(&s_pending_mux);
-      ESP_LOGW(TAG, "debounce overflow: ev=%u dropped (total=%lu)",
-               ev_id, (unsigned long)cnt);
-    }
+  // Not a clear, so this is a begin: begin_for_clear() maps every clear-type
+  // event, which makes "begin" exactly its complement over valid ids (the
+  // former defensive third branch was unreachable — review F7).
+  if (debounce_ms == 0) {
+    // Debounce disabled: emit immediately.
+    fire_alert_and_notify(entry, now_ms);
     return;
   }
 
-  // Neither a begin nor a clear — should not occur with current SafetyEvent enum;
-  // kept as a defensive fallback.
-  if (debounce_ms == 0) {
-    fire_alert_and_notify(entry, now_ms);
-  } else {
+  bool dropped = insert_pending(entry, now_ms);
+
+  // Rate-limited overflow warning outside the critical section.
+  if (dropped && (now_ms - s_last_overflow_warn_ms) >= 10000u) {
+    s_last_overflow_warn_ms = now_ms;
     portENTER_CRITICAL(&s_pending_mux);
-    int slot = -1;
-    bool dup = false;
-    for (int i = 0; i < (int)K_PENDING_CAP; ++i) {
-      if (s_pending[i].active &&
-          s_pending[i].begin_type == entry.type &&
-          s_pending[i].bms_id    == entry.bms_id) {
-        dup = true;
-        break;
-      }
-      if (!s_pending[i].active && slot < 0) slot = i;
-    }
-    bool dropped = false;
-    if (!dup) {
-      if (slot >= 0) {
-        s_pending[slot].active     = true;
-        s_pending[slot].begin_type = entry.type;
-        s_pending[slot].bms_id     = entry.bms_id;
-        s_pending[slot].entry      = entry;
-        s_pending[slot].start_ms   = now_ms;
-      } else {
-        ++s_dropped_count;
-        dropped = true;
-      }
-    }
+    uint32_t cnt = s_dropped_count;
     portEXIT_CRITICAL(&s_pending_mux);
-    if (dropped && (now_ms - s_last_overflow_warn_ms) >= 10000u) {
-      s_last_overflow_warn_ms = now_ms;
-      portENTER_CRITICAL(&s_pending_mux);
-      uint32_t cnt = s_dropped_count;
-      portEXIT_CRITICAL(&s_pending_mux);
-      ESP_LOGW(TAG, "debounce overflow: ev=%u dropped (total=%lu)",
-               ev_id, (unsigned long)cnt);
-    }
+    ESP_LOGW(TAG, "debounce overflow: ev=%u dropped (total=%lu)",
+             ev_id, (unsigned long)cnt);
   }
 }
 
