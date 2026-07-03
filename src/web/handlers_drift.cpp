@@ -97,6 +97,15 @@ esp_err_t handle_drift(httpd_req_t* req) {
     ds_str(s, ",\"first_empty_idx\":"); ds_uint(s, has_drift ? (uint32_t)dr.first_empty_idx : 0u);
     ds_str(s, ",\"first_empty_mv\":");  ds_uint(s, has_drift ? dr.first_empty_mv : 0u);
 
+    // Repetition detection (review 2.3): the UI shows "fills first" only when
+    // the same cell won the per-day argmax on >= 2 days AND holds the majority.
+    ds_str(s, ",\"ff_mode_idx\":");   ds_uint(s, has_drift ? (uint32_t)dr.ff_mode_idx : 0u);
+    ds_str(s, ",\"ff_days_won\":");   ds_uint(s, has_drift ? (uint32_t)dr.ff_days_won : 0u);
+    ds_str(s, ",\"ff_days_total\":"); ds_uint(s, has_drift ? (uint32_t)dr.ff_days_total : 0u);
+    ds_str(s, ",\"fe_mode_idx\":");   ds_uint(s, has_drift ? (uint32_t)dr.fe_mode_idx : 0u);
+    ds_str(s, ",\"fe_days_won\":");   ds_uint(s, has_drift ? (uint32_t)dr.fe_days_won : 0u);
+    ds_str(s, ",\"fe_days_total\":"); ds_uint(s, has_drift ? (uint32_t)dr.fe_days_total : 0u);
+
     // Trend: ToC spread per day, oldest-first (used for drift-rate slope).
     ds_str(s, ",\"n_trend\":"); ds_uint(s, dr.n_days);
     ds_str(s, ",\"trend\":[");
@@ -106,20 +115,28 @@ esp_err_t handle_drift(httpd_req_t* req) {
     }
     ds_str(s, "]");
 
-    // Drift rate: linear least-squares slope over ToC trend points (mV/day).
-    // Positive = spread widening (worsening). Only meaningful with ToC data.
-    float drift_rate = 0.0f;
-    if (has_drift && dr.has_toc && dr.n_days >= 2u) {
-      float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f;
-      const float n = (float)dr.n_days;
+    // Drift rate (mV/day): change between the FIRST and LATEST full-charge
+    // day, over their real day distance. Days without a ToC visit (cloudy
+    // days, spread==0) are excluded; the old least-squares over the raw
+    // series treated them as literal zeros and produced sign flips
+    // (review 2.1b). n_toc_days tells the UI how many full-charge days
+    // exist; rate is meaningful from 2 onward.
+    float   drift_rate = 0.0f;
+    uint8_t n_toc_days = 0;
+    if (has_drift) {
+      int first_i = -1, last_i = -1;
       for (uint8_t d = 0; d < dr.n_days; d++) {
-        const float x = (float)d;
-        const float y = (float)dr.trend_spread[d];
-        sx += x; sy += y; sxx += x * x; sxy += x * y;
+        if (dr.trend_spread[d] == 0u) continue;
+        if (first_i < 0) first_i = d;
+        last_i = d;
+        n_toc_days++;
       }
-      const float denom = n * sxx - sx * sx;
-      if (denom != 0.0f) drift_rate = (n * sxy - sx * sy) / denom;
+      if (n_toc_days >= 2u && dr.trend_day[last_i] > dr.trend_day[first_i]) {
+        drift_rate = ((float)dr.trend_spread[last_i] - (float)dr.trend_spread[first_i])
+                     / (float)(dr.trend_day[last_i] - dr.trend_day[first_i]);
+      }
     }
+    ds_str(s, ",\"n_toc_days\":"); ds_uint(s, n_toc_days);
     ds_str(s, ",\"drift_rate\":"); ds_f1(s, drift_rate);
     ds_str(s, ",\"has_history\":"); ds_str(s, has_drift ? "true" : "false");
 

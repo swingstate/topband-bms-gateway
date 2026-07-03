@@ -265,18 +265,57 @@ bool read_pack(uint8_t pack_idx, PackDrift& out) {
   out.first_empty_mv = (out.has_bod && worst_bod < 0xFFFFu) ? worst_bod : 0u;
 
   // Trend: ToC spread per day, oldest-first, then today.
-  // Drift rate is computed from the slope of this series.
+  // trend_day records real UTC day numbers so consumers can honor gaps.
   uint8_t n = 0;
   for (uint8_t d = 0; d < s_day_count; d++) {
     const uint8_t slot = (s_day_head + d) % DRIFT_HISTORY_DAYS;
     if (s_days[slot].day_utc != 0u) {
-      out.trend_spread[n++] = s_days[slot].spread_high[pack_idx];
+      out.trend_spread[n] = s_days[slot].spread_high[pack_idx];
+      out.trend_day[n]    = s_days[slot].day_utc;
+      n++;
     }
   }
   if (s_today.day_utc != 0u) {
-    out.trend_spread[n++] = s_today.spread_high[pack_idx];
+    out.trend_spread[n] = s_today.spread_high[pack_idx];
+    out.trend_day[n]    = s_today.day_utc;
+    n++;
   }
   out.n_days = n;
+
+  // Repetition detection: per-day argmax of the ToC band (cell that hit the
+  // highest voltage that day) and argmin of the BoD band, tallied over all
+  // days in the window including today. A cell that wins repeatedly is a
+  // balancing signal; a one-day winner is trivia and is filtered by the UI.
+  {
+    uint8_t ff_wins[DRIFT_MAX_CELLS] = {};
+    uint8_t fe_wins[DRIFT_MAX_CELLS] = {};
+    uint8_t ff_total = 0, fe_total = 0;
+
+    auto tally_bucket = [&](const DayBucket& b) {
+      uint16_t best_hi = 0; int hi_ci = -1;
+      uint16_t best_lo = 0xFFFFu; int lo_ci = -1;
+      for (uint8_t ci = 0; ci < nc; ci++) {
+        const CellBand& h = b.cell_high[pack_idx][ci];
+        if (h.mx > best_hi) { best_hi = h.mx; hi_ci = ci; }
+        const CellBand& l = b.cell_low[pack_idx][ci];
+        if (l.mn != 0u && l.mn < best_lo) { best_lo = l.mn; lo_ci = ci; }
+      }
+      if (hi_ci >= 0) { ff_wins[hi_ci]++; ff_total++; }
+      if (lo_ci >= 0) { fe_wins[lo_ci]++; fe_total++; }
+    };
+
+    for (uint8_t d = 0; d < s_day_count; d++) {
+      tally_bucket(s_days[(s_day_head + d) % DRIFT_HISTORY_DAYS]);
+    }
+    if (s_today.day_utc != 0u) tally_bucket(s_today);
+
+    for (uint8_t ci = 0; ci < nc; ci++) {
+      if (ff_wins[ci] > out.ff_days_won) { out.ff_days_won = ff_wins[ci]; out.ff_mode_idx = ci; }
+      if (fe_wins[ci] > out.fe_days_won) { out.fe_days_won = fe_wins[ci]; out.fe_mode_idx = ci; }
+    }
+    out.ff_days_total = ff_total;
+    out.fe_days_total = fe_total;
+  }
 
   return true;
 }
