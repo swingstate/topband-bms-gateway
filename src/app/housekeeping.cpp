@@ -36,45 +36,44 @@ static EXT_RAM_BSS_ATTR BmsSystemSnapshot  s_snap;
 static SafetyState                         s_safety;  // hot-path internal: keep in DRAM
 static EXT_RAM_BSS_ATTR MqttPublishRequest s_req;
 
-// Individual system IndivTopic values — 20 × 72 bytes = 1440 bytes.
-// Previously a stack-local inside housekeeping_task_entry; with interrupt save
-// frames, nested call frames, and log_hook overhead that brought HousekeepingTask
-// within ~1400 bytes of its 4096-byte budget. Same BSS-promotion pattern as the
-// Phase H1 stack overflow fix (architecture §10 R9).
-// Per docs/diag-mqtt-crash-review.md Finding 3.
-struct IndivTopic { const char* suffix; char value[64]; };
-static IndivTopic s_iv_topics[20] = {
-  { "/soc",              {} },
-  { "/voltage",          {} },
-  { "/current",          {} },
-  { "/power",            {} },
-  { "/temperature",      {} },
-  { "/cell_v_min",       {} },
-  { "/cell_v_max",       {} },
-  { "/cell_drift",       {} },
-  { "/soh",              {} },
-  { "/cvl",              {} },
-  { "/ccl",              {} },
-  { "/dcl",              {} },
-  { "/alarm_flags",      {} },
-  { "/sys_message",      {} },
-  { "/bms_online",       {} },
-  { "/bms_configured",   {} },
-  { "/energy_today_in",  {} },
-  { "/energy_today_out", {} },
-  { "/runtime_est_min",  {} },
-  { "/runtime_est_state",{} },
+// Individual system IndivTopic values — suffixes are compile-time constants
+// (flash rodata) and the 20 x 64 B value buffers live in PSRAM BSS. The old
+// combined struct array was initialized data and therefore stuck in internal
+// DRAM (.data cannot be EXT_RAM_BSS) — review M2.
+static const char* const k_iv_suffixes[20] = {
+  "/soc",
+  "/voltage",
+  "/current",
+  "/power",
+  "/temperature",
+  "/cell_v_min",
+  "/cell_v_max",
+  "/cell_drift",
+  "/soh",
+  "/cvl",
+  "/ccl",
+  "/dcl",
+  "/alarm_flags",
+  "/sys_message",
+  "/bms_online",
+  "/bms_configured",
+  "/energy_today_in",
+  "/energy_today_out",
+  "/runtime_est_min",
+  "/runtime_est_state",
 };
+static EXT_RAM_BSS_ATTR char s_iv_values[20][64];
 
 // Helper: post a pre-built MqttPublishRequest to q_mqtt_publish.
 // Drops oldest on full queue (architecture §5.8).
 // Uses a static receive buffer so the 1030-byte MqttPublishRequest for the
-// dropped item does not land on the caller's stack frame.
+// dropped item does not land on the caller's stack frame. PSRAM BSS: pure
+// drop sink, CPU-only write by xQueueReceive from this task (review M2).
 static void post_mqtt(const MqttPublishRequest& req) {
   if (!q_mqtt_publish) return;
   if (xQueueSend(q_mqtt_publish, &req, 0) != pdTRUE) {
     // Queue full — drop oldest, then re-enqueue.
-    static MqttPublishRequest s_dropped;
+    static EXT_RAM_BSS_ATTR MqttPublishRequest s_dropped;
     xQueueReceive(q_mqtt_publish, &s_dropped, 0);
     xQueueSend(q_mqtt_publish, &req, 0);
     ESP_LOGD(TAG, "q_mqtt_publish full — dropped oldest");
@@ -215,44 +214,43 @@ static void housekeeping_task_entry(void* /*arg*/) {
         (iv_rt_state == bms::runtime_estimator::RuntimeStateEst::UntilEmpty) ? "until_empty" :
         (iv_rt_state == bms::runtime_estimator::RuntimeStateEst::UntilFull)  ? "until_full"  : "idle";
 
-      // Fill value strings into s_iv_topics[] (indices match module-level array).
-      snprintf(s_iv_topics[0].value,  sizeof(s_iv_topics[0].value),  "%u",    (unsigned)s_safety.soc_avg);
-      snprintf(s_iv_topics[1].value,  sizeof(s_iv_topics[1].value),  "%.2f",  s_safety.pack_voltage_avg);
-      snprintf(s_iv_topics[2].value,  sizeof(s_iv_topics[2].value),  "%.1f",  s_safety.pack_current_total);
-      snprintf(s_iv_topics[3].value,  sizeof(s_iv_topics[3].value),  "%d",    (int)iv_power);
-      snprintf(s_iv_topics[4].value,  sizeof(s_iv_topics[4].value),  "%.1f",  s_safety.temp_avg);
+      // Fill value strings into s_iv_values[] (indices match k_iv_suffixes).
+      snprintf(s_iv_values[0], sizeof(s_iv_values[0]),  "%u",    (unsigned)s_safety.soc_avg);
+      snprintf(s_iv_values[1], sizeof(s_iv_values[1]),  "%.2f",  s_safety.pack_voltage_avg);
+      snprintf(s_iv_values[2], sizeof(s_iv_values[2]),  "%.1f",  s_safety.pack_current_total);
+      snprintf(s_iv_values[3], sizeof(s_iv_values[3]),  "%d",    (int)iv_power);
+      snprintf(s_iv_values[4], sizeof(s_iv_values[4]),  "%.1f",  s_safety.temp_avg);
       if (iv_have_cells) {
-        snprintf(s_iv_topics[5].value, sizeof(s_iv_topics[5].value), "%.3f", iv_cell_min);
-        snprintf(s_iv_topics[6].value, sizeof(s_iv_topics[6].value), "%.3f", iv_cell_max);
-        snprintf(s_iv_topics[7].value, sizeof(s_iv_topics[7].value), "%.3f", iv_cell_drift);
+        snprintf(s_iv_values[5], sizeof(s_iv_values[5]), "%.3f", iv_cell_min);
+        snprintf(s_iv_values[6], sizeof(s_iv_values[6]), "%.3f", iv_cell_max);
+        snprintf(s_iv_values[7], sizeof(s_iv_values[7]), "%.3f", iv_cell_drift);
       } else {
-        snprintf(s_iv_topics[5].value, sizeof(s_iv_topics[5].value), "0.000");
-        snprintf(s_iv_topics[6].value, sizeof(s_iv_topics[6].value), "0.000");
-        snprintf(s_iv_topics[7].value, sizeof(s_iv_topics[7].value), "0.000");
+        snprintf(s_iv_values[5], sizeof(s_iv_values[5]), "0.000");
+        snprintf(s_iv_values[6], sizeof(s_iv_values[6]), "0.000");
+        snprintf(s_iv_values[7], sizeof(s_iv_values[7]), "0.000");
       }
-      snprintf(s_iv_topics[8].value,  sizeof(s_iv_topics[8].value),  "%u",    (unsigned)s_safety.soh_avg);
-      snprintf(s_iv_topics[9].value,  sizeof(s_iv_topics[9].value),  "%.1f",  s_safety.cvl_volts);
-      snprintf(s_iv_topics[10].value, sizeof(s_iv_topics[10].value), "%u",    (unsigned)s_safety.ccl_amps);
-      snprintf(s_iv_topics[11].value, sizeof(s_iv_topics[11].value), "%u",    (unsigned)s_safety.dcl_amps);
-      snprintf(s_iv_topics[12].value, sizeof(s_iv_topics[12].value), "%u",    (unsigned)s_safety.alarm_flags);
-      snprintf(s_iv_topics[13].value, sizeof(s_iv_topics[13].value), "%s",    s_safety.sys_message);
-      snprintf(s_iv_topics[14].value, sizeof(s_iv_topics[14].value), "%u",    (unsigned)s_safety.packs_online);
-      snprintf(s_iv_topics[15].value, sizeof(s_iv_topics[15].value), "%u",    (unsigned)s_safety.packs_configured);
-      snprintf(s_iv_topics[16].value, sizeof(s_iv_topics[16].value), "%.2f",  storage::energy_store::today_in_kwh());
-      snprintf(s_iv_topics[17].value, sizeof(s_iv_topics[17].value), "%.2f",  storage::energy_store::today_out_kwh());
-      snprintf(s_iv_topics[18].value, sizeof(s_iv_topics[18].value), "%d",    (int)iv_rt_min);
-      snprintf(s_iv_topics[19].value, sizeof(s_iv_topics[19].value), "%s",    iv_rt_state_str);
+      snprintf(s_iv_values[8], sizeof(s_iv_values[8]),  "%u",    (unsigned)s_safety.soh_avg);
+      snprintf(s_iv_values[9], sizeof(s_iv_values[9]),  "%.1f",  s_safety.cvl_volts);
+      snprintf(s_iv_values[10], sizeof(s_iv_values[10]), "%u",    (unsigned)s_safety.ccl_amps);
+      snprintf(s_iv_values[11], sizeof(s_iv_values[11]), "%u",    (unsigned)s_safety.dcl_amps);
+      snprintf(s_iv_values[12], sizeof(s_iv_values[12]), "%u",    (unsigned)s_safety.alarm_flags);
+      snprintf(s_iv_values[13], sizeof(s_iv_values[13]), "%s",    s_safety.sys_message);
+      snprintf(s_iv_values[14], sizeof(s_iv_values[14]), "%u",    (unsigned)s_safety.packs_online);
+      snprintf(s_iv_values[15], sizeof(s_iv_values[15]), "%u",    (unsigned)s_safety.packs_configured);
+      snprintf(s_iv_values[16], sizeof(s_iv_values[16]), "%.2f",  storage::energy_store::today_in_kwh());
+      snprintf(s_iv_values[17], sizeof(s_iv_values[17]), "%.2f",  storage::energy_store::today_out_kwh());
+      snprintf(s_iv_values[18], sizeof(s_iv_values[18]), "%d",    (int)iv_rt_min);
+      snprintf(s_iv_values[19], sizeof(s_iv_values[19]), "%s",    iv_rt_state_str);
 
       // Post 4 topics at s_sys_cursor, wrapping around 20-element ring.
       for (uint8_t i = 0; i < 4; ++i) {
         uint8_t idx = (s_sys_cursor + i) % 20;
-        const IndivTopic& t = s_iv_topics[idx];
         s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
         s_req.pack_id  = 0xFF;
         s_req.retained = true;
-        snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix), "%s", t.suffix);
-        size_t vlen = strlen(t.value);
-        memcpy(s_req.payload, t.value, vlen + 1);
+        snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix), "%s", k_iv_suffixes[idx]);
+        size_t vlen = strlen(s_iv_values[idx]);
+        memcpy(s_req.payload, s_iv_values[idx], vlen + 1);
         s_req.payload_len = (uint16_t)vlen;
         post_mqtt(s_req);
       }

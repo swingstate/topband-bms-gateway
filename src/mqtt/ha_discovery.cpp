@@ -3,6 +3,7 @@
 #include "bus/queues.h"
 #include "app/version.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include <ArduinoJson.h>
@@ -145,8 +146,9 @@ static void enqueue_disc(const char* disc_topic,
     req.payload_len = 0;
   }
   // Drop oldest on full queue — same policy as post_mqtt in housekeeping.
+  // PSRAM BSS drop sink: CPU-only write by xQueueReceive from MqttTask (M2).
   if (xQueueSend(q_mqtt_publish, &req, 0) != pdTRUE) {
-    static MqttPublishRequest s_dropped;
+    static EXT_RAM_BSS_ATTR MqttPublishRequest s_dropped;
     xQueueReceive(q_mqtt_publish, &s_dropped, 0);
     xQueueSend(q_mqtt_publish, &req, 0);
   }
