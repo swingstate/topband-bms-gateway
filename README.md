@@ -4,7 +4,7 @@ ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to Victron, Pyl
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-3.1.0--preview.1-blue)
+![Version](https://img.shields.io/badge/version-3.1.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange)
 
@@ -84,10 +84,10 @@ Download the release files from the [Releases page](../../releases).
 
 ```bash
 # macOS / Linux
-esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.1.0-preview.1.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.1.0.bin
 
 # Windows (adjust COM port)
-esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.1.0-preview.1.bin
+esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.1.0.bin
 ```
 
 If upgrading from V2.67.x, erase the flash first (new partition layout):
@@ -96,7 +96,7 @@ If upgrading from V2.67.x, erase the flash first (new partition layout):
 esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX erase_flash
 ```
 
-**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.1.0-preview.1.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
+**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.1.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
 
 > Upgrading from V2.67.x to V3.x via OTA is not supported. Use the USB factory image. Back up your V2 settings first (General → Maintenance → Export settings in V2), then restore them after V3 first boot.
 
