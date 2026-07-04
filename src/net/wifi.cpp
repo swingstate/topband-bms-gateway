@@ -466,12 +466,19 @@ void start_connection_async(const char* ssid, const char* pass,
 std::vector<ScanResult> scan(uint32_t timeout_ms) {
   xEventGroupClearBits(g_events, BIT_SCAN_DONE);
 
+  // home_chan_dwell_time is required (30-150 ms per esp_wifi.h) for a scan to
+  // work correctly while STA is associated: it's the time the radio parks back
+  // on the connected AP's channel between hops, keeping the link alive without
+  // a disconnect/reconnect around the scan. Leaving it at the zero-init default
+  // is out of the documented range.
   wifi_scan_config_t cfg = {};
   cfg.scan_type              = WIFI_SCAN_TYPE_ACTIVE;
   cfg.scan_time.active.min   = 100;
   cfg.scan_time.active.max   = 300;
+  cfg.scan_time.passive      = 360;
+  cfg.home_chan_dwell_time   = 30;
 
-  esp_err_t err = esp_wifi_scan_start(&cfg, false);  // non-blocking
+  esp_err_t err = esp_wifi_scan_start(&cfg, false);  // non-blocking; safe while STA is connected
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "scan_start: %s", esp_err_to_name(err));
     return {};
@@ -487,6 +494,7 @@ std::vector<ScanResult> scan(uint32_t timeout_ms) {
 
   uint16_t count = 0;
   esp_wifi_scan_get_ap_num(&count);
+  ESP_LOGI(TAG, "scan: found %u AP(s)", (unsigned)count);
   if (count == 0) return {};
 
   // Cap at 20 results to limit stack/heap usage.
