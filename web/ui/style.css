@@ -994,6 +994,14 @@ a { text-decoration: none; color: inherit; }
 .scan-row:last-child { border-bottom: none; }
 .scan-row:hover { background: var(--bg-card-hover); }
 .scan-ssid { font-weight: 600; color: var(--text-primary); flex: 1; }
+.scan-bssid {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.scan-bssid:hover { color: var(--brand-teal); }
 .scan-rssi { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .scan-lock { color: var(--text-muted); flex-shrink: 0; }
 

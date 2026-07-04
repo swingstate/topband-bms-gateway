@@ -33,9 +33,17 @@ static uint32_t        g_disconnect_count = 0;
 
 // BSSID pin state — managed by start_sta() and the disconnect event handler.
 // g_bssid_pin_active: true while the driver config has bssid_set=true for the pin.
-// Cleared on fallback (BSSID_PIN_MAX_RETRY exceeded) and on post-connection reconnect
-// (so a reconnect after being connected always uses pure signal-based selection).
+// Cleared on fallback (BSSID_PIN_MAX_RETRY exceeded); re-armed on the next
+// post-connection reconnect cycle if a pin target is still configured (see
+// g_bssid_pin_bytes below) — this is the periodic retry mechanism.
 static bool    g_bssid_pin_active = false;
+// Raw bytes of the last BSSID pin passed to start_sta() (valid iff
+// g_bssid_pin_set), remembered so a later reconnect cycle can re-arm the pin
+// after a fallback instead of staying on auto-select until the next reboot.
+// Stored as parsed bytes rather than the canonical string to keep this
+// module's static RAM footprint minimal (6 B + 1 B vs. 18 B for a string).
+static uint8_t g_bssid_pin_bytes[6] = {};
+static bool    g_bssid_pin_set      = false;
 
 static esp_netif_t* g_sta_netif = nullptr;
 static esp_netif_t* g_ap_netif  = nullptr;
@@ -92,6 +100,26 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
       // Do not clear g_bssid_pin_active here: if pin was set, let it try again;
       // the BSSID_PIN_MAX_RETRY fallback below handles the case where the pinned
       // AP is truly unreachable after reconnect too.
+
+      // Periodic BSSID pin retry: if a pin is configured but we're currently in
+      // fallback (auto-select, because an earlier attempt exhausted
+      // WIFI_BSSID_PIN_MAX_RETRY), re-arm the pin on THIS reconnect cycle rather
+      // than waiting for a reboot. Any ordinary reconnect (AP hiccup, roam, DHCP
+      // renewal disconnect) becomes a fresh chance for the preferred AP to have
+      // come back — no separate timer/task needed. If it's still unreachable,
+      // the WIFI_BSSID_PIN_MAX_RETRY fallback below simply clears it again.
+      if (!g_bssid_pin_active && g_bssid_pin_set) {
+        wifi_config_t cfg = {};
+        if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+          memcpy(cfg.sta.bssid, g_bssid_pin_bytes, 6);
+          cfg.sta.bssid_set = true;
+          esp_wifi_set_config(WIFI_IF_STA, &cfg);
+          g_bssid_pin_active = true;
+          ESP_LOGI(TAG, "wifi: retrying BSSID pin " MACSTR " on reconnect cycle",
+                   MAC2STR(g_bssid_pin_bytes));
+        }
+      }
+
       ESP_LOGW(TAG, "STA disconnected (was connected, reason=%d) — reconnecting", (int)reason);
       diag::alerts::emit(diag::alerts::Severity::Warn, "wifi", "disconnected");
       esp_wifi_connect();
@@ -253,12 +281,15 @@ bool start_sta(uint32_t timeout_ms, const char* bssid_pin, int8_t rssi_floor) {
     memcpy(sta_cfg.sta.bssid, bssid_bytes, 6);
     sta_cfg.sta.bssid_set  = true;
     g_bssid_pin_active     = true;
+    memcpy(g_bssid_pin_bytes, bssid_bytes, 6);
+    g_bssid_pin_set        = true;
     ESP_LOGI(TAG,
              "start_sta: BSSID pin=%s (fallback to strongest-AP after %d failures)",
              bssid_pin, WIFI_BSSID_PIN_MAX_RETRY);
   } else {
     sta_cfg.sta.bssid_set = false;
     memset(sta_cfg.sta.bssid, 0, sizeof(sta_cfg.sta.bssid));
+    g_bssid_pin_set = false;
   }
 
   ESP_LOGI(TAG,

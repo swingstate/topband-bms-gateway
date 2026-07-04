@@ -22,6 +22,11 @@
 //   Safety fallback: after WIFI_BSSID_PIN_MAX_RETRY failures the pin is cleared
 //   and the normal strongest-AP selection resumes automatically. A log line is
 //   emitted on fallback so the operator can see exactly what happened.
+//   Periodic retry: once in fallback, the NEXT post-connection reconnect cycle
+//   (AP hiccup, roam, DHCP-renewal disconnect — see is_bssid_pin_active()) re-arms
+//   the pin automatically, so a temporarily-unreachable preferred AP is retried
+//   without waiting for a reboot. No separate timer/task; piggybacks on whatever
+//   reconnect already happens.
 //
 // Roaming / reconnect:
 //   On any post-connection disconnect the module immediately attempts to reconnect.

@@ -3427,6 +3427,19 @@ function rssiBarHtml(rssi) {
           <span style="margin-left:6px;font-size:11px;color:var(--text-muted)">${label}</span>`;
 }
 
+// Three-state BSSID pin status shared between the Network page and the Diag
+// WiFi section: "none" (no pin configured — today's behavior, unchanged),
+// "pinned" (a target is configured and currently active/connected), or
+// "fallback" (a target is configured but not currently active — the pinned
+// AP was unreachable and the gateway is running on auto-select so it never
+// gets stuck offline).
+function bssidPinStatus(pinActive) {
+  const target = (g_config && g_config.wifi_bssid) || '';
+  if (!target) return { state: 'none', text: 'Not set (auto-select)' };
+  if (pinActive) return { state: 'pinned', text: `Pinned to ${target} (connected)` };
+  return { state: 'fallback', text: `Pinned to ${target} — unreachable, using auto-select` };
+}
+
 function renderNetworkStatus(d) {
   const root = document.getElementById('net-status-panel');
   if (!root) return;
@@ -3434,10 +3447,13 @@ function renderNetworkStatus(d) {
     root.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Not connected to any WiFi network.</p>';
     return;
   }
+  const pin = bssidPinStatus(d.bssid_pin_active);
   root.innerHTML = `
     <div class="net-kv-grid">
       <div class="net-kv-row"><span>SSID</span><span>${escHtml(d.ssid || '—')}</span></div>
       <div class="net-kv-row"><span>Signal</span><span>${rssiBarHtml(d.rssi || 0)}</span></div>
+      <div class="net-kv-row"><span>BSSID</span><span>${escHtml(d.bssid || '—')}</span></div>
+      <div class="net-kv-row"><span>BSSID pin</span><span style="${pin.state === 'fallback' ? 'color:var(--color-warning)' : ''}">${escHtml(pin.text)}</span></div>
       <div class="net-kv-row"><span>IP Address</span><span>${escHtml(d.ip || '—')}</span></div>
       <div class="net-kv-row"><span>Gateway</span><span>${escHtml(d.gateway || '—')}</span></div>
       <div class="net-kv-row"><span>Netmask</span><span>${escHtml(d.netmask || '—')}</span></div>
@@ -3474,6 +3490,8 @@ async function doWifiScan() {
       list.innerHTML = networks.map(n => `
         <div class="scan-row" onclick="prefillSsid(${JSON.stringify(escHtml(n.ssid))})">
           <span class="scan-ssid">${escHtml(n.ssid)}</span>
+          ${n.bssid ? `<span class="scan-bssid" title="Pin the gateway to this specific AP"
+                 onclick="event.stopPropagation(); pinBssid(${JSON.stringify(escHtml(n.bssid))})">📌 ${escHtml(n.bssid)}</span>` : ''}
           <span class="scan-rssi">${n.rssi} dBm</span>
           <span class="scan-lock">${n.secure
             ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
@@ -3493,6 +3511,75 @@ function prefillSsid(ssid) {
   if (inp) { inp.value = ssid; inp.focus(); }
   const list = document.getElementById('scan-results');
   if (list) list.innerHTML = '';
+}
+
+// Picking a BSSID from scan results only fills the pin field — it does NOT
+// save. The owner still has to click "Save" so a stray click never silently
+// re-pins the gateway.
+function pinBssid(bssid) {
+  const inp = document.getElementById('net-bssid-pin');
+  if (inp) { inp.value = bssid; inp.focus(); }
+  const fb = document.getElementById('bssid-pin-feedback');
+  if (fb) { fb.className = 'feedback-msg'; fb.textContent = `Selected ${bssid} — click Save to pin.`; }
+}
+
+async function saveBssidPin() {
+  const fb = document.getElementById('bssid-pin-feedback');
+  if (fb) { fb.className = 'feedback-msg'; fb.textContent = ''; }
+
+  const inp = document.getElementById('net-bssid-pin');
+  const raw = inp ? inp.value : '';
+  const normalized = normalizeMacInput(raw);
+  if (normalized === null) {
+    if (fb) {
+      fb.className = 'feedback-msg err';
+      fb.textContent = 'Pinned BSSID must be 6 hex bytes, e.g. e3:8d:48:c8:52:b4 — colons and hyphens optional. Leave blank for auto-select.';
+    }
+    return;
+  }
+
+  // g_config may not be loaded yet if the Network page was opened directly
+  // (fetchConfigOnce() is fire-and-forget at app boot) — never POST a partial
+  // config, always work off a freshly-fetched full one.
+  if (!g_config) {
+    try {
+      const r = await apiFetch('/api/config');
+      if (r && r.ok) g_config = await r.json();
+    } catch (_) {}
+  }
+  if (!g_config) {
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = 'Config not loaded yet — try again.'; }
+    return;
+  }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash = '';
+  cfg.wifi_bssid = normalized;  // server also normalizes; sending canonical form
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (inp) inp.value = data.wifi_bssid || '';
+      if (fb) {
+        fb.className = 'feedback-msg ok';
+        fb.textContent = normalized
+          ? 'Saved. Takes effect on the next WiFi reconnect (or reboot).'
+          : 'Cleared — auto-select restored.';
+      }
+      fetchNetworkStatus();
+    } else {
+      if (fb) { fb.className = 'feedback-msg err'; fb.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (_) {
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = 'Save failed — check connection.'; }
+  }
 }
 
 function confirmWifiConnect() {
@@ -3544,6 +3631,16 @@ async function doWifiConnect(ssid) {
 async function renderNetwork() {
   if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
 
+  // g_config may not be loaded yet if this page was opened directly
+  // (fetchConfigOnce() at app boot is fire-and-forget) — the BSSID pin field
+  // below needs a real config to prefill from and to save against safely.
+  if (!g_config) {
+    try {
+      const r = await apiFetch('/api/config');
+      if (r && r.ok) g_config = await r.json();
+    } catch (_) {}
+  }
+
   const root = document.getElementById('page-root');
   root.innerHTML = `
     <div class="network-page" style="padding:0">
@@ -3554,7 +3651,7 @@ async function renderNetwork() {
         </div>
       </div>
 
-      <div class="settings-section card" style="padding:16px">
+      <div class="settings-section card" style="margin-bottom:16px;padding:16px">
         <div class="settings-section-title">Switch to a Different Network</div>
         <div class="form-group">
           <label>SSID</label>
@@ -3574,6 +3671,26 @@ async function renderNetwork() {
         <div id="net-connect-feedback" class="feedback-msg"></div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="confirmWifiConnect()">Connect to new network</button>
+        </div>
+      </div>
+
+      <div class="settings-section card" style="padding:16px">
+        <div class="settings-section-title">Preferred Access Point (optional)</div>
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">
+          Pin the gateway to one specific AP's BSSID — useful with multiple APs or a mesh
+          sharing one SSID. If the pinned AP becomes unreachable, the gateway automatically
+          falls back to the strongest AP of the same SSID, so it never gets stuck offline.
+          Use the Scan button above and click a network's 📌 BSSID to fill this in, or type
+          one directly.
+        </p>
+        <div class="form-group">
+          <label>Pinned BSSID</label>
+          <input type="text" id="net-bssid-pin" placeholder="Auto-select (no pin)"
+                 value="${escHtml((g_config && g_config.wifi_bssid) || '')}">
+        </div>
+        <div id="bssid-pin-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveBssidPin()">Save</button>
         </div>
       </div>
     </div>
@@ -4326,7 +4443,7 @@ function renderDiagData(d) {
         ${kvRow('Disconnects', ble.wifi_disconnects||0)}
         ${kvRow('BSSID', ble.wifi_bssid || '—')}
         ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' + rssiQuality(ble.wifi_rssi) : '—')}
-        ${kvRow('BSSID lock', ble.wifi_bssid_pin_active ? 'active' : 'off')}
+        ${kvRow('BSSID pin', bssidPinStatus(ble.wifi_bssid_pin_active).text)}
       </div>
     </div>
 

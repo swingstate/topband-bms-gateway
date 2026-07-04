@@ -66,6 +66,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Settings UI for the WiFi BSSID pin, plus automatic re-pin after fallback.**
+  The `wifi_bssid` config field, its `mac_normalize` validation, and the
+  connect-time pin-with-fallback logic (`net::wifi::start_sta()`,
+  `WIFI_BSSID_PIN_MAX_RETRY`) already existed since schema v8 (V3.1) but had
+  no Settings UI at all -- it could only be set via a raw `/api/config` POST.
+  The Network page now has a "Preferred Access Point (optional)" section: a
+  BSSID field (validated client-side the same way as the BLE MAC fields),
+  and the existing WiFi scan list now shows each network's BSSID with a
+  one-click "pin this AP" action. The "Current Connection" panel and the
+  Diag WiFi section both now show a clear three-state status (not
+  configured / pinned and connected / pinned but unreachable -- falling
+  back to auto-select) instead of a bare active/off flag. Also closed the
+  one real gap in the existing mechanism: previously, once
+  `WIFI_BSSID_PIN_MAX_RETRY` fallback cleared the pin, the device stayed on
+  auto-select until the next reboot even if the preferred AP came back.
+  `net::wifi.cpp` now re-arms the pin on the next post-connection reconnect
+  cycle (AP hiccup, roam, DHCP-renewal disconnect) instead of a separate
+  timer, reusing the existing fallback machinery. No new Config field, no
+  schema bump -- +8 B static RAM (6-byte MAC + 1 bool, alignment-padded) to
+  remember the pin target across reconnects, flagged rather than claimed as
+  zero.
 - **Energy Today badge now follows the active Battery Value Sources policy.**
   Energy accumulation (`bms/poller.cpp`) already integrates from the same
   fused current/voltage as the "Combined Current" dashboard tile (fixed in a
