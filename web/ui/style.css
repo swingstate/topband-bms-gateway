@@ -938,9 +938,7 @@ a { text-decoration: none; color: inherit; }
   padding: 4px 0;
 }
 
-/* ── Network page ───────────────────────────────────────────────────────────── */
-.network-page { max-width: 680px; margin: 0 auto; }
-
+/* ── Network (Settings section) ─────────────────────────────────────────────── */
 .net-kv-grid {
   display: grid;
   grid-template-columns: 160px 1fr;
@@ -1154,7 +1152,6 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   .packs-grid { grid-template-columns: 1fr; }
 
   /* Subpage wrappers: full-width on mobile */
-  .network-page { max-width: 100%; }
   .settings-page { max-width: 100%; }
 
   /* Net kv grid: narrower label column */

@@ -71,7 +71,9 @@ const routes = {
   '/shunt':     () => navigate('/battery'),
   '/general':   renderSettings,   // backward-compat alias
   '/settings':  renderSettings,
-  '/network':   renderNetwork,
+  // Network moved into Settings; rewrite old /network links/bookmarks to the
+  // Network section and render it in one pass (renderSettings reads location.hash).
+  '/network':   () => { history.replaceState({}, '', '/settings#network'); renderSettings(); },
   '/alerts':    renderAlerts,
   '/diag':      renderDiag,
 };
@@ -92,8 +94,9 @@ function navigate(path) {
     clearInterval(g_diag_timer);
     g_diag_timer = null;
   }
-  // Stop network polling when leaving the network page.
-  if (path !== '/network' && g_network_timer) {
+  // Stop network status polling when leaving Settings (the Network section lives
+  // there now). Switching between Settings sections is handled in renderSettingsSection.
+  if (path !== '/settings' && path !== '/general' && g_network_timer) {
     clearInterval(g_network_timer);
     g_network_timer = null;
   }
@@ -130,7 +133,6 @@ function updateSidebarActive(path) {
     if (path.startsWith('/battery') && href === '/battery') { el.classList.add('active'); return; }
     if (path === '/solar'  && href === '/solar')  { el.classList.add('active'); return; }
     if ((path === '/settings' || path === '/general') && href === '/settings') { el.classList.add('active'); return; }
-    if (path === '/network' && href === '/network') { el.classList.add('active'); return; }
   });
 }
 
@@ -1619,6 +1621,8 @@ const SETTINGS_SECTIONS = [
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' },
   { id: 'time',    label: 'Time',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
+  { id: 'network', label: 'Network',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12" y2="20"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' },
   { id: 'ble',     label: 'BLE',
@@ -1679,12 +1683,15 @@ function showSettingsSection(id) {
 function renderSettingsSection(id) {
   const content = document.getElementById('settings-content');
   if (!content || !g_config) return;
+  // Stop Network status polling left running from a previously-shown Network section.
+  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
   switch (id) {
     case 'battery':  content.innerHTML = renderSettingsBattery();  break;
     case 'can':      content.innerHTML = renderSettingsCan();      break;
     case 'hardware': content.innerHTML = renderSettingsHardware(); break;
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
+    case 'network':  content.innerHTML = renderSettingsNetwork();  startNetworkStatusPoll(); break;
     case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
     case 'ble':           content.innerHTML = renderSettingsBle();           break;
     case 'notifications': content.innerHTML = renderSettingsNotifications(); loadNotifyData(); break;
@@ -3628,30 +3635,21 @@ async function doWifiConnect(ssid) {
     'You may need to navigate to the new gateway IP address.');
 }
 
-async function renderNetwork() {
-  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
-
-  // g_config may not be loaded yet if this page was opened directly
-  // (fetchConfigOnce() at app boot is fire-and-forget) — the BSSID pin field
-  // below needs a real config to prefill from and to save against safely.
-  if (!g_config) {
-    try {
-      const r = await apiFetch('/api/config');
-      if (r && r.ok) g_config = await r.json();
-    } catch (_) {}
-  }
-
-  const root = document.getElementById('page-root');
-  root.innerHTML = `
-    <div class="network-page" style="padding:0">
-      <div class="settings-section card" style="margin-bottom:16px;padding:16px">
+// Network section of Settings (formerly the standalone /network page). g_config
+// is guaranteed loaded here because renderSettings() fetches it before rendering
+// any section, so the BSSID pin field can prefill safely.
+function renderSettingsNetwork() {
+  const c = g_config || {};
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
         <div class="settings-section-title">Current Connection</div>
         <div id="net-status-panel">
           <div class="placeholder-page" style="height:80px"><div class="spinner"></div></div>
         </div>
       </div>
 
-      <div class="settings-section card" style="margin-bottom:16px;padding:16px">
+      <div class="settings-section">
         <div class="settings-section-title">Switch to a Different Network</div>
         <div class="form-group">
           <label>SSID</label>
@@ -3674,7 +3672,7 @@ async function renderNetwork() {
         </div>
       </div>
 
-      <div class="settings-section card" style="padding:16px">
+      <div class="settings-section">
         <div class="settings-section-title">Preferred Access Point (optional)</div>
         <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">
           Pin the gateway to one specific AP's BSSID — useful with multiple APs or a mesh
@@ -3686,7 +3684,7 @@ async function renderNetwork() {
         <div class="form-group">
           <label>Pinned BSSID</label>
           <input type="text" id="net-bssid-pin" placeholder="Auto-select (no pin)"
-                 value="${escHtml((g_config && g_config.wifi_bssid) || '')}">
+                 value="${escHtml(c.wifi_bssid || '')}">
         </div>
         <div id="bssid-pin-feedback" class="feedback-msg"></div>
         <div class="btn-row">
@@ -3695,8 +3693,13 @@ async function renderNetwork() {
       </div>
     </div>
   `;
+}
 
-  await fetchNetworkStatus();
+// Kick off the 5-s WiFi status refresh for the Network settings section. Stopped
+// by renderSettingsSection() on section switch and by navigate() on leaving Settings.
+function startNetworkStatusPoll() {
+  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
+  fetchNetworkStatus();
   g_network_timer = setInterval(fetchNetworkStatus, 5000);
 }
 
