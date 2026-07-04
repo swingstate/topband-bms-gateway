@@ -550,12 +550,26 @@ static void control_task_entry(void* param) {
         // ── Energy integration (Phase H2) ─────────────────────────────────
         // Compute system power from new safety state and integrate kWh.
         // dt_s: time since last cycle start, clamped to avoid stale bursts.
+        //
+        // V3.2: uses the same Battery Value Sources fused current/voltage as
+        // the Combined Current/Voltage display (tmp.current_display/
+        // voltage_display, computed above), not the raw BMS product. The BMS
+        // coulomb counter reads a blind 0 A below ~0.5 A -- exactly the same
+        // low-current blind spot the shunt was added to fix for the live
+        // display -- so without this, energy accumulation would silently keep
+        // under-counting during low-current periods even after the shunt made
+        // the dashboard accurate. Falls back to the raw BMS product only when
+        // neither source has valid data this cycle (display would show "--").
+        // This is telemetry, not the safety path: charge-taper and CAN TX
+        // still use pack_current_total/pack_voltage_avg exclusively.
         {
           static uint32_t s_last_energy_ms = 0;
           uint32_t now_e = static_cast<uint32_t>(esp_timer_get_time() / 1000);
           if (s_last_energy_ms > 0) {
             float dt_s = (float)(now_e - s_last_energy_ms) / 1000.0f;
-            float power_w = tmp.pack_current_total * tmp.pack_voltage_avg;
+            float power_w = (tmp.current_display_valid && tmp.voltage_display_valid)
+                            ? tmp.current_display * tmp.voltage_display
+                            : tmp.pack_current_total * tmp.pack_voltage_avg;
             bms::energy_integrator::integrate(power_w, dt_s,
                                               net::ntp::now_unix_s(),
                                               app::get_config().timezone_offset_h);

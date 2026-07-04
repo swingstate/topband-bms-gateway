@@ -166,8 +166,8 @@ function pill(text, cls) {
 }
 function chargePill(current) {
   const a = Number(current);
-  if (a > 0.5)  return pill('Charging',    'pill-charging');
-  if (a < -0.5) return pill('Discharging', 'pill-discharging');
+  if (a >= 0.5)  return pill('Charging',    'pill-charging');
+  if (a <= -0.5) return pill('Discharging', 'pill-discharging');
   return pill('Idle', 'pill-idle');
 }
 
@@ -1200,40 +1200,6 @@ function batteryVDiv() {
 function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
-  const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
-
-  const shuntCard = shuntEnabled ? `
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
-    <div class="card" style="padding-top:14px">
-      <div style="padding:0 18px 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div class="pack-status-dot offline" id="shunt-strip-dot" style="flex-shrink:0"></div>
-        <span style="font-weight:600;font-size:14px" id="shunt-strip-text">—</span>
-        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="shunt-strip-age"></span>
-      </div>
-      <div style="border-top:1px solid var(--border)"></div>
-      <div style="display:flex;align-items:center">
-        ${batteryMBox('Current', 'sagg-curr')}
-        ${batteryVDiv()}
-        ${batteryMBox('Voltage', 'sagg-volt')}
-        ${batteryVDiv()}
-        ${batteryMBox('SOC', 'sagg-soc')}
-      </div>
-      <div style="border-top:1px solid var(--border);padding:12px 18px;font-size:12px;color:var(--text-muted)">
-        Raw SmartShunt readings. Configure how these feed the dashboard/MQTT in
-        <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');showSettingsSection('battery');return false;">Settings &rarr; Battery &rarr; Battery Value Sources</a>.
-      </div>
-    </div>` : (g_config ? `
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
-    <div class="card" style="padding:18px">
-      <div style="display:flex;align-items:center;gap:14px">
-        <div style="flex-shrink:0;width:10px;height:10px;border-radius:50%;background:var(--neutral-300)"></div>
-        <div>
-          <div style="font-weight:600;font-size:14px;margin-bottom:4px">SmartShunt &mdash; not enabled</div>
-          <div style="font-size:12px;color:var(--text-muted)">Battery-monitor integration (SOC, precise current, consumed Ah) is available. Enable it in
-            <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');return false;">Settings &rarr; Bluetooth LE</a> to use it.</div>
-        </div>
-      </div>
-    </div>` : '');
 
   root.innerHTML = `
     <div style="max-width:860px;margin:0 auto">
@@ -1244,7 +1210,11 @@ function renderBattery() {
         <span id="batt-strip-pill"></span>
       </div>
       <!-- Aggregate metrics -->
-      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
+      <div class="card" style="padding-top:10px;padding-bottom:14px;margin-bottom:16px">
+        <div style="padding:0 18px 10px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);margin-bottom:4px">
+          <div class="pack-status-dot offline" id="combined-fresh-dot" style="flex-shrink:0;width:8px;height:8px"></div>
+          <span style="font-size:11px;color:var(--text-muted)" id="combined-fresh-text">—</span>
+        </div>
         <div style="display:flex;align-items:center">
           <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
             <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Combined SOC</div>
@@ -1256,7 +1226,11 @@ function renderBattery() {
           ${batteryVDiv()}
           ${batteryMBox('Combined Current', 'bagg-curr', true)}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Power', 'bagg-pow')}
+          ${batteryMBox('Combined Power', 'bagg-pow', true)}
+        </div>
+        <div style="border-top:1px solid var(--border);padding:10px 18px 0;font-size:12px;color:var(--text-muted)">
+          <span id="combined-source-sentence">—</span>
+          Configure sources in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');showSettingsSection('battery');return false;">Settings &rarr; Battery &rarr; Battery Value Sources</a>.
         </div>
       </div>
       <!-- Pack grid -->
@@ -1277,7 +1251,6 @@ function renderBattery() {
           <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">Loading drift data…</div>
         </div>
       </div>
-      ${shuntCard}
     </div>`;
   updateBatteryOverviewCards();
   if (g_drift_timer) { clearInterval(g_drift_timer); g_drift_timer = null; }
@@ -1324,34 +1297,64 @@ function updateBatteryOverviewCards() {
   setEl('bagg-curr', cur  !== null ? fmtA(cur)  + ' A'   : '—', cur  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
   setEl('bagg-pow',  pow  !== null ? fmt(pow,  0)  + ' W' : '—', pow  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
 
-  // ── SmartShunt live values ──
-  const shunt = sources.shunt || {};
-  const shuntSeen  = !!shunt.seen;
-  const shuntStale = shuntSeen && (shunt.ms_since_last_seen || 0) > 30000;
-  const shuntDot = document.getElementById('shunt-strip-dot');
-  if (shuntDot) shuntDot.className = 'pack-status-dot ' + (shuntSeen && !shuntStale ? 'online' : 'offline');
-  setEl('shunt-strip-text', shuntSeen ? (shuntStale ? 'Stale' : 'Receiving data') : 'Not seen');
-  setEl('shunt-strip-age', shuntSeen ? Math.round((shunt.ms_since_last_seen || 0) / 1000) + ' s ago' : '');
-  setEl('sagg-curr', shunt.current_a !== undefined ? fmtA(shunt.current_a) + ' A' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
-  setEl('sagg-volt', shunt.voltage_v !== undefined ? fmt(shunt.voltage_v, 2) + ' V' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
-  // soc_valid=false: shunt has never been synchronized (VictronConnect app) —
-  // show that plainly rather than a misleading bare "0.0 %".
-  const shuntSocSynced = shunt.soc_valid !== false;
-  setEl('sagg-soc',
-        !shuntSeen ? '—' : (shuntSocSynced ? fmt(shunt.soc_pct, 1) + ' %' : 'Not synced'),
-        shuntSeen ? (shuntSocSynced ? socColor(shunt.soc_pct) : 'var(--text-muted)') : 'var(--text-muted)');
   // ── Source badges ── each badge MUST come from the same fused result as the
   // number it's labelling (sources.battery_*_src mirrors safety.*_source_shunt),
-  // so a badge can never disagree with the value shown next to it.
+  // so a badge can never disagree with the value shown next to it. Power has no
+  // source of its own (derived V x I) so its badge follows Current's source —
+  // same rule already used for the Dashboard's "Battery Power (Total)" card.
+  const voltSrcId = sources.battery_voltage_src || 'bms';
+  const currSrcId = sources.battery_current_src || 'bms';
+  const socSrcId  = sources.battery_soc_src     || 'bms';
   const badgeMap = {
-    'bagg-soc-src':  sources.battery_soc_src     || 'bms',
-    'bagg-volt-src': sources.battery_voltage_src || 'bms',
-    'bagg-curr-src': sources.battery_current_src || 'bms',
+    'bagg-soc-src':  socSrcId,
+    'bagg-volt-src': voltSrcId,
+    'bagg-curr-src': currSrcId,
+    'bagg-pow-src':  currSrcId,
   };
   Object.entries(badgeMap).forEach(([id, srcId]) => {
     const e = document.getElementById(id);
     if (e) { e.textContent = srcId.toUpperCase(); e.className = `card-src card-src-${srcId}`; }
   });
+
+  // ── Freshness indicator ── reflects whichever source is active for Current
+  // (the most dynamically live of the three combined metrics, same one the
+  // charge/discharge pill above is keyed on) — not hardcoded to the shunt, so
+  // it stays meaningful when Battery Value Sources is set to BMS-led.
+  {
+    const shunt = sources.shunt || {};
+    const shuntSeen  = !!shunt.seen;
+    const shuntStale = shuntSeen && (shunt.ms_since_last_seen || 0) > 30000;
+    const freshDot = document.getElementById('combined-fresh-dot');
+    let freshOk, freshText;
+    if (currSrcId === 'shunt') {
+      freshOk = shuntSeen && !shuntStale;
+      freshText = !shuntSeen ? 'SmartShunt: not seen yet'
+        : (shuntStale ? `SmartShunt: stale (${Math.round((shunt.ms_since_last_seen || 0) / 1000)}s ago)`
+                      : `SmartShunt: receiving data (${Math.round((shunt.ms_since_last_seen || 0) / 1000)}s ago)`);
+    } else {
+      // BMS freshness: age of the current pack snapshot vs. device uptime
+      // (both esp_timer-based clocks, directly comparable).
+      const nowDeviceMs = (g_live && g_live.uptime_s !== undefined) ? g_live.uptime_s * 1000 : null;
+      const bmsAgeMs = (nowDeviceMs !== null && snap.produced_ms !== undefined)
+        ? Math.max(0, nowDeviceMs - snap.produced_ms) : null;
+      freshOk = bmsAgeMs !== null && bmsAgeMs < 10000;
+      freshText = bmsAgeMs === null ? 'BMS: not yet polled'
+        : `BMS: updating (${Math.round(bmsAgeMs / 1000)}s ago)`;
+    }
+    if (freshDot) freshDot.className = 'pack-status-dot ' + (freshOk ? 'online' : 'offline');
+    setEl('combined-fresh-text', freshText);
+  }
+
+  // ── Dynamic explanatory sentence ── Auto mode always yields all-shunt or
+  // all-bms (uniform policy); Manual mode can mix per metric.
+  {
+    const allShunt = voltSrcId === 'shunt' && currSrcId === 'shunt' && socSrcId === 'shunt';
+    const allBms   = voltSrcId === 'bms'   && currSrcId === 'bms'   && socSrcId === 'bms';
+    const sentence = allShunt ? 'Combined values from SmartShunt.'
+      : allBms ? 'Combined values from BMS pack average.'
+               : 'Combined values sourced per metric — see badges above.';
+    setEl('combined-source-sentence', sentence);
+  }
 
   // ── Pack grid ──
   if (packs.length === 0) {
