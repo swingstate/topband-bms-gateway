@@ -54,8 +54,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (`ShuntSource::m_soc_valid`), and the bank-SOC fusion (`fuse_bank_soc()`)
   now treats an unsynced shunt reading as `Unavailable`, so it never gets
   promoted to the primary bank SOC ahead of the BMS average.
+- **Top status bar SHUNT pill used the per-tile purple source-badge color
+  instead of the health-pill green.** The top-right status bar (WIFI / BMS /
+  CAN / MQTT / MPPT / SHUNT) is a distinct visual system from the small
+  per-tile source badges under dashboard metrics ("BMS"/"SHUNT" showing which
+  source fed that number) -- the two were never meant to share a color.
+  `.pill-shunt`'s healthy state (`web/ui/style.css`) was hardcoded to the same
+  purple (`#7c6fcd`) as `.card-src-shunt`; now uses `var(--color-success)`
+  (green) like every other pill in that bar. The muted/offline state was
+  already correct and unchanged.
 
 ### Added
+
+- **Energy Today badge now follows the active Battery Value Sources policy.**
+  Energy accumulation (`bms/poller.cpp`) already integrates from the same
+  fused current/voltage as the "Combined Current" dashboard tile (fixed in a
+  prior 3.2 commit); the dashboard's Energy Today tile badge was still
+  hardwired to a static "BMS" label. It now reads the same live
+  `sources.battery_current_src` field the Current/Power tiles use, so the
+  badge matches reality when the shunt is the active source.
+- **Source badges on the Cell Drift and Voltage history charts.** Both
+  history charts previously had no indication of which data source fed them.
+  Cell Drift always shows a "BMS" badge (the shunt is bank-level only and
+  can't inform per-cell drift -- not a live indicator, a hard fact). Voltage
+  shows a "BMS" badge reflecting what its history ring actually plots today
+  (`history_task.cpp`'s fine-point builder averages raw
+  `BmsSystemSnapshot.pack[].pack_voltage`, independent of the live dashboard's
+  Battery Value Sources fusion) -- deliberately not a live-updating badge,
+  since the chart's underlying data doesn't yet follow the active source
+  either. Making it do so would need a new cross-task data path (history_task
+  currently has no access to `SafetyState.voltage_display`) and was scoped out
+  as a follow-up rather than folded into this labeling fix.
 
 - **SmartShunt bank-level SOC fusion.** When SmartShunt BLE is enabled
   (Settings > Bluetooth LE) and its reading is fresh, the shunt's SOC becomes

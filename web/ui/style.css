@@ -238,7 +238,7 @@ a { text-decoration: none; color: inherit; }
 .pill-mppt.off,
 .pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
 .pill-mppt  { background: var(--color-success); color: #fff; }
-.pill-shunt { background: #7c6fcd;             color: #fff; }
+.pill-shunt { background: var(--color-success); color: #fff; }
 
 /* ── Card source indicator (inline pill, used in metric-footer row) ───────────── */
 .card-src {
@@ -855,6 +855,9 @@ a { text-decoration: none; color: inherit; }
   padding: 14px 16px;
 }
 .chart-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);

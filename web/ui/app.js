@@ -435,11 +435,11 @@ function renderDashboard() {
     <div class="metrics-grid" id="metrics-grid"></div>
     <div class="charts-row">
       <div class="card chart-card">
-        <div class="chart-title" id="chart-a-title">Power / SOC — last 2 h</div>
+        <div class="chart-title"><span id="chart-a-title">Power / SOC — last 2 h</span><span class="card-src" id="chart-a-src" style="display:none"></span></div>
         <div id="chart-a-plot" class="chart-plot"></div>
       </div>
       <div class="card chart-card">
-        <div class="chart-title" id="chart-b-title">Voltage / Temp — last 2 h</div>
+        <div class="chart-title"><span id="chart-b-title">Voltage / Temp — last 2 h</span><span class="card-src" id="chart-b-src" style="display:none"></span></div>
         <div id="chart-b-plot" class="chart-plot"></div>
       </div>
     </div>
@@ -571,7 +571,10 @@ function updateDashboardCards() {
     col1bot,
     { label: 'Current (total)',  value: cur !== null ? fmtA(cur) : '—',   unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,           src: curSrcId },
     { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: voltSrcId },
-    { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    // Energy integration (poller.cpp) already accumulates from the same fused
+    // current/voltage as the Combined Current tile, so its badge follows
+    // curSrcId too rather than being hardwired to BMS.
+    { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: curSrcId },
     { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
   ];
 
@@ -1020,12 +1023,23 @@ function renderPackCard(card, p) {
 
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
 
+// chartSrc: which source badge (if any) to show next to the chart title.
+// - drift is always BMS: the shunt is bank-level only and can't inform
+//   per-cell drift, so this is a hard fact, not a live-updating label.
+// - voltage's history ring (history_task.cpp make_fine_point()) is a raw
+//   average of BmsSystemSnapshot.pack[].pack_voltage — it does NOT (yet)
+//   follow the Battery Value Sources fusion the live "Pack Voltage"
+//   dashboard tile uses, so its badge is a static, honest "BMS" label
+//   rather than a live indicator. Making it follow the active source would
+//   need history_task.cpp to read SafetyState.voltage_display, which it
+//   currently has no path to (deferred; flagged as a follow-up).
+// power/soc/temp/solar have no chart-title badge (unset = hidden).
 const SERIES_DEFS = {
   power:   { label: 'Power',      color: '#76D2D9', dec: 0, unit: 'W' },
   soc:     { label: 'SOC',        color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } },
-  voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V' },
+  voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V', chartSrc: 'bms' },
   temp:    { label: 'Temp',       color: '#E89C5C', dec: 1, unit: '°C' },
-  drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV' },
+  drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV', chartSrc: 'bms' },
   solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
 
@@ -1164,18 +1178,29 @@ async function loadCharts() {
       fetched[s] = (d && d.series && d.series[0]) || null;
     }
 
-    const doUpdate = (plotId, titleId, key, existing, existingKey) => {
+    const doUpdate = (plotId, titleId, badgeId, key, existing, existingKey) => {
       const plotEl = document.getElementById(plotId);
       if (!plotEl) return { chart: null, key: null };
       const titleEl = document.getElementById(titleId);
       if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
+      const badgeEl = document.getElementById(badgeId);
+      if (badgeEl) {
+        const src = SERIES_DEFS[key].chartSrc;
+        if (src) {
+          badgeEl.className = `card-src card-src-${src}`;
+          badgeEl.textContent = src.toUpperCase();
+          badgeEl.style.display = '';
+        } else {
+          badgeEl.style.display = 'none';
+        }
+      }
       return buildOrUpdateChart(plotEl, key, buildUplotData(fetched[key] || null), existing, existingKey, null);
     };
 
-    const ra = doUpdate('chart-a-plot', 'chart-a-title', cfg.a, g_chart_a, g_chart_a_key);
+    const ra = doUpdate('chart-a-plot', 'chart-a-title', 'chart-a-src', cfg.a, g_chart_a, g_chart_a_key);
     g_chart_a = ra.chart; g_chart_a_key = ra.key;
 
-    const rb = doUpdate('chart-b-plot', 'chart-b-title', cfg.b, g_chart_b, g_chart_b_key);
+    const rb = doUpdate('chart-b-plot', 'chart-b-title', 'chart-b-src', cfg.b, g_chart_b, g_chart_b_key);
     g_chart_b = rb.chart; g_chart_b_key = rb.key;
   } catch (_) { /* charts unavailable — silently ignore */ }
 }

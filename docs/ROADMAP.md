@@ -327,6 +327,17 @@ SmartShunt provides 1-Hz precision current measurements via BLE. If a SmartShunt
   Resolved: side-by-side "Combined SOC" (fused) vs. "SmartShunt SOC" boxes on the
   Battery page, plus a BMS `soc_avg` cross-check row on the diagnostics page —
   both values stay visible rather than only showing the winner.
+- **Follow-up, not yet scoped:** the "Voltage — Last 2h" dashboard history
+  chart (`history_task.cpp`'s `make_fine_point()`) still records a raw
+  average of `BmsSystemSnapshot.pack[].pack_voltage`, independent of the
+  Battery Value Sources fusion the live "Pack Voltage" tile uses. Its chart
+  badge (added in the same pass as the Cell Drift badge) is a static, honest
+  "BMS" label reflecting that reality rather than a live source indicator.
+  Making the chart itself follow the active source would need
+  `history_task.cpp` to gain a read path to `SafetyState.voltage_display`/
+  `voltage_source_shunt` (currently it only reads the raw `BmsSystemSnapshot`
+  off `snapshot_bus`) — a small but real cross-task data-flow addition,
+  deliberately deferred rather than folded into a labeling fix.
 
 ---
 
