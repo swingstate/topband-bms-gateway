@@ -174,3 +174,53 @@ TEST_CASE("config_to_json: v4 notify fields are included in output", "[config_js
   REQUIRE((bool)(doc["notify_telegram_verified"] | false)   == true);
   REQUIRE((uint32_t)(doc["notify_telegram_last_ok_ts"] | 0u) == 1700001000u);
 }
+
+// ── v11 Battery Value Sources round-trip ──────────────────────────────────────
+
+TEST_CASE("config_to_json: battery_source_policy and per-metric sources are included",
+          "[config_json][v11]") {
+  Config cfg = DEFAULT_CONFIG;
+  cfg.battery_source_policy = Config::BatterySourcePolicy::Manual;
+  cfg.voltage_source = Config::MetricSource::Shunt;
+  cfg.current_source = Config::MetricSource::Bms;
+  cfg.soc_source      = Config::MetricSource::Shunt;
+
+  JsonDocument doc;
+  web::config_to_json(cfg, doc);
+
+  REQUIRE((uint8_t)(doc["battery_source_policy"] | 0) == 1);
+  REQUIRE((uint8_t)(doc["voltage_source"] | 0)         == 1);
+  REQUIRE((uint8_t)(doc["current_source"] | 0)         == 0);
+  REQUIRE((uint8_t)(doc["soc_source"] | 0)              == 1);
+}
+
+TEST_CASE("json_to_config: battery_source_policy and per-metric sources round-trip",
+          "[config_json][v11]") {
+  Config cfg = DEFAULT_CONFIG;  // policy=Auto, all sources=Bms
+  JsonDocument doc;
+  doc["battery_source_policy"] = (uint8_t)1;  // Manual
+  doc["voltage_source"]        = (uint8_t)0;  // Bms
+  doc["current_source"]        = (uint8_t)1;  // Shunt
+  doc["soc_source"]            = (uint8_t)1;  // Shunt
+
+  web::json_to_config(doc, cfg);
+
+  REQUIRE(cfg.battery_source_policy == Config::BatterySourcePolicy::Manual);
+  REQUIRE(cfg.voltage_source == Config::MetricSource::Bms);
+  REQUIRE(cfg.current_source == Config::MetricSource::Shunt);
+  REQUIRE(cfg.soc_source      == Config::MetricSource::Shunt);
+}
+
+TEST_CASE("json_to_config: out-of-range battery_source_policy/metric values are ignored",
+          "[config_json][v11]") {
+  Config cfg = DEFAULT_CONFIG;
+  Config before = cfg;
+  JsonDocument doc;
+  doc["battery_source_policy"] = (uint8_t)7;   // invalid: only 0/1 defined
+  doc["voltage_source"]        = (uint8_t)9;   // invalid: only 0/1 defined
+
+  web::json_to_config(doc, cfg);
+
+  REQUIRE(cfg.battery_source_policy == before.battery_source_policy);
+  REQUIRE(cfg.voltage_source == before.voltage_source);
+}

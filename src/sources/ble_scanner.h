@@ -68,8 +68,8 @@ struct AdvDebugEntry {
   char    mac_str[18];     // canonical "aa:bb:cc:dd:ee:ff" (BLE addr byte-reversed)
   int8_t  rssi;
   uint8_t record_type;     // md[2]: 0x01=MPPT, 0x02=SmartShunt, other=unknown
-  bool    mac_match;       // matched configured MPPT MAC after byte reversal
-  bool    record_type_ok;  // record_type == 0x01
+  bool    mac_match;       // matched the configured MAC for this record_type (MPPT or shunt)
+  bool    record_type_ok;  // record_type is a recognised device type (0x01 or 0x02)
   bool    decrypt_ok;      // AES-CTR succeeded (n/a unless mac_match && record_type_ok)
   bool    valid;           // slot is populated
 };
@@ -83,6 +83,20 @@ struct AdvDebugState {
   uint32_t      mppt_decrypt_ok;   // type 0x01 + MAC match + AES decrypt ok
   char          configured_mac[18]; // MPPT MAC as stored internally for comparison
   bool          mppt_mac_valid;    // configured MAC parsed successfully at startup
+  bool          mppt_key_valid;    // configured 32-hex key parsed successfully at startup
+  // V3.2: same funnel for the SmartShunt (record_type 0x02). Added because the
+  // shunt decode path had zero diagnostic visibility — see V3.2 field report.
+  uint32_t      shunt_type_match;   // Victron ads with record_type == 0x02
+  uint32_t      shunt_mac_match;    // type 0x02 ads where MAC matched configured target
+  uint32_t      shunt_decrypt_ok;   // type 0x02 + MAC match + AES decrypt ok
+  char          configured_shunt_mac[18]; // shunt MAC as stored internally for comparison
+  bool          shunt_mac_valid;    // configured shunt MAC parsed successfully at startup
+  bool          shunt_key_valid;    // configured 32-hex shunt key parsed successfully at startup
+  // Raw shape of the last MAC-matched shunt advertisement, so a decrypt_ok==0
+  // funnel (mac_match > 0, decrypt_ok == 0) can be diagnosed without serial
+  // access: is it even long enough to hold the fields we expect?
+  uint16_t      shunt_last_mfg_len; // fields.mfg_data_len of the last matched shunt ad
+  bool          shunt_last_new_fmt; // true = 2022+ Product Advertisement, false = old format
 };
 
 // Fill out with a diagnostic snapshot of the last ≤8 Victron advertisements and

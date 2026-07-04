@@ -430,6 +430,19 @@ void runSafety(const BmsSystemSnapshot& snap,
     }
 
     // ── SOC-based charge taper (V2.67 lines 2226-2233) ──────────────────
+    // PERMANENT SAFETY INVARIANT — not a TODO, not pending further validation:
+    // this taper is keyed on out.soc_avg (pure BMS mean) and MUST NEVER read
+    // any Battery Value Sources fused value (SafetyState::soc_display/
+    // voltage_display/current_display, set by the caller in bms/poller.cpp
+    // strictly after runSafety() returns). There is no Auto/Manual policy, no
+    // config field, and no code path anywhere that may redirect this taper to
+    // the shunt — Config::BatterySourcePolicy and Config::MetricSource
+    // (storage/config.h) govern display/dashboard/MQTT only and are never
+    // threaded into runSafety()'s inputs. Charge-taper stays on the BMS data
+    // path permanently; the shunt improves display/telemetry only, never
+    // charge control. Same invariant applies to CAN TX (can/victron.cpp,
+    // can/pylontech.cpp, can/sma.cpp all build frames from soc_avg, never
+    // soc_display). See docs/research/v3.2-shunt-soc-fusion.md.
     if (!cfg.maint_charge_enabled) {
       if (out.soc_avg >= 99.0f)
         safe_chg = static_cast<float>(count) * 2.0f;

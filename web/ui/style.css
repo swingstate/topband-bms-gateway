@@ -238,7 +238,7 @@ a { text-decoration: none; color: inherit; }
 .pill-mppt.off,
 .pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
 .pill-mppt  { background: var(--color-success); color: #fff; }
-.pill-shunt { background: #7c6fcd;             color: #fff; }
+.pill-shunt { background: var(--color-success); color: #fff; }
 
 /* ── Card source indicator (inline pill, used in metric-footer row) ───────────── */
 .card-src {
@@ -855,6 +855,9 @@ a { text-decoration: none; color: inherit; }
   padding: 14px 16px;
 }
 .chart-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
@@ -935,9 +938,7 @@ a { text-decoration: none; color: inherit; }
   padding: 4px 0;
 }
 
-/* ── Network page ───────────────────────────────────────────────────────────── */
-.network-page { max-width: 680px; margin: 0 auto; }
-
+/* ── Network (Settings section) ─────────────────────────────────────────────── */
 .net-kv-grid {
   display: grid;
   grid-template-columns: 160px 1fr;
@@ -991,6 +992,14 @@ a { text-decoration: none; color: inherit; }
 .scan-row:last-child { border-bottom: none; }
 .scan-row:hover { background: var(--bg-card-hover); }
 .scan-ssid { font-weight: 600; color: var(--text-primary); flex: 1; }
+.scan-bssid {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.scan-bssid:hover { color: var(--brand-teal); }
 .scan-rssi { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .scan-lock { color: var(--text-muted); flex-shrink: 0; }
 
@@ -1143,7 +1152,6 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   .packs-grid { grid-template-columns: 1fr; }
 
   /* Subpage wrappers: full-width on mobile */
-  .network-page { max-width: 100%; }
   .settings-page { max-width: 100%; }
 
   /* Net kv grid: narrower label column */

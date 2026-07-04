@@ -1,4 +1,5 @@
 #include "ble_scanner.h"
+#include "victron_shunt_decode.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <cstring>
@@ -67,13 +68,29 @@ static const char* TAG = "ble_scanner";
 // All three of {pv_power, pv_voltage, pv_current} are transmitted directly.
 // pv_v and pv_i are present when enc_len >= 12/14; decoded conditionally (not fatal if absent).
 //
-// SmartShunt (BATTERY_MONITOR, 0x02) decrypted payload layout (old-format):
-//   plain[0-1] battery_voltage  (uint16 LE, /100 → V)
-//   plain[2-3] battery_current  (int16 LE, /1000 → A)
-//   plain[4-5] remaining_Ah     (uint16 LE, /10 → Ah)
-//   plain[6-7] SoC              (uint16 LE, /10 → %)
-//   NOTE: new-format SmartShunt field layout not yet verified; check
-//         keshavdv/victron-ble battery_monitor.py if decrypted values look wrong.
+// SmartShunt (BATTERY_MONITOR, 0x02) decrypted payload layout:
+//
+//   OLD format (pre-2022 firmware, single-byte IV envelope) — byte-aligned:
+//     plain[0-1] battery_voltage  (uint16 LE, /100 → V)
+//     plain[2-3] battery_current  (int16 LE, /1000 → A)
+//     plain[4-5] remaining_Ah     (uint16 LE, /10 → Ah)
+//     plain[6-7] SoC              (uint16 LE, /10 → %)
+//     Not hardware-verified against a real legacy device; best-effort only.
+//
+//   NEW format (Product Advertisement, 2022+ firmware) — BIT-PACKED, NOT
+//   byte-aligned (this bit it self used to be misread with the OLD-format
+//   byte offsets above, which is a confirmed bug: it silently decodes
+//   remaining_mins as if it were voltage). See victron_shunt_decode.h/.cpp
+//   for the LSB-first bit layout, verified against keshavdv/victron-ble
+//   battery_monitor.py (authoritative open-source reference):
+//     bits   0-15  remaining_mins   (sentinel 0xFFFF)
+//     bits  16-31  battery_voltage  (/100 → V, sentinel 0x7FFF)
+//     bits  32-47  alarm_reason     (unused)
+//     bits  48-63  aux_input        (unused)
+//     bits  64-65  aux_mode         (unused)
+//     bits  66-87  battery_current  (/1000 → A, sentinel 0x3FFFFF)
+//     bits  88-107 consumed_ah      (unused)
+//     bits 108-117 SoC              (/10 → %, sentinel 0x3FF = not synchronized)
 //
 // References:
 //   keshavdv/victron-ble (Python, authoritative Instant Readout spec)
@@ -99,6 +116,16 @@ static uint32_t s_mppt_adv_count     = 0;
 //   s_mppt_decrypt_ok    = type 0x01 + MAC match + AES decrypt succeeded
 static uint32_t s_mppt_mac_match     = 0;
 static uint32_t s_mppt_decrypt_ok    = 0;
+// Same funnel for the shunt (record_type 0x02) — added V3.2 after a field report
+// of "shunt enabled, MAC/key configured, no data" with no way to tell whether the
+// advertisement was even seen, matched by MAC, or failed decrypt.
+static uint32_t s_shunt_type_match   = 0;
+static uint32_t s_shunt_mac_match    = 0;
+static uint32_t s_shunt_decrypt_ok   = 0;
+// Raw shape of the last MAC-matched shunt ad — lets a decrypt_ok==0 funnel be
+// diagnosed (length-guard rejection vs. genuine AES/key failure) without serial.
+static uint16_t s_shunt_last_mfg_len = 0;
+static bool     s_shunt_last_new_fmt = false;
 
 // ── Per-advertisement debug ring buffer ───────────────────────────────────────
 // Written from the NimBLE host task (Core 1) for every advertisement that passes
@@ -321,50 +348,71 @@ static bool decode_mppt(const uint8_t* md, size_t len, bool new_fmt, uint32_t no
 }
 
 // ── Decode SmartShunt / Battery Monitor (record_type 0x02) ───────────────────
-// new_fmt flag selects correct IV/payload offsets (same as decode_mppt).
-// Field layout below matches the old-format spec; new-format field layout for
-// BATTERY_MONITOR has not been hardware-verified — check keshavdv/victron-ble
-// battery_monitor.py if values look wrong with a new-firmware SmartShunt.
-static void decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t now_ms) {
-  if (!s_shunt || !s_shunt_key_valid) return;
+// new_fmt flag selects correct IV/payload offsets (same as decode_mppt) AND a
+// completely different plaintext layout: new-format BATTERY_MONITOR payloads
+// are bit-packed (see victron_shunt_decode.h), not byte-aligned like the old
+// format. Returns true when AES decrypt succeeded and values were pushed to
+// ShuntSource (mirrors decode_mppt's return so the caller can count it in the
+// filter funnel).
+static bool decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t now_ms) {
+  if (!s_shunt || !s_shunt_key_valid) return false;
 
   const uint8_t* enc;
   size_t enc_len;
   uint8_t nonce[16] = {};
 
   if (new_fmt) {
-    if (len < 11) return;
+    if (len < 11) return false;
     nonce[0] = md[7];
     nonce[1] = md[8];
     enc     = md + 10;
     enc_len = len - 10;
-    if (enc_len < 8) return;
+    // Bit-packed payload needs 15 bytes (bit 117 falls in byte 14) — more
+    // than the old format's 8-byte byte-aligned layout.
+    if (enc_len < 15) return false;
   } else {
-    if (len < 4) return;
+    if (len < 4) return false;
     nonce[0]  = md[3];
     nonce[15] = 1;
     enc     = md + 4;
     enc_len = len - 4;
-    if (enc_len < 8) return;
+    if (enc_len < 8) return false;
   }
 
   uint8_t plain[32] = {};
   size_t  dec_len = enc_len < sizeof(plain) ? enc_len : sizeof(plain);
-  if (!aes_ctr_decrypt(s_shunt_key, nonce, enc, plain, dec_len)) return;
+  if (!aes_ctr_decrypt(s_shunt_key, nonce, enc, plain, dec_len)) return false;
 
-  uint16_t batt_v_raw  = (uint16_t)((uint16_t)plain[0] | ((uint16_t)plain[1] << 8));
-  int16_t  curr_raw    = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
-  // plain[4-5]: remaining_Ah * 10 (not used)
-  uint16_t soc_raw     = (uint16_t)((uint16_t)plain[6] | ((uint16_t)plain[7] << 8));
+  float voltage_v;
+  float current_a;
+  float soc_pct;
+  bool  soc_valid;
 
-  float voltage_v = (float)batt_v_raw / 100.0f;   // V
-  float current_a = (float)curr_raw   / 1000.0f;  // A (mA resolution)
-  float soc_pct   = (float)soc_raw    / 10.0f;    // %
+  if (new_fmt) {
+    sources::ShuntDecodedNewFmt d;
+    if (!sources::decode_shunt_new_fmt(plain, dec_len, d)) return false;
+    voltage_v = d.voltage_valid ? d.voltage_v : 0.0f;
+    current_a = d.current_valid ? d.current_a : 0.0f;
+    soc_pct   = d.soc_pct;
+    soc_valid = d.soc_valid;
+  } else {
+    uint16_t batt_v_raw = (uint16_t)((uint16_t)plain[0] | ((uint16_t)plain[1] << 8));
+    int16_t  curr_raw   = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
+    // plain[4-5]: remaining_Ah * 10 (not used)
+    uint16_t soc_raw    = (uint16_t)((uint16_t)plain[6] | ((uint16_t)plain[7] << 8));
 
-  s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, now_ms);
+    voltage_v = (float)batt_v_raw / 100.0f;   // V
+    current_a = (float)curr_raw   / 1000.0f;  // A (mA resolution)
+    soc_pct   = (float)soc_raw    / 10.0f;    // %
+    soc_valid = true;  // no documented "unsynced" sentinel for the old format
+  }
 
-  ESP_LOGD(TAG, "Shunt(%s): %.3f A  %.2f V  %.1f%%",
-           new_fmt ? "new" : "old", current_a, voltage_v, soc_pct);
+  s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, soc_valid, now_ms);
+
+  ESP_LOGD(TAG, "Shunt(%s): %.3f A  %.2f V  %s%.1f%%",
+           new_fmt ? "new" : "old", current_a, voltage_v,
+           soc_valid ? "" : "(unsynced) ", soc_pct);
+  return true;
 }
 
 // ── MAC address comparison ────────────────────────────────────────────────────
@@ -423,7 +471,7 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
     e.rssi           = disc.rssi;
     e.record_type    = record_type;
     e.mac_match      = false;
-    e.record_type_ok = (record_type == 0x01);
+    e.record_type_ok = (record_type == 0x01 || record_type == 0x02);
     e.decrypt_ok     = false;
     e.valid          = true;
     s_adv_ring_head  = (uint8_t)((slot + 1) % ADV_RING_SIZE);
@@ -456,10 +504,37 @@ static int gap_event_cb(struct ble_gap_event* event, void* arg) {
       ESP_LOGW(TAG, "MPPT adv seen but MAC/key not valid — check config");
     }
   } else if (record_type == 0x02) {
+    s_shunt_type_match++;
     if (s_shunt_enabled && s_shunt_mac_valid) {
-      if (mac_matches(disc.addr.val, s_shunt_mac)) {
-        decode_shunt(md, fields.mfg_data_len, new_fmt, now_ms);
+      bool matched = mac_matches(disc.addr.val, s_shunt_mac);
+      cur.mac_match = matched;
+      if (matched) {
+        s_shunt_mac_match++;
+        s_shunt_last_mfg_len = (uint16_t)fields.mfg_data_len;
+        s_shunt_last_new_fmt = new_fmt;
+        bool ok = decode_shunt(md, fields.mfg_data_len, new_fmt, now_ms);
+        cur.decrypt_ok = ok;
+        if (ok) {
+          s_shunt_decrypt_ok++;
+        } else if (s_shunt_mac_match % 10 == 1) {
+          ESP_LOGW(TAG, "Shunt adv MAC-matched but decode_shunt failed: fmt=%s mfg_len=%u "
+                        "(need >= %u) — length guard rejection or AES failure",
+                   new_fmt ? "new" : "old", (unsigned)fields.mfg_data_len,
+                   new_fmt ? 11u : 4u);
+        }
+      } else {
+        if (s_shunt_type_match % 10 == 1) {
+          ESP_LOGI(TAG, "Shunt adv (rec=0x02 fmt=%s) MAC %02X:%02X:%02X:%02X:%02X:%02X "
+                        "does not match configured target (victron_adv=%lu shunt_adv=%lu)",
+                   new_fmt ? "new" : "old",
+                   disc.addr.val[5], disc.addr.val[4], disc.addr.val[3],
+                   disc.addr.val[2], disc.addr.val[1], disc.addr.val[0],
+                   (unsigned long)s_victron_adv_count,
+                   (unsigned long)s_shunt_type_match);
+        }
       }
+    } else if (s_shunt_enabled) {
+      ESP_LOGW(TAG, "Shunt adv seen but MAC/key not valid — check config");
     }
   } else {
     // Unknown device record type within a Victron advertisement.
@@ -697,14 +772,28 @@ void get_adv_debug(AdvDebugState& out) {
   out.mppt_mac_match   = s_mppt_mac_match;
   out.mppt_decrypt_ok  = s_mppt_decrypt_ok;
   out.mppt_mac_valid   = s_mppt_mac_valid;
+  out.mppt_key_valid   = s_mppt_key_valid;
+  out.shunt_type_match   = s_shunt_type_match;
+  out.shunt_mac_match    = s_shunt_mac_match;
+  out.shunt_decrypt_ok   = s_shunt_decrypt_ok;
+  out.shunt_mac_valid    = s_shunt_mac_valid;
+  out.shunt_key_valid    = s_shunt_key_valid;
+  out.shunt_last_mfg_len = s_shunt_last_mfg_len;
+  out.shunt_last_new_fmt = s_shunt_last_new_fmt;
 
-  // Render the configured MPPT MAC exactly as the internal comparison bytes
+  // Render the configured MAC exactly as the internal comparison bytes
   // (network order, MSB first — same representation as the config string).
   if (s_mppt_mac_valid) {
     snprintf(out.configured_mac, sizeof(out.configured_mac),
              "%02x:%02x:%02x:%02x:%02x:%02x",
              s_mppt_mac[0], s_mppt_mac[1], s_mppt_mac[2],
              s_mppt_mac[3], s_mppt_mac[4], s_mppt_mac[5]);
+  }
+  if (s_shunt_mac_valid) {
+    snprintf(out.configured_shunt_mac, sizeof(out.configured_shunt_mac),
+             "%02x:%02x:%02x:%02x:%02x:%02x",
+             s_shunt_mac[0], s_shunt_mac[1], s_shunt_mac[2],
+             s_shunt_mac[3], s_shunt_mac[4], s_shunt_mac[5]);
   }
 
   // Snapshot the ring into out.entries[].  The head may advance during the

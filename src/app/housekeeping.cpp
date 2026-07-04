@@ -215,7 +215,11 @@ static void housekeeping_task_entry(void* /*arg*/) {
         (iv_rt_state == bms::runtime_estimator::RuntimeStateEst::UntilFull)  ? "until_full"  : "idle";
 
       // Fill value strings into s_iv_values[] (indices match k_iv_suffixes).
-      snprintf(s_iv_values[0], sizeof(s_iv_values[0]),  "%u",    (unsigned)s_safety.soc_avg);
+      // V3.2: index 0 ("/soc") publishes soc_display — the shunt-fused bank SOC
+      // when the shunt is enabled/fresh, else identical to soc_avg (default-off
+      // behaviour unchanged). Raw soc_avg stays available via the /data JSON
+      // blob for anyone cross-checking. See docs/mqtt.md.
+      snprintf(s_iv_values[0], sizeof(s_iv_values[0]),  "%u",    (unsigned)s_safety.soc_display);
       snprintf(s_iv_values[1], sizeof(s_iv_values[1]),  "%.2f",  s_safety.pack_voltage_avg);
       snprintf(s_iv_values[2], sizeof(s_iv_values[2]),  "%.1f",  s_safety.pack_current_total);
       snprintf(s_iv_values[3], sizeof(s_iv_values[3]),  "%d",    (int)iv_power);

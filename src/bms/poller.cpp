@@ -14,6 +14,7 @@
 #include "app/boot.h"
 #include "diag/alerts.h"
 #include "notify/notify.h"
+#include "sources/registry.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/uart.h"
@@ -476,6 +477,33 @@ static void control_task_entry(void* param) {
         safety::runSafety(*sys, cfg, s_safety_prev, safety_now, tmp);
         safety::update_prev_state(tmp, *sys, s_safety_prev);
 
+        // ── V3.2: Battery Value Sources fusion — display/telemetry only ────
+        // runSafety() never touches the *_display fields (no globals/I-O in
+        // that pure function); computed here from its BMS outputs. Never feed
+        // these back into anything safety-critical — soc_avg/pack_voltage_avg/
+        // pack_current_total above stay the sole inputs to charge-taper and CAN TX.
+        {
+          const bool bms_valid = (tmp.packs_online > 0);
+
+          sources::Aggregator::BankReading v_r =
+              sources::aggregator()->fuse_bank_voltage(tmp.pack_voltage_avg, bms_valid);
+          tmp.voltage_display       = v_r.value;
+          tmp.voltage_source_shunt  = v_r.from_shunt;
+          tmp.voltage_display_valid = v_r.valid;
+
+          sources::Aggregator::BankReading i_r =
+              sources::aggregator()->fuse_bank_current(tmp.pack_current_total, bms_valid);
+          tmp.current_display       = i_r.value;
+          tmp.current_source_shunt  = i_r.from_shunt;
+          tmp.current_display_valid = i_r.valid;
+
+          sources::Aggregator::BankReading s_r =
+              sources::aggregator()->fuse_bank_soc(tmp.soc_avg, bms_valid);
+          tmp.soc_display       = s_r.value;
+          tmp.soc_source_shunt  = s_r.from_shunt;
+          tmp.soc_display_valid = s_r.valid;
+        }
+
         // Log and route safety events to MQTT alarm topic and notification system.
         uint64_t ts_ms  = static_cast<uint64_t>(esp_timer_get_time() / 1000);
         uint32_t now_ms = static_cast<uint32_t>(ts_ms);
@@ -522,12 +550,26 @@ static void control_task_entry(void* param) {
         // ── Energy integration (Phase H2) ─────────────────────────────────
         // Compute system power from new safety state and integrate kWh.
         // dt_s: time since last cycle start, clamped to avoid stale bursts.
+        //
+        // V3.2: uses the same Battery Value Sources fused current/voltage as
+        // the Combined Current/Voltage display (tmp.current_display/
+        // voltage_display, computed above), not the raw BMS product. The BMS
+        // coulomb counter reads a blind 0 A below ~0.5 A -- exactly the same
+        // low-current blind spot the shunt was added to fix for the live
+        // display -- so without this, energy accumulation would silently keep
+        // under-counting during low-current periods even after the shunt made
+        // the dashboard accurate. Falls back to the raw BMS product only when
+        // neither source has valid data this cycle (display would show "--").
+        // This is telemetry, not the safety path: charge-taper and CAN TX
+        // still use pack_current_total/pack_voltage_avg exclusively.
         {
           static uint32_t s_last_energy_ms = 0;
           uint32_t now_e = static_cast<uint32_t>(esp_timer_get_time() / 1000);
           if (s_last_energy_ms > 0) {
             float dt_s = (float)(now_e - s_last_energy_ms) / 1000.0f;
-            float power_w = tmp.pack_current_total * tmp.pack_voltage_avg;
+            float power_w = (tmp.current_display_valid && tmp.voltage_display_valid)
+                            ? tmp.current_display * tmp.voltage_display
+                            : tmp.pack_current_total * tmp.pack_voltage_avg;
             bms::energy_integrator::integrate(power_w, dt_s,
                                               net::ntp::now_unix_s(),
                                               app::get_config().timezone_offset_h);

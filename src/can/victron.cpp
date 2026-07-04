@@ -24,6 +24,11 @@ void build_0x351(const SafetyState& s, uint8_t out[8]) {
 void build_0x355(const SafetyState& s, uint8_t out[8]) {
   memset(out, 0, 8);
   // V2.67 lines 2334-2335: SOC=int(avgSOC), SOH=int(avgSOH), cap=int(totalCapacity*10)
+  // V3.2 decision: intentionally s.soc_avg (BMS), never s.soc_display (shunt-fused).
+  // CAN TX feeds the inverter's own charge decisions, so it is treated as
+  // safety-adjacent like charge-taper — kept on the established BMS path until
+  // shunt behaviour is proven in the field. Revisit once V3.2 soaks; see
+  // docs/research/v3.2-shunt-soc-fusion.md.
   int soc = static_cast<int>(s.soc_avg);
   int soh = static_cast<int>(s.soh_avg);
   int cap = static_cast<int>(s.capacity_total_ah * 10.0f);

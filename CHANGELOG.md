@@ -5,6 +5,136 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Config migration data loss: MQTT and MPPT/BLE settings reset to defaults
+  upgrading past schema v11.** `storage::loadConfig()` (`src/storage/nvs_store.cpp`)
+  sized its NVS read buffer off `sizeof(Config)` — the size of the struct in the
+  *currently running* firmware. Schema v11 (Battery Value Sources) is the first
+  schema change to ever shrink the struct (884 B v10 -> 880 B v11, a mid-struct
+  field removal closing an alignment gap), so an upgrading device's still-v10
+  blob no longer fit the read buffer. `nvs_get_blob()` rejected the undersized
+  buffer, `loadConfig()` treated that identically to "not found," and the
+  entire config -- not just the two fields the owner happened to notice --
+  silently reset to `DEFAULT_CONFIG` on first boot after the upgrade. The
+  existing dedicated `migrate_v10_to_v11()` tests never caught this because
+  they call `config.cpp`'s pure `deserialize()` directly with a
+  correctly-sized buffer they construct themselves, bypassing the actual NVS
+  read path where the bug lived; they also never populated MQTT/MPPT fields in
+  their synthetic v10 blob, so a real field-copy regression in the migration
+  function itself would *also* have passed silently. Fixed by probing the
+  stored blob's actual size before reading it instead of assuming it fits the
+  current struct (`MAX_CONFIG_BLOB_SIZE`, `src/storage/nvs_store.cpp`).
+  Regression coverage added at two levels: `test/host/test_nvs_store.cpp`
+  compiles the real `nvs_store.cpp` against a fake in-memory NVS backing store
+  (`test/host/stubs/esp_idf/`) and reproduces the exact oversized-blob
+  scenario end-to-end; `test_config_serde.cpp`'s v10->v11 tests now build a
+  realistic, fully-populated v10 fixture (MQTT host/port/user/pass/topic,
+  BLE shunt+MPPT MAC/key, Telegram, web auth) and assert every field survives,
+  not just the ones the SocMode/ShuntCurrentMode change touched.
+- **SmartShunt voltage decode bug: new-firmware shunts read a wrong field
+  scaled ~2x off.** The BLE decode path (`src/sources/ble_scanner.cpp`) used
+  the legacy byte-aligned SmartShunt payload layout for both old- and
+  new-format (2022+ firmware) advertisements. New-format BATTERY_MONITOR
+  payloads are bit-packed, not byte-aligned, so the "voltage" bytes actually
+  held `remaining_mins` (time-to-go) — on a real 48 V/~50 V bank this showed
+  as ~half the true voltage on both the Battery page and the Diag page, and
+  drifted between reads because time-to-go tracks load, not voltage. Fixed
+  with a correct bit-packed decoder (`src/sources/victron_shunt_decode.h/.cpp`,
+  verified against `keshavdv/victron-ble`, with host unit tests). Both display
+  paths already read the same underlying `ShuntSource` field, so no separate
+  source-of-truth fix was needed once the decode itself was correct.
+- **SmartShunt SOC stuck at 0.0% after a VictronConnect sync.** Same root
+  cause as the voltage bug: SOC was read from the wrong (bit-unaligned) byte
+  range, landing on an unrelated field that is typically zero on a shunt with
+  no auxiliary sensor. The real SOC field lives 10 bits further in and uses
+  its own "not yet synchronized" sentinel, now decoded correctly. A shunt that
+  genuinely has never been synchronized shows **Not synced** instead of a
+  bare misleading "0.0%" on both the Battery page and the Diag page
+  (`ShuntSource::m_soc_valid`), and the bank-SOC fusion (`fuse_bank_soc()`)
+  now treats an unsynced shunt reading as `Unavailable`, so it never gets
+  promoted to the primary bank SOC ahead of the BMS average.
+- **Top status bar SHUNT pill used the per-tile purple source-badge color
+  instead of the health-pill green.** The top-right status bar (WIFI / BMS /
+  CAN / MQTT / MPPT / SHUNT) is a distinct visual system from the small
+  per-tile source badges under dashboard metrics ("BMS"/"SHUNT" showing which
+  source fed that number) -- the two were never meant to share a color.
+  `.pill-shunt`'s healthy state (`web/ui/style.css`) was hardcoded to the same
+  purple (`#7c6fcd`) as `.card-src-shunt`; now uses `var(--color-success)`
+  (green) like every other pill in that bar. The muted/offline state was
+  already correct and unchanged.
+
+### Added
+
+- **Settings UI for the WiFi BSSID pin, plus automatic re-pin after fallback.**
+  The `wifi_bssid` config field, its `mac_normalize` validation, and the
+  connect-time pin-with-fallback logic (`net::wifi::start_sta()`,
+  `WIFI_BSSID_PIN_MAX_RETRY`) already existed since schema v8 (V3.1) but had
+  no Settings UI at all -- it could only be set via a raw `/api/config` POST.
+  The Network page now has a "Preferred Access Point (optional)" section: a
+  BSSID field (validated client-side the same way as the BLE MAC fields),
+  and the existing WiFi scan list now shows each network's BSSID with a
+  one-click "pin this AP" action. The "Current Connection" panel and the
+  Diag WiFi section both now show a clear three-state status (not
+  configured / pinned and connected / pinned but unreachable -- falling
+  back to auto-select) instead of a bare active/off flag. Also closed the
+  one real gap in the existing mechanism: previously, once
+  `WIFI_BSSID_PIN_MAX_RETRY` fallback cleared the pin, the device stayed on
+  auto-select until the next reboot even if the preferred AP came back.
+  `net::wifi.cpp` now re-arms the pin on the next post-connection reconnect
+  cycle (AP hiccup, roam, DHCP-renewal disconnect) instead of a separate
+  timer, reusing the existing fallback machinery. No new Config field, no
+  schema bump -- +8 B static RAM (6-byte MAC + 1 bool, alignment-padded) to
+  remember the pin target across reconnects, flagged rather than claimed as
+  zero.
+- **Energy Today badge now follows the active Battery Value Sources policy.**
+  Energy accumulation (`bms/poller.cpp`) already integrates from the same
+  fused current/voltage as the "Combined Current" dashboard tile (fixed in a
+  prior 3.2 commit); the dashboard's Energy Today tile badge was still
+  hardwired to a static "BMS" label. It now reads the same live
+  `sources.battery_current_src` field the Current/Power tiles use, so the
+  badge matches reality when the shunt is the active source.
+- **Source badges on the Cell Drift and Voltage history charts.** Both
+  history charts previously had no indication of which data source fed them.
+  Cell Drift always shows a "BMS" badge (the shunt is bank-level only and
+  can't inform per-cell drift -- not a live indicator, a hard fact). Voltage
+  shows a "BMS" badge reflecting what its history ring actually plots today
+  (`history_task.cpp`'s fine-point builder averages raw
+  `BmsSystemSnapshot.pack[].pack_voltage`, independent of the live dashboard's
+  Battery Value Sources fusion) -- deliberately not a live-updating badge,
+  since the chart's underlying data doesn't yet follow the active source
+  either. Making it do so would need a new cross-task data path (history_task
+  currently has no access to `SafetyState.voltage_display`) and was scoped out
+  as a follow-up rather than folded into this labeling fix.
+
+- **SmartShunt bank-level SOC fusion.** When SmartShunt BLE is enabled
+  (Settings > Bluetooth LE) and its reading is fresh, the shunt's SOC becomes
+  the primary bank-level SOC shown on the dashboard, the Battery page, and
+  published to MQTT `{base}/soc` / `soc_display` — falling back to the BMS
+  average (`soc_avg`) when the shunt is disabled, absent, or stale. A source
+  badge ("SHUNT"/"BMS") discloses which one is active. Per-pack SOC, charge-
+  taper safety logic, and CAN TX SOC/SOH are unaffected — they always use the
+  BMS value, never the fused one. Selectable via **Battery > Bank SOC Source
+  Mode** (`Config::soc_mode`). Default-off: behavior is byte-identical to
+  V3.1 until SmartShunt is explicitly enabled. See
+  `docs/research/v3.2-shunt-soc-fusion.md`.
+- **Shunt BLE filter funnel on the diagnostics page.** The `Bluetooth LE`
+  diag panel previously only showed the MPPT decode funnel (Victron -> type
+  -> MAC -> decrypt); the shunt path had the exact same funnel internally but
+  zero visibility, making a misconfigured shunt MAC/key indistinguishable
+  from "not receiving any data at all". Diag now shows the configured shunt
+  MAC and its own type/MAC/decrypt counters (`src/sources/ble_scanner.h/.cpp`,
+  `handlers_diag.cpp`, diag page).
+- **Robust BLE encryption-key entry + a "Key valid" diagnostic.** Pasting a
+  Victron encryption key from a phone photo (Live Text / OCR) often captures
+  surrounding text — a label, spaces, a trailing period — which silently
+  corrupted the stored key so decode never ran (no data, no obvious reason).
+  The Settings > Bluetooth LE key fields (both SmartShunt and MPPT) now extract
+  the 32-hex key out of noisy pasted input, validate it live as you type, and
+  reject anything with no recoverable key instead of storing junk. The diag
+  page's BLE section now also shows a **Key valid** row for each device, so a
+  bad key is visible at a glance rather than looking like a dead radio.
+
 ## [3.1.0] - 2026-07-03
 
 Second feature release of the V3.x line. Adds Bluetooth LE support for a Victron

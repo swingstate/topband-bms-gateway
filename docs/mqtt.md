@@ -59,7 +59,7 @@ refreshes every ~5 s.
 
 | Topic | Value type | Example |
 |---|---|---|
-| `{base}/soc` | integer % | `75` |
+| `{base}/soc` | integer % | `75` (V3.2: shunt-fused bank SOC when `ble_shunt_enabled` and fresh, else BMS mean — see below) |
 | `{base}/voltage` | float V (2 dp) | `52.40` |
 | `{base}/current` | float A (1 dp) | `10.5` |
 | `{base}/power` | integer W | `550` |
@@ -102,10 +102,16 @@ Published every 5 s. Topic: `{base}/data`.
   "bms_count_online": 2,
   "bms_count_configured": 2,
   "soc_avg": 75,
+  "soc_display": 73,
+  "soc_source": "shunt",
   "soh_avg": 98,
   "pack_voltage_avg": 52.4,
   "pack_current_total": 10.5,
   "pack_power_w": 550.2,
+  "voltage_display": 52.4,
+  "voltage_source": "bms",
+  "current_display": 10.7,
+  "current_source": "shunt",
   "temp_avg": 25.2,
   "temp_max": 27.1,
   "cell_v_min": 3.324,
@@ -120,6 +126,19 @@ Published every 5 s. Topic: `{base}/data`.
 ```
 
 `cell_v_min/max/drift` and `temp_max` are `null` when no packs are online.
+
+`soc_avg`/`pack_voltage_avg`/`pack_current_total` are the pure BMS figures
+(byte-identical to V2.67 for `soc_avg`). `soc_display`/`voltage_display`/
+`current_display` (V3.2, "Battery Value Sources") are the bank-level values
+actually shown on the dashboard: the SmartShunt reading when the shunt is
+online and fresh (or explicitly selected in Manual mode), else the BMS figure.
+`soc_source`/`voltage_source`/`current_source` are each `"shunt"` or `"bms"`,
+whichever fed the paired `*_display` field this cycle — see Settings → Battery
+→ Battery Value Sources (`Config::battery_source_policy`, `Auto`/`Manual`, plus
+per-metric `Config::voltage_source`/`current_source`/`soc_source` in Manual).
+Per-pack `pack{N}/soc` and CAN TX SOC/SOH/voltage/current always use the plain
+BMS value, never any `*_display` field — see
+`docs/research/v3.2-shunt-soc-fusion.md`.
 
 ### Level 2+ — Alarm topic (not retained)
 

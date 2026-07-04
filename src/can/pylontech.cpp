@@ -27,6 +27,8 @@ void build_0x351(const SafetyState& s, uint8_t out[8]) {
 void build_0x355(const SafetyState& s, uint8_t out[8]) {
   memset(out, 0, 8);
   // V2.67 lines 2337-2338: SOC=int(avgSOC), SOH=int(avgSOH), cap=int(totalCapacity*10)
+  // V3.2 decision: intentionally s.soc_avg (BMS), never s.soc_display (shunt-fused).
+  // See can/victron.cpp build_0x355() for the reasoning.
   int soc = static_cast<int>(s.soc_avg);
   int soh = static_cast<int>(s.soh_avg);
   int cap = static_cast<int>(s.capacity_total_ah * 10.0f);

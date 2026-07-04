@@ -25,7 +25,10 @@ enum class Metric : uint8_t {
   PV_POWER       = 2,   // PV array power (W)
   PV_CURRENT     = 3,   // PV array current (A); measured directly from MPPT input side
   PV_VOLTAGE     = 4,   // PV array voltage (V); measured directly from MPPT input side
-  SHUNT_SOC      = 5,   // shunt-counted SOC (%), supplementary only — never overrides BMS SOC
+  SHUNT_SOC      = 5,   // shunt-counted SOC (%). Never overrides per-pack BMS SOC (the shunt
+                         // cannot see individual packs). MAY become the bank-level aggregate
+                         // SOC via Aggregator::fuse_bank_soc() — see aggregator.h/.cpp (V3.2,
+                         // Option C in docs/research/v3.2-shunt-soc-fusion.md).
   YIELD_TODAY    = 6,   // PV yield today (Wh); from MPPT Solar Charger record bytes 6-7
   CHARGE_STATE   = 7,   // MPPT charger state (0=off,3=bulk,4=absorption,5=float); uint8 cast to float
 };

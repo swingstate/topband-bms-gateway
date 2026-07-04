@@ -44,10 +44,23 @@ size_t build_data(const BmsSystemSnapshot& snap, const SafetyState& safety,
   s_doc_data["bms_count_online"]     = safety.packs_online;
   s_doc_data["bms_count_configured"] = safety.packs_configured;
   s_doc_data["soc_avg"]              = safety.soc_avg;
+  // V3.2: soc_display is the shunt-fused bank SOC (same value published on the
+  // retained {base}/soc topic); soc_avg above stays the raw BMS mean for anyone
+  // cross-checking. soc_source is "shunt" or "bms" — whichever fed soc_display
+  // this cycle.
+  s_doc_data["soc_display"]          = safety.soc_display;
+  s_doc_data["soc_source"]           = safety.soc_source_shunt ? "shunt" : "bms";
   s_doc_data["soh_avg"]              = safety.soh_avg;
   s_doc_data["pack_voltage_avg"]     = safety.pack_voltage_avg;
   s_doc_data["pack_current_total"]   = safety.pack_current_total;
   s_doc_data["pack_power_w"]         = safety.pack_voltage_avg * safety.pack_current_total;
+  // V3.2: voltage_display/current_display are the Battery Value Sources fused
+  // values (same pattern as soc_display/soc_source above); pack_voltage_avg/
+  // pack_current_total above stay the raw BMS figures, unchanged.
+  s_doc_data["voltage_display"]      = safety.voltage_display;
+  s_doc_data["voltage_source"]       = safety.voltage_source_shunt ? "shunt" : "bms";
+  s_doc_data["current_display"]      = safety.current_display;
+  s_doc_data["current_source"]       = safety.current_source_shunt ? "shunt" : "bms";
   s_doc_data["temp_avg"]             = safety.temp_avg;
   s_doc_data["cvl_v"]                = safety.cvl_volts;
   s_doc_data["ccl_a"]                = safety.ccl_amps;

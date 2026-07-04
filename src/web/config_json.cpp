@@ -34,7 +34,6 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   doc["discharge_temp_max"]    = c.discharge_temp_max;
   doc["temp_soft_zone"]        = c.temp_soft_zone;
   doc["temp_mode"]             = (uint8_t)c.temp_mode;
-  doc["soc_mode"]              = (uint8_t)c.soc_mode;
   doc["setup_mode"]            = (uint8_t)c.setup_mode;
   doc["auto_from_bms_applied"] = c.auto_from_bms_applied;
   doc["maint_charge_enabled"]  = c.maint_charge_enabled;
@@ -98,8 +97,11 @@ void config_to_json(const Config& c, JsonDocument& doc) {
   // v9 Solar Passthrough MQTT topic (non-secret, included in export/import)
   doc["mqtt_solar_passthrough_topic"] = c.mqtt_solar_passthrough_topic;
 
-  // v10 Shunt current aggregation mode
-  doc["shunt_current_mode"] = (uint8_t)c.shunt_current_mode;
+  // v11 Battery Value Sources
+  doc["battery_source_policy"] = (uint8_t)c.battery_source_policy;
+  doc["voltage_source"]        = (uint8_t)c.voltage_source;
+  doc["current_source"]        = (uint8_t)c.current_source;
+  doc["soc_source"]            = (uint8_t)c.soc_source;
 }
 
 // Helper: safely copy a JSON string field into a fixed char array.
@@ -168,8 +170,6 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
     c.temp_soft_zone = doc["temp_soft_zone"];
   if (doc["temp_mode"].is<uint8_t>())
     c.temp_mode = (Config::TempMode)doc["temp_mode"].as<uint8_t>();
-  if (doc["soc_mode"].is<uint8_t>())
-    c.soc_mode = (Config::SocMode)doc["soc_mode"].as<uint8_t>();
   if (doc["setup_mode"].is<uint8_t>())
     c.setup_mode = (Config::SetupMode)doc["setup_mode"].as<uint8_t>();
   if (doc["auto_from_bms_applied"].is<bool>())
@@ -300,10 +300,22 @@ bool json_to_config(const JsonDocument& doc, Config& c) {
   // v9 Solar Passthrough MQTT topic
   copy_str(doc["mqtt_solar_passthrough_topic"], c.mqtt_solar_passthrough_topic);
 
-  // v10 Shunt current aggregation mode
-  if (doc["shunt_current_mode"].is<uint8_t>()) {
-    uint8_t raw = doc["shunt_current_mode"].as<uint8_t>();
-    if (raw <= 2) c.shunt_current_mode = static_cast<Config::ShuntCurrentMode>(raw);
+  // v11 Battery Value Sources
+  if (doc["battery_source_policy"].is<uint8_t>()) {
+    uint8_t raw = doc["battery_source_policy"].as<uint8_t>();
+    if (raw <= 1) c.battery_source_policy = static_cast<Config::BatterySourcePolicy>(raw);
+  }
+  if (doc["voltage_source"].is<uint8_t>()) {
+    uint8_t raw = doc["voltage_source"].as<uint8_t>();
+    if (raw <= 1) c.voltage_source = static_cast<Config::MetricSource>(raw);
+  }
+  if (doc["current_source"].is<uint8_t>()) {
+    uint8_t raw = doc["current_source"].as<uint8_t>();
+    if (raw <= 1) c.current_source = static_cast<Config::MetricSource>(raw);
+  }
+  if (doc["soc_source"].is<uint8_t>()) {
+    uint8_t raw = doc["soc_source"].as<uint8_t>();
+    if (raw <= 1) c.soc_source = static_cast<Config::MetricSource>(raw);
   }
 
   return true;
