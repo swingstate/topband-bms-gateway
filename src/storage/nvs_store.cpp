@@ -9,6 +9,17 @@ static const char* NVS_NS    = "gateway";
 static const char* KEY_BLOB  = "cfg_v1";
 static const char* KEY_CRC   = "cfg_v1_crc";
 
+// Upper bound for reading a stored cfg_v1 blob. Schema versions do not only
+// grow: v11 is 4 B SMALLER than v10 (a mid-struct field removal closed an
+// alignment gap — see config.h's migration history comment), so a blob
+// written by older firmware can be larger than sizeof(Config) on the
+// currently running firmware. Must stay >= the largest Config_vN ever
+// serialized (v10 = 884 B is the largest to date), with headroom for future
+// schema growth.
+static constexpr size_t MAX_CONFIG_BLOB_SIZE = 1024;
+static_assert(MAX_CONFIG_BLOB_SIZE >= sizeof(Config),
+    "MAX_CONFIG_BLOB_SIZE must be >= sizeof(Config)");
+
 // ── RAII handle ───────────────────────────────────────────────────────────────
 namespace {
 
@@ -44,10 +55,29 @@ bool loadConfig(Config& out) {
     return false;
   }
 
-  // Read blob
-  uint8_t buf[sizeof(Config)];
-  size_t len = sizeof(buf);
-  esp_err_t err = nvs_get_blob(h.get(), KEY_BLOB, buf, &len);
+  // Probe the stored blob's actual size first — do not assume it fits in
+  // sizeof(Config) (see MAX_CONFIG_BLOB_SIZE comment above). Sizing the read
+  // buffer off the CURRENT (running-firmware) struct size silently drops a
+  // larger stale blob: nvs_get_blob() rejects the undersized buffer with an
+  // error, loadConfig() falls through to "not found", and the entire config
+  // — MQTT, BLE/MPPT, everything — resets to DEFAULT_CONFIG on first boot
+  // after an upgrade that shrinks the struct.
+  size_t len = 0;
+  esp_err_t err = nvs_get_blob(h.get(), KEY_BLOB, nullptr, &len);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "cfg_v1 not found (%s) — using defaults", esp_err_to_name(err));
+    out = DEFAULT_CONFIG;
+    return false;
+  }
+  if (len > MAX_CONFIG_BLOB_SIZE) {
+    ESP_LOGE(TAG, "cfg_v1 blob too large (%u B, max %u) — using defaults",
+             (unsigned)len, (unsigned)MAX_CONFIG_BLOB_SIZE);
+    out = DEFAULT_CONFIG;
+    return false;
+  }
+
+  uint8_t buf[MAX_CONFIG_BLOB_SIZE];
+  err = nvs_get_blob(h.get(), KEY_BLOB, buf, &len);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "cfg_v1 not found (%s) — using defaults", esp_err_to_name(err));
     out = DEFAULT_CONFIG;

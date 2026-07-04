@@ -547,6 +547,16 @@ static_assert(sizeof(TestConfig_v10) == 884, "TestConfig_v10 size mismatch");
 // Builds a valid, fully-populated v10 blob with sensible non-default field
 // values in a few spots so the "existing settings survive" assertions below
 // are meaningful (not just checking untouched zero-init memory).
+//
+// MQTT and BLE/MPPT fields are populated here (not just the SocMode/
+// ShuntCurrentMode-adjacent fields the original version of this helper set)
+// because a real V3.2 field regression showed MQTT and MPPT settings being
+// lost across a v10->v11 upgrade on real hardware, and the original
+// synthetic helper left both blank/default — a config.cpp-level test built
+// on it could never have caught that class of bug. See
+// "Migration v10->v11: realistic full config" below and
+// test/host/test_nvs_store.cpp (which reproduces the actual root cause: a
+// read-buffer sizing bug in nvs_store.cpp, not a config.cpp migration bug).
 TestConfig_v10 make_v10_blob() {
   TestConfig_v10 v10{};
   v10.schema_version = 10;
@@ -557,8 +567,36 @@ TestConfig_v10 make_v10_blob() {
   v10.cvl_voltage     = 52.5f;
   v10.setup_mode      = Config::SetupMode::Manual;
   strncpy(v10.wifi_ssid, "HomeNet", sizeof(v10.wifi_ssid) - 1);
+  strncpy(v10.wifi_bssid, "aa:11:bb:22:cc:33", sizeof(v10.wifi_bssid) - 1);
+  v10.wifi_rssi_threshold = -75;
+
+  v10.mqtt_enabled = true;
+  strncpy(v10.mqtt_host, "192.168.1.50", sizeof(v10.mqtt_host) - 1);
+  v10.mqtt_port = 1883;
+  strncpy(v10.mqtt_user, "gateway_user", sizeof(v10.mqtt_user) - 1);
+  strncpy(v10.mqtt_pass_obf, "obf:s3cr3t-pass", sizeof(v10.mqtt_pass_obf) - 1);
+  strncpy(v10.mqtt_base_topic, "topband/gw1", sizeof(v10.mqtt_base_topic) - 1);
+  v10.mqtt_level           = Config::MqttLevel::PerCell;
+  v10.mqtt_diag_enabled    = true;
+  v10.ha_discovery_enabled = true;
+  v10.mqtt_full_publish    = true;
+  strncpy(v10.mqtt_solar_passthrough_topic, "opendtu/solar/state",
+          sizeof(v10.mqtt_solar_passthrough_topic) - 1);
+
   v10.ble_shunt_enabled = true;
+  v10.ble_mppt_enabled  = true;
   strncpy(v10.ble_shunt_mac, "aa:bb:cc:dd:ee:ff", sizeof(v10.ble_shunt_mac) - 1);
+  strncpy(v10.ble_mppt_mac,  "11:22:33:44:55:66", sizeof(v10.ble_mppt_mac) - 1);
+  strncpy(v10.ble_shunt_key, "0123456789abcdef0123456789abcdef", sizeof(v10.ble_shunt_key) - 1);
+  strncpy(v10.ble_mppt_key,  "fedcba9876543210fedcba9876543210", sizeof(v10.ble_mppt_key) - 1);
+
+  v10.notify_telegram_enabled = true;
+  strncpy(v10.notify_telegram_token, "123456:ABC-DEF-token", sizeof(v10.notify_telegram_token) - 1);
+  strncpy(v10.notify_telegram_chat_id, "-100987654", sizeof(v10.notify_telegram_chat_id) - 1);
+
+  v10.auth_enabled = true;
+  strncpy(v10.auth_user, "admin", sizeof(v10.auth_user) - 1);
+
   return v10;
 }
 }  // namespace
@@ -617,4 +655,61 @@ TEST_CASE("Migration v10->v11: Calculated + ShuntLeads -> Manual, current+soc on
   REQUIRE(out.voltage_source == Config::MetricSource::Bms);  // no historical equivalent
   REQUIRE(out.current_source == Config::MetricSource::Shunt);
   REQUIRE(out.soc_source      == Config::MetricSource::Shunt);
+}
+
+// Regression test for a real V3.2 field report: MQTT and MPPT settings were
+// lost upgrading 3.1.0-preview.4 (schema v10) -> 3.2.0-dev.8 (schema v11) on
+// real hardware. migrate_v10_to_v11() itself turned out to copy every v10
+// field correctly (verified by this test); the actual defect was in
+// nvs_store.cpp's read-buffer sizing (fixed separately, see
+// test/host/test_nvs_store.cpp), which never reached migrate_v10_to_v11() at
+// all. This test still earns its place: the pre-existing v10->v11 tests
+// above only ever populated/asserted the SocMode/ShuntCurrentMode-adjacent
+// fields, so a REAL migrate_v10_to_v11() regression dropping e.g. mqtt_host
+// would have passed them silently. Assert every non-trivial v10 field
+// (not just the ones the SocMode/ShuntCurrentMode change touched) survives.
+TEST_CASE("Migration v10->v11: realistic full config (MQTT+MPPT populated) - "
+          "all fields round-trip, no data loss", "[config][migrate][v11]") {
+  TestConfig_v10 v10 = make_v10_blob();
+  v10.soc_mode           = TestSocMode::Calculated;
+  v10.shunt_current_mode = TestShuntCurrentMode::Auto;
+
+  Config out{};
+  bool ok = storage::deserialize(reinterpret_cast<const uint8_t*>(&v10), sizeof(v10), out);
+  REQUIRE(ok);
+  REQUIRE(out.schema_version == CURRENT_SCHEMA_VERSION);
+
+  // Network / WiFi
+  REQUIRE(std::string(out.wifi_ssid) == "HomeNet");
+  REQUIRE(std::string(out.wifi_bssid) == "aa:11:bb:22:cc:33");
+  REQUIRE(out.wifi_rssi_threshold == -75);
+
+  // MQTT — the field the owner reported losing.
+  REQUIRE(out.mqtt_enabled == true);
+  REQUIRE(std::string(out.mqtt_host) == "192.168.1.50");
+  REQUIRE(out.mqtt_port == 1883);
+  REQUIRE(std::string(out.mqtt_user) == "gateway_user");
+  REQUIRE(std::string(out.mqtt_pass_obf) == "obf:s3cr3t-pass");
+  REQUIRE(std::string(out.mqtt_base_topic) == "topband/gw1");
+  REQUIRE(out.mqtt_level == Config::MqttLevel::PerCell);
+  REQUIRE(out.mqtt_diag_enabled == true);
+  REQUIRE(out.ha_discovery_enabled == true);
+  REQUIRE(out.mqtt_full_publish == true);
+  REQUIRE(std::string(out.mqtt_solar_passthrough_topic) == "opendtu/solar/state");
+
+  // BLE / MPPT — the other field the owner reported losing.
+  REQUIRE(out.ble_shunt_enabled == true);
+  REQUIRE(out.ble_mppt_enabled == true);
+  REQUIRE(std::string(out.ble_shunt_mac) == "aa:bb:cc:dd:ee:ff");
+  REQUIRE(std::string(out.ble_mppt_mac) == "11:22:33:44:55:66");
+  REQUIRE(std::string(out.ble_shunt_key) == "0123456789abcdef0123456789abcdef");
+  REQUIRE(std::string(out.ble_mppt_key) == "fedcba9876543210fedcba9876543210");
+
+  // Telegram notifications and web auth — also at risk, per the same class
+  // of bug; assert they survive too.
+  REQUIRE(out.notify_telegram_enabled == true);
+  REQUIRE(std::string(out.notify_telegram_token) == "123456:ABC-DEF-token");
+  REQUIRE(std::string(out.notify_telegram_chat_id) == "-100987654");
+  REQUIRE(out.auth_enabled == true);
+  REQUIRE(std::string(out.auth_user) == "admin");
 }

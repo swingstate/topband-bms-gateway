@@ -7,6 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Config migration data loss: MQTT and MPPT/BLE settings reset to defaults
+  upgrading past schema v11.** `storage::loadConfig()` (`src/storage/nvs_store.cpp`)
+  sized its NVS read buffer off `sizeof(Config)` — the size of the struct in the
+  *currently running* firmware. Schema v11 (Battery Value Sources) is the first
+  schema change to ever shrink the struct (884 B v10 -> 880 B v11, a mid-struct
+  field removal closing an alignment gap), so an upgrading device's still-v10
+  blob no longer fit the read buffer. `nvs_get_blob()` rejected the undersized
+  buffer, `loadConfig()` treated that identically to "not found," and the
+  entire config -- not just the two fields the owner happened to notice --
+  silently reset to `DEFAULT_CONFIG` on first boot after the upgrade. The
+  existing dedicated `migrate_v10_to_v11()` tests never caught this because
+  they call `config.cpp`'s pure `deserialize()` directly with a
+  correctly-sized buffer they construct themselves, bypassing the actual NVS
+  read path where the bug lived; they also never populated MQTT/MPPT fields in
+  their synthetic v10 blob, so a real field-copy regression in the migration
+  function itself would *also* have passed silently. Fixed by probing the
+  stored blob's actual size before reading it instead of assuming it fits the
+  current struct (`MAX_CONFIG_BLOB_SIZE`, `src/storage/nvs_store.cpp`).
+  Regression coverage added at two levels: `test/host/test_nvs_store.cpp`
+  compiles the real `nvs_store.cpp` against a fake in-memory NVS backing store
+  (`test/host/stubs/esp_idf/`) and reproduces the exact oversized-blob
+  scenario end-to-end; `test_config_serde.cpp`'s v10->v11 tests now build a
+  realistic, fully-populated v10 fixture (MQTT host/port/user/pass/topic,
+  BLE shunt+MPPT MAC/key, Telegram, web auth) and assert every field survives,
+  not just the ones the SocMode/ShuntCurrentMode change touched.
 - **SmartShunt voltage decode bug: new-firmware shunts read a wrong field
   scaled ~2x off.** The BLE decode path (`src/sources/ble_scanner.cpp`) used
   the legacy byte-aligned SmartShunt payload layout for both old- and

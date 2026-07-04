@@ -379,3 +379,29 @@ target_compile_definitions(test_victron_shunt_decode PRIVATE ${HOST_COMPILE_DEFS
 target_compile_options(test_victron_shunt_decode PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_victron_shunt_decode PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_victron_shunt_decode)
+
+# ── test_nvs_store ─────────────────────────────────────────────────────────────
+# Compiles the REAL nvs_store.cpp (normally ESP-IDF-only: esp_log.h, nvs.h,
+# nvs_flash.h) against a fake in-memory NVS backing store
+# (stubs/esp_idf/fake_nvs.cpp) instead of stubbing it out of the link like
+# test_aggregator does for FreeRTOS. This is what makes it possible to
+# reproduce the V3.2 config-migration data-loss regression end-to-end: the
+# bug was in nvs_store.cpp's read-buffer sizing, a file no other host test
+# target links.
+add_executable(test_nvs_store
+  test_nvs_store.cpp
+  ../../src/storage/nvs_store.cpp
+  ../../src/storage/config.cpp
+  stubs/esp_idf/fake_nvs.cpp
+)
+
+target_include_directories(test_nvs_store PRIVATE
+  stubs/esp_idf
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_nvs_store PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_nvs_store PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_nvs_store PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_nvs_store)
