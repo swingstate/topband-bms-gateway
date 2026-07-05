@@ -102,6 +102,19 @@ esp_err_t handle_live(httpd_req_t* req) {
       pj["cell_drift_v"] = p.cell_drift_v;
       pj["current_held"] = p.current_held;
 
+      // Per-pack charge-limit diagnosability. In Auto/AutoMargin the aggregate
+      // CCL (safety.ccl_amps) is the SUM of these per-pack sysparam limits, and
+      // a per-pack cell-OV lock-to-zero also collapses charge — either way the
+      // aggregate can read ~0 (charge-enable=No) while the average SoC still
+      // looks healthy at ~95%. Exposing sys_charge_max_a / sys_cell_high_v here
+      // lets the operator see WHICH pack is limiting charge (e.g. one pack near
+      // its cell-OVP threshold or self-tapering its charge current toward 0)
+      // without a separate MQTT round-trip. Display-only; no safety-path effect.
+      pj["sysparam_valid"]   = p.sysparam_valid;
+      pj["sys_charge_max_a"] = p.sys_charge_max_a;
+      pj["sys_discharge_max_a"] = p.sys_discharge_max_a;
+      pj["sys_cell_high_v"]  = p.sys_cell_high_v;
+
       JsonArray cells = pj["cells"].to<JsonArray>();
       for (uint8_t c = 0; c < p.cell_count && c < 16; c++) {
         cells.add(p.cell_v[c]);
