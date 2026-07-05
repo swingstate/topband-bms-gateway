@@ -56,51 +56,48 @@ void build_0x356(const SafetyState& s, uint8_t out[8]) {
 }
 
 void build_0x359(const SafetyState& s, uint8_t out[8]) {
-  // Spec-derived: Pylontech LV BMS CAN Protocol v1.1, not present in V2.67.
-  // Byte 0: protection (fault-level triggers cutoff)
-  //   bit0 = cell OVP (alarm_flags 0x02)
-  //   bit1 = cell UVP (alarm_flags 0x10)
-  //   bit2 = charge OTP (alarm_flags 0x08 — temperature stop covers both charge+discharge)
-  //   bit3 = discharge OTP (alarm_flags 0x08)
-  //   bit4 = charge OCP  — no standalone V3.0 flag; CCL==0 is the proxy (mapped below)
-  //   bit5 = discharge OCP — DCL==0 proxy
-  //   bit7 = AFE / general critical (alarm_flags 0x01 | 0x40)
-  // Byte 1: warning (softer)
-  //   bit6 = cell drift / imbalance warning (alarm_flags 0x20)
-  // Byte 2: system status
-  //   bit0 = pack-level fault (alarm_flags 0x40)
-  //   bit7 = system fault / no packs online (alarm_flags 0x80)
-  // Byte 4: battery module count (V3.2).
-  //   Standard Pylontech LV field: the number of battery modules in the stack.
-  //   Verified against OpenDTU-onBattery's Pylontech provider (the parser Deye /
-  //   OpenDTU users run), which reads data[4] directly, unscaled, and publishes it
-  //   as the "Module Count" ("Batteriemodule") entity. Left at 0 previously, which
-  //   is why field-reported systems showed "Batteriemodule: 0". We report the
-  //   count of packs currently online, so it tracks the modules actually
-  //   communicating and feeding the aggregated frame data (a pack that drops
-  //   offline drops out of the count, matching real Pylontech enumeration and the
-  //   online set the other frames aggregate over). For a healthy 3-pack system
-  //   this reads 3. (The EEVblog 0x4200/0x7320 SC0500 frame is a different,
-  //   high-voltage console protocol that OpenDTU LV does not parse — not used.)
+  // Alarm / warning / status frame. Bit layout is the STANDARD Pylontech LV
+  // protocol as decoded by OpenDTU-onBattery — verified byte-for-byte against its
+  // Pylontech provider (src/battery/pylontech/Provider.cpp), whose getBit(v, n)
+  // is LSB0: (v & (1<<n)) >> n. This replaces an earlier invented layout whose
+  // bit numbering was shifted and which re-derived alarm conditions locally
+  // (CCL/DCL "over-current" proxies). That is what made a healthy 23.9 °C battery
+  // report a false under-temperature (the old charge-OCP proxy `ccl<0.1` landed on
+  // OpenDTU's under-temperature bit, byte0 bit4). Every bit here is now sourced
+  // ONLY from SafetyState (alarm_flags / temp_alarm / packs_online) — the same
+  // values runSafety() computes and the Diagnostics/Alerts page shows — so the CAN
+  // alarms can never diverge from what the gateway itself believes.
+  //
+  // Byte 0 — alarms (protection), LSB0:
+  //   bit1 over voltage, bit2 under voltage, bit3 over temperature,
+  //   bit4 under temperature, bit7 discharge over-current.
+  // Byte 1 — alarms (protection) 2, LSB0:
+  //   bit0 charge over-current, bit3 BMS internal / system error.
+  // Bytes 2-3 — warning-level equivalents (same bit map as byte0/1). The gateway
+  //   has no warning-level thresholds distinct from its protection flags, so these
+  //   stay zero (honest: we do not fabricate a warning we cannot compute).
+  // Byte 4 — battery module count = packs online (OpenDTU "Module Count" /
+  //   "Batteriemodule"). See the prior task; unchanged here.
+  //
+  // Not encoded: cell drift / imbalance (alarm_flags 0x20) has no standard
+  // Pylontech 0x359 slot; it is surfaced via the gateway UI/MQTT, not invented
+  // onto an unrelated bit. There is no BMS-sourced over-current flag in
+  // alarm_flags, so byte0 bit7 / byte1 bit0 are only ever driven by a genuine
+  // BMS-reported alarm below, never by CCL/DCL being at their limit (which is
+  // already communicated via 0x351 current limits and 0x35C enable bits).
   memset(out, 0, 8);
-  uint8_t af = s.alarm_flags;
+  const uint8_t af = s.alarm_flags;
 
-  // Byte 0 — protection bits
-  if (af & 0x02) out[0] |= 0x01;  // cell OVP
-  if (af & 0x10) out[0] |= 0x02;  // cell UVP
-  if (af & 0x08) out[0] |= 0x04;  // charge OTP
-  if (af & 0x08) out[0] |= 0x08;  // discharge OTP
-  if (s.ccl_amps < 0.1f) out[0] |= 0x10;  // charge OCP proxy: CCL driven to zero
-  if (s.dcl_amps < 0.1f) out[0] |= 0x20;  // discharge OCP proxy: DCL driven to zero
-  if (af & 0x01) out[0] |= 0x80;  // AFE / critical alarm
-  if (af & 0x40) out[0] |= 0x80;  // BMS reported alarm → AFE bit
+  // Byte 0 — alarms (protection)
+  if (af & 0x02)            out[0] |= 0x02;  // bit1 over voltage
+  if (af & 0x10)            out[0] |= 0x04;  // bit2 under voltage
+  if (s.temp_alarm & 0x02)  out[0] |= 0x08;  // bit3 over temperature (hot)
+  if (s.temp_alarm & 0x01)  out[0] |= 0x10;  // bit4 under temperature (cold)
 
-  // Byte 1 — warning bits
-  if (af & 0x20) out[1] |= 0x40;  // cell drift / imbalance warning
-
-  // Byte 2 — fault status
-  if (af & 0x40) out[2] |= 0x01;  // BMS reported critical alarm
-  if (af & 0x80) out[2] |= 0x80;  // no packs online = system fault
+  // Byte 1 — alarms (protection) 2
+  // BMS-reported critical alarm (0x44) and "no packs online" both map to the
+  // BMS-internal / system-error bit — a genuine fault the inverter should see.
+  if ((af & 0x40) || (af & 0x80)) out[1] |= 0x08;  // bit3 BMS internal / system error
 
   // Byte 4 — battery module count = packs currently online
   out[4] = s.packs_online;

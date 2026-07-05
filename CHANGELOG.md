@@ -18,6 +18,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Pylontech CAN 0x359 alarm bits were mismapped, causing a false
+  "Untertemperatur" (under-temperature) alarm on a healthy battery that disabled
+  charging.** `build_0x359()` used an invented bit layout whose numbering was
+  shifted relative to the standard Pylontech layout every inverter/monitor decodes
+  (verified against OpenDTU-onBattery's Pylontech provider, `getBit` = LSB0), and it
+  re-derived alarm conditions locally instead of reading the gateway's own alarm
+  state. In particular a "charge over-current" proxy (`ccl_amps < 0.1`) was written
+  to byte-0 bit 4 — which decoders read as **under-temperature** — so a full or
+  charge-tapered but perfectly healthy pack at 23.9 °C (CCL near zero, no alarm on
+  the gateway's own Diagnostics page) reported under-temperature and stopped
+  charging. The whole frame was rebuilt to the correct standard layout, and **every
+  alarm bit is now sourced only from `SafetyState` (`alarm_flags` / `temp_alarm` /
+  `packs_online`) — the same single source of truth the Diagnostics/Alerts page
+  uses**, so the CAN alarms can no longer diverge from what the gateway believes.
+  The bogus CCL/DCL over-current proxies were removed (the limit state is already
+  communicated via 0x351 and 0x35C). Over- vs under-temperature are now distinguished
+  correctly (new `SafetyState::temp_alarm` direction, computed in `runSafety.cpp`,
+  net-zero DRAM). A full paired healthy/triggered test matrix was added for every
+  0x359 alarm bit — the coverage gap that let two Pylontech bit bugs ship.
 - **Pylontech CAN "Batteriemodule" / Module Count showed 0.** The Pylontech 0x359
   frame's byte 4 (battery module count) was never populated, so inverters/monitors
   displayed a module count of 0. Verified against OpenDTU-onBattery's Pylontech

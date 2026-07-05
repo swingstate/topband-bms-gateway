@@ -56,6 +56,9 @@ struct SafetyState {
   // 0x20 = cell drift / imbalance warning
   // 0x40 = BMS reported critical alarm via 0x44
   // 0x80 = no packs online
+  // Direction of an active temperature stop (0x08 above is combined; see
+  // temp_alarm below). temp_alarm is declared further down to sit in existing
+  // struct padding at zero DRAM cost, not next to alarm_flags.
 
   char     sys_message[48];
   uint8_t  packs_online;
@@ -88,18 +91,37 @@ struct SafetyState {
   static constexpr uint8_t MAX_EVENTS = 16;
   EventEntry events[MAX_EVENTS];
   bool       events_overflowed;
+
+  // Direction of an active temperature stop. alarm_flags 0x08 (temperature stop)
+  // is combined and does not distinguish cold from hot; CAN encoders that report
+  // over/under temperature as separate bits (Pylontech 0x359) need the direction.
+  // Set by runSafety() from the same t_check_val and thresholds that drive
+  // factor_charge/factor_discharge. Zero whenever no temperature stop is active.
+  //   0x01 = under-temperature (cold) stop active
+  //   0x02 = over-temperature  (hot)  stop active
+  // Declared last so it occupies the struct's existing 7-byte tail padding after
+  // events_overflowed — net-zero internal DRAM (the pre-events region is already
+  // 8-byte-aligned, so a byte there would cost a full 8-byte slot instead).
+  uint8_t  temp_alarm;
 };
 
-// CAN TX SOC (V3.2): the value reported to the inverter over CAN follows the
-// dashboard's "Combined SOC" — the Battery Value Sources fused reading
-// (shunt-led when fresh, BMS fallback otherwise). Falls back to raw BMS soc_avg
-// whenever no fused value is currently valid, because a CAN frame must always
-// carry a number (never a bare 0 / "no data").
+// Reported SOC (V3.2): the integer SOC reported to the outside world follows the
+// dashboard's "Combined SOC" — the Battery Value Sources fused reading (shunt-led
+// when fresh, BMS fallback otherwise). Falls back to raw BMS soc_avg whenever no
+// fused value is currently valid, because a reported frame must always carry a
+// number (never a bare 0 / "no data").
+//
+// SINGLE SOURCE for every integer SOC consumer: the CAN builders (0x355) AND the
+// MQTT aggregate {base}/soc topic both call this, so the inverter, Home Assistant
+// and the dashboard can never disagree. Rounds half-up (SOC is always >= 0) to
+// match the dashboard's toFixed(0); truncation here was why MQTT showed 99 while
+// the dashboard rounded the same ~99.6 fused value to 100.
 //
 // IMPORTANT: this is the DISPLAY/reporting SOC only. It is deliberately NOT the
 // same as the charge-taper safety input, which uses raw BMS soc_avg exclusively
 // (see safety/runSafety.cpp). Do not conflate the two: the taper must never
 // follow the shunt-fused value, this reporting field intentionally does.
 inline int can_tx_soc(const SafetyState& s) {
-  return static_cast<int>(s.soc_display_valid ? s.soc_display : s.soc_avg);
+  float v = s.soc_display_valid ? s.soc_display : s.soc_avg;
+  return static_cast<int>(v + 0.5f);  // round half-up; SOC domain is [0, 100]
 }
