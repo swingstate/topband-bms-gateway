@@ -5,8 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CAN TX now reports the dashboard's fused Combined SOC** (was interim BMS-only).
+  All three protocol builders (Victron 0x355, Pylontech 0x355, SMA 0x355) now take
+  their SOC from `can_tx_soc()`, which returns the Battery Value Sources fused value
+  (shunt-led when fresh, BMS `soc_avg` fallback otherwise) — the same number shown
+  as "Combined SOC" on the dashboard. SOH stays BMS-only (the shunt does not measure
+  state of health). This is a reporting change only: the charge-taper safety logic in
+  `runSafety.cpp` remains strictly on raw BMS `soc_avg` and is unaffected — the two
+  are deliberately distinct. Resolves the CAN-TX-SOC item flagged in `docs/ROADMAP.md`.
+
 ### Fixed
 
+- **Pylontech CAN "Batteriemodule" / Module Count showed 0.** The Pylontech 0x359
+  frame's byte 4 (battery module count) was never populated, so inverters/monitors
+  displayed a module count of 0. Verified against OpenDTU-onBattery's Pylontech
+  provider — the parser Deye/OpenDTU users run — which reads `data[4]` directly as
+  its "Module Count" entity. `build_0x359()` (`src/can/pylontech.cpp`) now reports the
+  number of packs currently online, so a healthy 3-pack system reads 3 (the count
+  tracks the modules actually communicating, matching the online set the other frames
+  aggregate over). Note: the EEVblog forum's 0x4200/0x7320 frame is the Pylontech
+  SC0500 high-voltage console protocol, which the low-voltage CAN parser does not read;
+  the correct low-voltage field is 0x359 byte 4.
+- **Pylontech CAN 0x35C: discharge-enable and force-charge bits were swapped, causing
+  a false discharge lockout on healthy batteries.** `build_0x35C()`
+  (`src/can/pylontech.cpp`) wrote the discharge-enable flag to byte-0 bit 5 and the
+  force-charge request to bit 6, but the standard Pylontech LV layout (as decoded by
+  Victron/Deye/SMA/OpenDTU) is bit 7 = charge enable, **bit 6 = discharge enable**,
+  **bit 5 = request force charge**. Against that decode a perfectly healthy battery
+  (no undervolt, DCL > 0) reported discharge-enable = No (bit 6 clear) and
+  immediate-charge-request = Yes (bit 5 set) — both wrong, on the wrong sign of the
+  safety state. This also produced a permanent discharge lockout on Deye/Pylontech
+  systems, since the inverter only ever saw discharge-enable = Yes when the battery
+  was actually in undervolt. Fixed by placing each flag on its correct spec bit; the
+  underlying safety logic (when discharge is actually disabled) is unchanged.
+- **Pylontech CAN 0x351: discharge voltage limit always sent 0.0 V.** `build_0x351()`
+  filled only bytes 0-5 (CVL/CCL/DCL) and left bytes 6-7 — the Pylontech discharge
+  voltage limit (DVL) — zeroed, which an inverter reads as a 0.0 V floor ("safe to
+  discharge to empty"). Now sends the configured pack low-voltage cutoff
+  (`Config::safe_pack_volt`, carried through `SafetyState::dvl_volts`), including during
+  a discharge-disable state (DCL = 0 already signals the lockout; the floor voltage
+  stays meaningful and stable). Victron/SMA 0x351 are unchanged (out of scope).
 - **Config migration data loss: MQTT and MPPT/BLE settings reset to defaults
   upgrading past schema v11.** `storage::loadConfig()` (`src/storage/nvs_store.cpp`)
   sized its NVS read buffer off `sizeof(Config)` — the size of the struct in the
