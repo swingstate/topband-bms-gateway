@@ -85,6 +85,7 @@ struct PackEntityDef {
 static const PackEntityDef PACK_ENTITIES[] = {
   { "voltage",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Voltage", "voltage",  "V"  },
   { "current",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Current", "current",  "A"  },
+  { "power",     "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Power",   "power",    "W"  },
   { "soc",       "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 SOC",     "battery",  "%"  },
   { "alarm_bits","TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Alarms",  nullptr,    nullptr },
 };

@@ -292,6 +292,22 @@ Each pack gets a sub-device in HA. State topics are `{base}/pack{N}/{field}`.
 Individual cell voltage sensors use the JSON cells blob with `value_template`.
 State topic: `{base}/cells/bms{N}` (0-based N).
 
+At Level 4 each pack also gets summary sensors on the **main gateway device**
+(distinct from the Level 3 pack sub-device sensors), read from the same cells
+blob via `value_template`:
+
+| `value_json` key | HA Entity | Device Class | Unit |
+|---|---|---|---|
+| `voltage` | Pack N Voltage | voltage | V |
+| `current` | Pack N Current | current | A |
+| `power` | Pack N Power | power | W |
+| `soc` | Pack N SOC | battery | % |
+| `alarm_bits` | Pack N Alarms | — | — |
+
+`voltage`/`current`/`power`/`soc` are pack-level scalars added to the cells blob
+so these templates resolve (a missing key renders "Unknown" in HA). `power` =
+`voltage × current`. All are BMS-only per-pack values (no shunt fusion).
+
 ---
 
 ## Configuration reference

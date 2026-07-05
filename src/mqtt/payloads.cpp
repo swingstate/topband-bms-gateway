@@ -168,6 +168,7 @@ size_t build_cells(const BmsPackSnapshot& pack, uint64_t ts_ms,
   // Key names MUST match the value_templates in ha_discovery.cpp PACK_ENTITIES.
   s_doc_cells["voltage"] = pack.pack_voltage;
   s_doc_cells["current"] = pack.pack_current;
+  s_doc_cells["power"]   = pack.pack_voltage * pack.pack_current;
   s_doc_cells["soc"]     = pack.soc;
 
   size_t n = serializeJson(s_doc_cells, out, out_size);
