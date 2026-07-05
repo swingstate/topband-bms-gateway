@@ -95,6 +95,11 @@ void runSafety(const BmsSystemSnapshot& snap,
   out.packs_configured = snap.pack_count_configured;
   out.factor_charge    = 1.0f;
   out.factor_discharge = 1.0f;
+  // Discharge voltage limit reported to the inverter (Pylontech 0x351 bytes 6-7):
+  // the configured pack low-voltage cutoff. A stable config constant, not a live
+  // measurement, so it is meaningful regardless of pack state — kept unchanged
+  // even during a discharge-disable (dcl_amps==0 already signals the lockout).
+  out.dvl_volts        = cfg.safe_pack_volt;
 
   // ── Accumulators ─────────────────────────────────────────────────────────
   float sum_i   = 0.0f, sum_v = 0.0f, sum_soc = 0.0f, sum_soh = 0.0f;
@@ -440,9 +445,14 @@ void runSafety(const BmsSystemSnapshot& snap,
     // (storage/config.h) govern display/dashboard/MQTT only and are never
     // threaded into runSafety()'s inputs. Charge-taper stays on the BMS data
     // path permanently; the shunt improves display/telemetry only, never
-    // charge control. Same invariant applies to CAN TX (can/victron.cpp,
-    // can/pylontech.cpp, can/sma.cpp all build frames from soc_avg, never
-    // soc_display). See docs/research/v3.2-shunt-soc-fusion.md.
+    // charge control.
+    //
+    // NOTE (V3.2): this is a DIFFERENT decision from the CAN TX *reported* SOC.
+    // As of V3.2 the SOC number sent to the inverter (can/*.cpp build_0x355 via
+    // can_tx_soc()) follows the fused Combined SOC, matching the dashboard. That
+    // is a display/reporting choice and does NOT feed this taper: the taper reads
+    // out.soc_avg directly below, never soc_display. Do not "unify" them.
+    // See docs/research/v3.2-shunt-soc-fusion.md.
     if (!cfg.maint_charge_enabled) {
       if (out.soc_avg >= 99.0f)
         safe_chg = static_cast<float>(count) * 2.0f;

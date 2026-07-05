@@ -11,6 +11,10 @@ struct SafetyState {
 
   // Aggregated for inverter output
   float    cvl_volts;              // effective CVL (may be < cfg.cvl_voltage)
+  float    dvl_volts;              // discharge voltage limit = configured pack
+                                    // low-voltage cutoff (cfg.safe_pack_volt).
+                                    // Reported to the inverter (Pylontech 0x351
+                                    // bytes 6-7); NOT a runtime cutoff decision.
   float    ccl_amps;               // effective CCL after temp throttle + proto cap
   float    dcl_amps;               // effective DCL after temp throttle + proto cap
   float    pack_voltage_avg;
@@ -85,3 +89,17 @@ struct SafetyState {
   EventEntry events[MAX_EVENTS];
   bool       events_overflowed;
 };
+
+// CAN TX SOC (V3.2): the value reported to the inverter over CAN follows the
+// dashboard's "Combined SOC" — the Battery Value Sources fused reading
+// (shunt-led when fresh, BMS fallback otherwise). Falls back to raw BMS soc_avg
+// whenever no fused value is currently valid, because a CAN frame must always
+// carry a number (never a bare 0 / "no data").
+//
+// IMPORTANT: this is the DISPLAY/reporting SOC only. It is deliberately NOT the
+// same as the charge-taper safety input, which uses raw BMS soc_avg exclusively
+// (see safety/runSafety.cpp). Do not conflate the two: the taper must never
+// follow the shunt-fused value, this reporting field intentionally does.
+inline int can_tx_soc(const SafetyState& s) {
+  return static_cast<int>(s.soc_display_valid ? s.soc_display : s.soc_avg);
+}

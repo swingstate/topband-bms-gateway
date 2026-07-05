@@ -103,8 +103,9 @@ TEST_CASE("Pylontech 0x35C: idle, both enabled", "[pylontech][frames]") {
   uint8_t out[8];
   can::pylontech::build_0x35C(s, out);
 
-  // ccl=100 > 0.1 → charge enable (bit7); dcl=100 > 0.1 → discharge enable (bit5)
-  REQUIRE(out[0] == (0x80 | 0x20));
+  // ccl=100 > 0.1 → charge enable (bit7); dcl=100 > 0.1 → discharge enable (bit6).
+  // No undervolt alarm → force-charge (bit5) clear.
+  REQUIRE(out[0] == (0x80 | 0x40));
   for (int i = 1; i < 8; ++i) REQUIRE(out[i] == 0x00);
 }
 
@@ -173,10 +174,10 @@ TEST_CASE("Pylontech 0x35C: undervolt, force-charge bit set", "[pylontech][frame
   uint8_t out[8];
   can::pylontech::build_0x35C(s, out);
 
-  // charge enable (bit7) + force charge on undervolt (bit6) + discharge enable (bit5)
+  // charge enable (bit7) + discharge enable (bit6, dcl=80 > 0.1) + force charge (bit5, undervolt)
   REQUIRE((out[0] & 0x80) != 0);  // charge enable
-  REQUIRE((out[0] & 0x40) != 0);  // force charge (undervolt)
-  REQUIRE((out[0] & 0x20) != 0);  // discharge enable (dcl=80 > 0.1)
+  REQUIRE((out[0] & 0x40) != 0);  // discharge enable (dcl=80 > 0.1)
+  REQUIRE((out[0] & 0x20) != 0);  // force charge (undervolt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,10 +211,10 @@ TEST_CASE("Pylontech 0x35C: CCL+DCL zeroed means no enable bits", "[pylontech][f
 
   // ccl < 0.1 → bit7 (charge enable) not set
   REQUIRE((out[0] & 0x80) == 0);
-  // dcl < 0.1 → bit5 (discharge enable) not set
-  REQUIRE((out[0] & 0x20) == 0);
-  // no undervolt alarm → force charge bit not set
+  // dcl < 0.1 → bit6 (discharge enable) not set
   REQUIRE((out[0] & 0x40) == 0);
+  // no undervolt alarm → force charge (bit5) not set
+  REQUIRE((out[0] & 0x20) == 0);
   REQUIRE(out[0] == 0x00);
 }
 
@@ -264,11 +265,48 @@ TEST_CASE("Pylontech 0x359 BMS-reported alarm maps to byte2 and byte0 AFE bit", 
   REQUIRE((out[2] & 0x01) != 0);  // byte2 bit0 = pack-level fault
 }
 
-TEST_CASE("Pylontech 0x351 bytes 6-7 always zero", "[pylontech]") {
+TEST_CASE("Pylontech 0x351 bytes 6-7 carry discharge voltage limit (DVL)", "[pylontech]") {
   SafetyState s{};
   s.cvl_volts = 53.5f;  s.ccl_amps = 120.0f;  s.dcl_amps = 120.0f;
+  s.dvl_volts = 47.5f;  // configured pack low-voltage cutoff
+  uint8_t out[8];
+  can::pylontech::build_0x351(s, out);
+  // dvl=47.5*10=475=0x01DB, LE
+  REQUIRE(out[6] == 0xDB);
+  REQUIRE(out[7] == 0x01);
+}
+
+TEST_CASE("Pylontech 0x351 DVL is zero when unset (regression guard)", "[pylontech]") {
+  // A default-constructed state has dvl_volts=0 → bytes 6-7 zero. runSafety()
+  // always populates dvl_volts from cfg.safe_pack_volt, so 0 only appears here.
+  SafetyState s{};
+  s.cvl_volts = 53.5f;
   uint8_t out[8];
   can::pylontech::build_0x351(s, out);
   REQUIRE(out[6] == 0x00);
   REQUIRE(out[7] == 0x00);
+}
+
+TEST_CASE("Pylontech 0x355 SOC follows fused Combined SOC when valid", "[pylontech]") {
+  // soc_display_valid → CAN uses soc_display (e.g. shunt-led), not soc_avg.
+  SafetyState s{};
+  s.soc_avg = 72.0f;
+  s.soc_display = 88.0f;
+  s.soc_display_valid = true;
+  s.soh_avg = 98.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x355(s, out);
+  REQUIRE(out[0] == 88);  // fused SOC, not soc_avg=72
+  REQUIRE(out[1] == 0x00);
+  REQUIRE(out[2] == 98);  // SOH stays BMS-only
+}
+
+TEST_CASE("Pylontech 0x355 SOC falls back to BMS soc_avg when fused invalid", "[pylontech]") {
+  SafetyState s{};
+  s.soc_avg = 72.0f;
+  s.soc_display = 88.0f;       // stale/garbage
+  s.soc_display_valid = false; // no valid fused value → fall back to BMS
+  uint8_t out[8];
+  can::pylontech::build_0x355(s, out);
+  REQUIRE(out[0] == 72);  // BMS soc_avg fallback
 }

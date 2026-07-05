@@ -24,12 +24,13 @@ void build_0x351(const SafetyState& s, uint8_t out[8]) {
 void build_0x355(const SafetyState& s, uint8_t out[8]) {
   memset(out, 0, 8);
   // V2.67 lines 2334-2335: SOC=int(avgSOC), SOH=int(avgSOH), cap=int(totalCapacity*10)
-  // V3.2 decision: intentionally s.soc_avg (BMS), never s.soc_display (shunt-fused).
-  // CAN TX feeds the inverter's own charge decisions, so it is treated as
-  // safety-adjacent like charge-taper — kept on the established BMS path until
-  // shunt behaviour is proven in the field. Revisit once V3.2 soaks; see
-  // docs/research/v3.2-shunt-soc-fusion.md.
-  int soc = static_cast<int>(s.soc_avg);
+  // V3.2 (owner-confirmed): the SOC reported over CAN follows the dashboard's
+  // "Combined SOC" — the Battery Value Sources fused value (shunt-led when fresh,
+  // BMS fallback otherwise) via can_tx_soc(). This is the DISPLAY/reporting SOC.
+  // It is intentionally NOT the charge-taper input: the taper stays strictly on
+  // raw BMS soc_avg (see safety/runSafety.cpp) — do not conflate the two.
+  // SOH stays BMS-only (the shunt does not measure state of health).
+  int soc = can_tx_soc(s);
   int soh = static_cast<int>(s.soh_avg);
   int cap = static_cast<int>(s.capacity_total_ah * 10.0f);
   out[0] = static_cast<uint8_t>(soc & 0xFF);  out[1] = static_cast<uint8_t>((soc >> 8) & 0xFF);

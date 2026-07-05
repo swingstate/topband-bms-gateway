@@ -303,12 +303,15 @@ SmartShunt provides 1-Hz precision current measurements via BLE. If a SmartShunt
   tiles, driven by the same fused value shown — shipped.
 - **MQTT**: `soc_display` + `soc_source` added to the `/data` JSON blob; `{base}/soc`
   now carries the fused value — shipped, see `docs/mqtt.md`.
-- **Victron CAN TX**: kept on BMS `soc_avg`, NOT SmartShunt data, contrary to what
-  this bullet originally said. Decision made during V3.2 implementation: CAN TX
-  feeds the inverter's own charge decisions, so it was treated as safety-adjacent
-  like charge-taper rather than a display value, and defaulted to the conservative
-  choice pending confirmation. Flagging explicitly — revisit if the intent here was
-  actually for CAN TX to follow the fused SOC once shunt behaviour is proven.
+- **CAN TX SOC**: RESOLVED (V3.2.0-preview.2). The SOC reported over CAN now follows
+  the dashboard's "Combined SOC" — the Battery Value Sources fused value (shunt-led
+  when fresh, BMS fallback otherwise) via `can_tx_soc()` — in all three protocol
+  builders (Victron 0x355, Pylontech 0x355, SMA 0x355). This reverses the earlier
+  interim BMS-only default; the owner confirmed CAN TX should match the displayed SOC.
+  SOH stays BMS-only (the shunt does not measure state of health). This is a
+  display/reporting choice only: the charge-taper safety logic (`runSafety.cpp`)
+  remains strictly on raw BMS `soc_avg` and is unaffected — the two are deliberately
+  distinct and must not be unified.
 
 ### Architectural upside
 
