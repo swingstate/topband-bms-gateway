@@ -470,3 +470,21 @@ TEST_CASE("Pylontech 0x355 SOC falls back to BMS soc_avg when fused invalid", "[
   can::pylontech::build_0x355(s, out);
   REQUIRE(out[0] == 72);  // BMS soc_avg fallback
 }
+
+TEST_CASE("can_tx_soc rounds half-up so CAN/MQTT match the dashboard's toFixed(0)", "[pylontech][soc]") {
+  // The reported SOC helper is the single source for the CAN 0x355 SOC and the
+  // MQTT {base}/soc topic. It must round (not truncate) a fractional fused value
+  // the same way the dashboard's toFixed(0) does, so a ~99.6% bank never shows as
+  // 99 on MQTT while the dashboard shows 100.
+  SafetyState s{};
+  s.soc_display_valid = true;
+
+  s.soc_display = 99.6f;  REQUIRE(can_tx_soc(s) == 100);  // was 99 under truncation
+  s.soc_display = 99.4f;  REQUIRE(can_tx_soc(s) == 99);
+  s.soc_display = 99.5f;  REQUIRE(can_tx_soc(s) == 100);  // half rounds up
+  s.soc_display = 50.0f;  REQUIRE(can_tx_soc(s) == 50);   // whole numbers unchanged
+
+  // Fallback path (fused invalid) rounds soc_avg the same way.
+  s.soc_display_valid = false;
+  s.soc_avg = 88.7f;      REQUIRE(can_tx_soc(s) == 89);
+}

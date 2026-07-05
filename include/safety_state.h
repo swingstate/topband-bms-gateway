@@ -105,16 +105,23 @@ struct SafetyState {
   uint8_t  temp_alarm;
 };
 
-// CAN TX SOC (V3.2): the value reported to the inverter over CAN follows the
-// dashboard's "Combined SOC" — the Battery Value Sources fused reading
-// (shunt-led when fresh, BMS fallback otherwise). Falls back to raw BMS soc_avg
-// whenever no fused value is currently valid, because a CAN frame must always
-// carry a number (never a bare 0 / "no data").
+// Reported SOC (V3.2): the integer SOC reported to the outside world follows the
+// dashboard's "Combined SOC" — the Battery Value Sources fused reading (shunt-led
+// when fresh, BMS fallback otherwise). Falls back to raw BMS soc_avg whenever no
+// fused value is currently valid, because a reported frame must always carry a
+// number (never a bare 0 / "no data").
+//
+// SINGLE SOURCE for every integer SOC consumer: the CAN builders (0x355) AND the
+// MQTT aggregate {base}/soc topic both call this, so the inverter, Home Assistant
+// and the dashboard can never disagree. Rounds half-up (SOC is always >= 0) to
+// match the dashboard's toFixed(0); truncation here was why MQTT showed 99 while
+// the dashboard rounded the same ~99.6 fused value to 100.
 //
 // IMPORTANT: this is the DISPLAY/reporting SOC only. It is deliberately NOT the
 // same as the charge-taper safety input, which uses raw BMS soc_avg exclusively
 // (see safety/runSafety.cpp). Do not conflate the two: the taper must never
 // follow the shunt-fused value, this reporting field intentionally does.
 inline int can_tx_soc(const SafetyState& s) {
-  return static_cast<int>(s.soc_display_valid ? s.soc_display : s.soc_avg);
+  float v = s.soc_display_valid ? s.soc_display : s.soc_avg;
+  return static_cast<int>(v + 0.5f);  // round half-up; SOC domain is [0, 100]
 }

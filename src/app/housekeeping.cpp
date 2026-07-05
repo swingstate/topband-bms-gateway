@@ -206,7 +206,18 @@ static void housekeeping_task_entry(void* /*arg*/) {
         }
       }
 
-      int32_t iv_power = (int32_t)(s_safety.pack_voltage_avg * s_safety.pack_current_total);
+      // Aggregate voltage/current/power published on the retained {base}/voltage,
+      // /current, /power topics must read the SAME Battery Value Sources fused
+      // values the dashboard hero tiles show (safety.*_display), not the raw BMS
+      // aggregate — otherwise the shunt-led dashboard and the MQTT topic disagree
+      // (same bug class as the SOC 99-vs-100 rounding split). Fall back to the raw
+      // BMS aggregate only when no fused value is valid (total no-data), so the
+      // retained topic always carries a real number. Per-pack topics stay BMS-only.
+      float iv_voltage = s_safety.voltage_display_valid ? s_safety.voltage_display
+                                                        : s_safety.pack_voltage_avg;
+      float iv_current = s_safety.current_display_valid ? s_safety.current_display
+                                                        : s_safety.pack_current_total;
+      int32_t iv_power = (int32_t)(iv_voltage * iv_current);
       bms::runtime_estimator::RuntimeStateEst iv_rt_state =
           bms::runtime_estimator::RuntimeStateEst::Idle;
       int32_t iv_rt_min = bms::runtime_estimator::estimate_min(s_safety, iv_rt_state);
@@ -215,13 +226,14 @@ static void housekeeping_task_entry(void* /*arg*/) {
         (iv_rt_state == bms::runtime_estimator::RuntimeStateEst::UntilFull)  ? "until_full"  : "idle";
 
       // Fill value strings into s_iv_values[] (indices match k_iv_suffixes).
-      // V3.2: index 0 ("/soc") publishes soc_display — the shunt-fused bank SOC
-      // when the shunt is enabled/fresh, else identical to soc_avg (default-off
-      // behaviour unchanged). Raw soc_avg stays available via the /data JSON
-      // blob for anyone cross-checking. See docs/mqtt.md.
-      snprintf(s_iv_values[0], sizeof(s_iv_values[0]),  "%u",    (unsigned)s_safety.soc_display);
-      snprintf(s_iv_values[1], sizeof(s_iv_values[1]),  "%.2f",  s_safety.pack_voltage_avg);
-      snprintf(s_iv_values[2], sizeof(s_iv_values[2]),  "%.1f",  s_safety.pack_current_total);
+      // V3.2: index 0 ("/soc") publishes the fused Combined SOC via can_tx_soc() —
+      // the exact same shared helper (and rounding) the CAN 0x355 builders use, so
+      // the inverter, HA and the dashboard all agree. Rounds half-up to match the
+      // dashboard's toFixed(0); the old (unsigned) cast truncated 99.6 -> 99 while
+      // the dashboard rounded to 100. Raw soc_avg stays available via /data.
+      snprintf(s_iv_values[0], sizeof(s_iv_values[0]),  "%d",    can_tx_soc(s_safety));
+      snprintf(s_iv_values[1], sizeof(s_iv_values[1]),  "%.2f",  iv_voltage);
+      snprintf(s_iv_values[2], sizeof(s_iv_values[2]),  "%.1f",  iv_current);
       snprintf(s_iv_values[3], sizeof(s_iv_values[3]),  "%d",    (int)iv_power);
       snprintf(s_iv_values[4], sizeof(s_iv_values[4]),  "%.1f",  s_safety.temp_avg);
       if (iv_have_cells) {
