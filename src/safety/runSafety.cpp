@@ -387,6 +387,19 @@ void runSafety(const BmsSystemSnapshot& snap,
       set_message(out, "INFO: TEMP DISCHG STOP");
     }
 
+    // Temperature-stop direction (cold vs hot). The 0x08 flag above is combined;
+    // CAN encoders that report over/under temperature separately (Pylontech
+    // 0x359) need the direction. Derived from the same t_check_val and effective
+    // thresholds that produced the zero factor: below the relevant min = cold
+    // (under-temp), above the relevant max = hot (over-temp). No new comparison
+    // logic — this is the same source of truth, just projected onto a direction.
+    if (out.factor_charge == 0.0f || out.factor_discharge == 0.0f) {
+      if (t_check_val < eff_chg_t_min || t_check_val < eff_dis_t_min)
+        out.temp_alarm |= 0x01;  // under-temperature (cold)
+      if (t_check_val > eff_chg_t_max || t_check_val > eff_dis_t_max)
+        out.temp_alarm |= 0x02;  // over-temperature (hot)
+    }
+
     // ── Factor edge events (V2.67 lines 2220-2223) ───────────────────────
     // TempChargeStop fires when throttle starts (factor goes below 1.0),
     // which includes soft zones (0.2 or 0.5), not only full cutoff (0.0).

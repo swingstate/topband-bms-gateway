@@ -56,6 +56,9 @@ struct SafetyState {
   // 0x20 = cell drift / imbalance warning
   // 0x40 = BMS reported critical alarm via 0x44
   // 0x80 = no packs online
+  // Direction of an active temperature stop (0x08 above is combined; see
+  // temp_alarm below). temp_alarm is declared further down to sit in existing
+  // struct padding at zero DRAM cost, not next to alarm_flags.
 
   char     sys_message[48];
   uint8_t  packs_online;
@@ -88,6 +91,18 @@ struct SafetyState {
   static constexpr uint8_t MAX_EVENTS = 16;
   EventEntry events[MAX_EVENTS];
   bool       events_overflowed;
+
+  // Direction of an active temperature stop. alarm_flags 0x08 (temperature stop)
+  // is combined and does not distinguish cold from hot; CAN encoders that report
+  // over/under temperature as separate bits (Pylontech 0x359) need the direction.
+  // Set by runSafety() from the same t_check_val and thresholds that drive
+  // factor_charge/factor_discharge. Zero whenever no temperature stop is active.
+  //   0x01 = under-temperature (cold) stop active
+  //   0x02 = over-temperature  (hot)  stop active
+  // Declared last so it occupies the struct's existing 7-byte tail padding after
+  // events_overflowed — net-zero internal DRAM (the pre-events region is already
+  // 8-byte-aligned, so a byte there would cost a full 8-byte slot instead).
+  uint8_t  temp_alarm;
 };
 
 // CAN TX SOC (V3.2): the value reported to the inverter over CAN follows the

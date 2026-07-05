@@ -30,12 +30,14 @@ void build_0x355(const SafetyState& state, uint8_t out[8]);
 // voltage×100 LE bytes 0-1, current×10 signed LE bytes 2-3, temp×10 LE bytes 4-5, bytes 6-7 zero
 void build_0x356(const SafetyState& state, uint8_t out[8]);
 
-// 0x359 — Alarm and warning status (spec-derived, Pylontech LV BMS CAN Protocol v1.1)
-// Byte 0: protection bits (OVP/UVP/OTP/OCP flags)
-// Byte 1: warning bits (softer threshold flags)
-// Byte 2: fault status bits
-// Byte 4: battery module count = packs online (V3.2; OpenDTU "Module Count" field)
-// Bytes 3, 5-7: zero
+// 0x359 — Alarm / warning / status (standard Pylontech LV layout, LSB0 bits,
+// verified against OpenDTU-onBattery's Pylontech provider)
+// Byte 0 alarms:  bit1 over-volt, bit2 under-volt, bit3 over-temp,
+//                 bit4 under-temp, bit7 discharge over-current
+// Byte 1 alarms:  bit0 charge over-current, bit3 BMS internal / system error
+// Bytes 2-3:      warning-level mirror (unused — no warning thresholds), zero
+// Byte 4:         battery module count = packs online (OpenDTU "Module Count")
+// Bytes 5-7:      zero
 void build_0x359(const SafetyState& state, uint8_t out[8]);
 
 // 0x35C — Charge / discharge enable request (spec-derived, Pylontech LV BMS CAN Protocol v1.1)
