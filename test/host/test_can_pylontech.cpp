@@ -265,6 +265,44 @@ TEST_CASE("Pylontech 0x359 BMS-reported alarm maps to byte2 and byte0 AFE bit", 
   REQUIRE((out[2] & 0x01) != 0);  // byte2 bit0 = pack-level fault
 }
 
+TEST_CASE("Pylontech 0x359 byte4 carries battery module count = packs online", "[pylontech]") {
+  // OpenDTU-onBattery reads data[4] directly as "Module Count" ("Batteriemodule").
+  // A healthy 3-pack system must report 3, not 0 and not packs*cells.
+  SafetyState s{};
+  s.packs_online     = 3;
+  s.packs_configured = 3;
+  s.ccl_amps         = 100.0f;
+  s.dcl_amps         = 100.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[4] == 3);
+  // Module count is independent of the alarm/protection bytes.
+  REQUIRE(out[0] == 0x00);
+  REQUIRE(out[1] == 0x00);
+}
+
+TEST_CASE("Pylontech 0x359 module count tracks online, not configured", "[pylontech]") {
+  // One of three configured packs offline → count reflects the two communicating.
+  SafetyState s{};
+  s.packs_online     = 2;
+  s.packs_configured = 3;
+  s.ccl_amps         = 100.0f;
+  s.dcl_amps         = 100.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[4] == 2);
+}
+
+TEST_CASE("Pylontech 0x359 module count is zero when no packs online", "[pylontech]") {
+  SafetyState s{};
+  s.packs_online = 0;
+  s.alarm_flags  = 0x80;  // no packs online
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[4] == 0);
+  REQUIRE((out[2] & 0x80) != 0);  // byte2 bit7 = system fault still set
+}
+
 TEST_CASE("Pylontech 0x351 bytes 6-7 carry discharge voltage limit (DVL)", "[pylontech]") {
   SafetyState s{};
   s.cvl_volts = 53.5f;  s.ccl_amps = 120.0f;  s.dcl_amps = 120.0f;

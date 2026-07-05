@@ -34,7 +34,8 @@ void build_0x356(const SafetyState& state, uint8_t out[8]);
 // Byte 0: protection bits (OVP/UVP/OTP/OCP flags)
 // Byte 1: warning bits (softer threshold flags)
 // Byte 2: fault status bits
-// Bytes 3-7: zero
+// Byte 4: battery module count = packs online (V3.2; OpenDTU "Module Count" field)
+// Bytes 3, 5-7: zero
 void build_0x359(const SafetyState& state, uint8_t out[8]);
 
 // 0x35C — Charge / discharge enable request (spec-derived, Pylontech LV BMS CAN Protocol v1.1)

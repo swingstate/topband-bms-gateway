@@ -70,6 +70,18 @@ void build_0x359(const SafetyState& s, uint8_t out[8]) {
   // Byte 2: system status
   //   bit0 = pack-level fault (alarm_flags 0x40)
   //   bit7 = system fault / no packs online (alarm_flags 0x80)
+  // Byte 4: battery module count (V3.2).
+  //   Standard Pylontech LV field: the number of battery modules in the stack.
+  //   Verified against OpenDTU-onBattery's Pylontech provider (the parser Deye /
+  //   OpenDTU users run), which reads data[4] directly, unscaled, and publishes it
+  //   as the "Module Count" ("Batteriemodule") entity. Left at 0 previously, which
+  //   is why field-reported systems showed "Batteriemodule: 0". We report the
+  //   count of packs currently online, so it tracks the modules actually
+  //   communicating and feeding the aggregated frame data (a pack that drops
+  //   offline drops out of the count, matching real Pylontech enumeration and the
+  //   online set the other frames aggregate over). For a healthy 3-pack system
+  //   this reads 3. (The EEVblog 0x4200/0x7320 SC0500 frame is a different,
+  //   high-voltage console protocol that OpenDTU LV does not parse — not used.)
   memset(out, 0, 8);
   uint8_t af = s.alarm_flags;
 
@@ -89,6 +101,9 @@ void build_0x359(const SafetyState& s, uint8_t out[8]) {
   // Byte 2 — fault status
   if (af & 0x40) out[2] |= 0x01;  // BMS reported critical alarm
   if (af & 0x80) out[2] |= 0x80;  // no packs online = system fault
+
+  // Byte 4 — battery module count = packs currently online
+  out[4] = s.packs_online;
 }
 
 void build_0x35C(const SafetyState& s, uint8_t out[8]) {

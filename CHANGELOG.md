@@ -18,6 +18,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Pylontech CAN "Batteriemodule" / Module Count showed 0.** The Pylontech 0x359
+  frame's byte 4 (battery module count) was never populated, so inverters/monitors
+  displayed a module count of 0. Verified against OpenDTU-onBattery's Pylontech
+  provider — the parser Deye/OpenDTU users run — which reads `data[4]` directly as
+  its "Module Count" entity. `build_0x359()` (`src/can/pylontech.cpp`) now reports the
+  number of packs currently online, so a healthy 3-pack system reads 3 (the count
+  tracks the modules actually communicating, matching the online set the other frames
+  aggregate over). Note: the EEVblog forum's 0x4200/0x7320 frame is the Pylontech
+  SC0500 high-voltage console protocol, which the low-voltage CAN parser does not read;
+  the correct low-voltage field is 0x359 byte 4.
 - **Pylontech CAN 0x35C: discharge-enable and force-charge bits were swapped, causing
   a false discharge lockout on healthy batteries.** `build_0x35C()`
   (`src/can/pylontech.cpp`) wrote the discharge-enable flag to byte-0 bit 5 and the
