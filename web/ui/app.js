@@ -4482,6 +4482,7 @@ function renderDiagData(d) {
         ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
         ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
         ${kvRow('SOC', shunt.soc_valid === false ? 'Not synced (raw sentinel)' : fmtF(shunt.soc_pct, 1) + ' %')}
+        ${kvRow('Consumed Ah (shunt counter, reference only)', shunt.consumed_ah_valid === false ? 'Not available (raw sentinel)' : fmtF(shunt.consumed_ah, 1) + ' Ah')}
         ${kvRow('BMS SOC avg (cross-check)', fmtF(g_live && g_live.safety && g_live.safety.soc_avg, 0) + ' %')}
         ${kvRow('Active source (bank SOC)', ((g_live && g_live.sources && g_live.sources.battery_soc_src) || 'bms').toUpperCase())}
       </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — enable in Settings &rarr; Bluetooth LE</div>`}

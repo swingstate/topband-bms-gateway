@@ -14,7 +14,7 @@
 //   bits  48-63  aux_input        (u16,           meaning depends on aux_mode; unused)
 //   bits  64-65  aux_mode         (u2,            not decoded — unused)
 //   bits  66-87  current          (i22, /1000 A,  sentinel 0x3FFFFF = n/a)
-//   bits  88-107 consumed_ah      (u20,           not decoded — unused)
+//   bits  88-107 consumed_ah      (u20, /10 Ah negated, sentinel 0xFFFFF = n/a)
 //   bits 108-117 soc              (u10, /10 %,    sentinel 0x3FF = shunt not yet
 //                                                  synchronized/calibrated)
 //
@@ -33,6 +33,11 @@ struct ShuntDecodedNewFmt {
   bool  current_valid = false;
   float soc_pct       = 0.0f;
   bool  soc_valid      = false;  // false = shunt not yet synchronized (raw sentinel 0x3FF)
+  // Shunt's own hardware Coulomb counter: Ah drawn since last full-charge sync.
+  // Negative when discharged (VictronConnect "Consumed Amp Hours" convention).
+  // Read-only diagnostic reference only — not yet wired into any fused source.
+  float consumed_ah       = 0.0f;
+  bool  consumed_ah_valid = false;  // false = raw sentinel 0xFFFFF (not available)
 };
 
 // Parses the bit-packed new-format BATTERY_MONITOR payload.

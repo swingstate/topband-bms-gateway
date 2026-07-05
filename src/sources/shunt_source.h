@@ -41,7 +41,7 @@ public:
   // promotes an unsynced reading to primary.
   // MUST NOT log the key. Safe to call from any task.
   void set_decoded_values(float current_a, float voltage_v, float soc_pct, bool soc_valid,
-                          uint32_t now_ms);
+                          float consumed_ah, bool consumed_ah_valid, uint32_t now_ms);
 
   // Diagnostic: milliseconds since last valid advertisement (0 = never seen).
   uint32_t ms_since_last_seen(uint32_t now_ms) const;
@@ -53,6 +53,8 @@ public:
     float   voltage_v;
     float   soc_pct;
     bool    soc_valid;
+    float   consumed_ah;        // shunt hardware Coulomb counter, Ah (negative = discharged)
+    bool    consumed_ah_valid;  // false = raw sentinel (not available from this shunt)
     uint32_t last_seen_ms;
   };
   DiagSnap diag_snap() const;
@@ -63,6 +65,8 @@ private:
   float    m_voltage_v  = 0.0f;
   float    m_soc_pct    = 0.0f;
   bool     m_soc_valid  = false;
+  float    m_consumed_ah       = 0.0f;
+  bool     m_consumed_ah_valid = false;
   uint32_t m_last_seen_ms = 0;
   bool     m_ever_seen  = false;
 

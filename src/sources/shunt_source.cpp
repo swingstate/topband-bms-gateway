@@ -53,12 +53,15 @@ SourceReading ShuntSource::reading(Metric m) const {
 }
 
 void ShuntSource::set_decoded_values(float current_a, float voltage_v, float soc_pct,
-                                     bool soc_valid, uint32_t now_ms) {
+                                     bool soc_valid, float consumed_ah,
+                                     bool consumed_ah_valid, uint32_t now_ms) {
   portENTER_CRITICAL(&m_mux);
   m_current_a    = current_a;
   m_voltage_v    = voltage_v;
   m_soc_valid    = soc_valid;
   if (soc_valid) m_soc_pct = soc_pct;  // keep last known value while unsynced
+  m_consumed_ah_valid = consumed_ah_valid;
+  if (consumed_ah_valid) m_consumed_ah = consumed_ah;  // keep last known while n/a
   m_last_seen_ms = now_ms;
   m_ever_seen    = true;
   portEXIT_CRITICAL(&m_mux);
@@ -81,6 +84,8 @@ ShuntSource::DiagSnap ShuntSource::diag_snap() const {
   s.voltage_v   = m_voltage_v;
   s.soc_pct     = m_soc_pct;
   s.soc_valid   = m_soc_valid;
+  s.consumed_ah       = m_consumed_ah;
+  s.consumed_ah_valid = m_consumed_ah_valid;
   s.last_seen_ms = m_last_seen_ms;
   portEXIT_CRITICAL(&m_mux);
   return s;

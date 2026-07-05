@@ -38,7 +38,7 @@ bool decode_shunt_new_fmt(const uint8_t* plain, size_t plain_len, ShuntDecodedNe
   read_bits_u(plain, plain_len, bit_pos, 16);             // aux_input — unused
   read_bits_u(plain, plain_len, bit_pos, 2);              // aux_mode — unused
   uint32_t i_raw   = read_bits_u(plain, plain_len, bit_pos, 22);
-  read_bits_u(plain, plain_len, bit_pos, 20);              // consumed_ah — unused
+  uint32_t cah_raw = read_bits_u(plain, plain_len, bit_pos, 20);
   uint32_t soc_raw = read_bits_u(plain, plain_len, bit_pos, 10);
 
   out.voltage_valid = (v_raw != 0x7FFFu);
@@ -49,6 +49,12 @@ bool decode_shunt_new_fmt(const uint8_t* plain, size_t plain_len, ShuntDecodedNe
 
   out.soc_valid = (soc_raw != 0x3FFu);
   if (out.soc_valid) out.soc_pct = (float)soc_raw / 10.0f;
+
+  // Consumed Ah: shunt's own Coulomb counter, 0.1 Ah units, negated so that a
+  // discharged battery reads negative (VictronConnect convention). Matches
+  // keshavdv/victron-ble battery_monitor.py. Sentinel 0xFFFFF = not available.
+  out.consumed_ah_valid = (cah_raw != 0xFFFFFu);
+  if (out.consumed_ah_valid) out.consumed_ah = -(float)cah_raw / 10.0f;
 
   return true;
 }

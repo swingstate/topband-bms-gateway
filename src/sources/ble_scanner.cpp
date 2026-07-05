@@ -89,7 +89,7 @@ static const char* TAG = "ble_scanner";
 //     bits  48-63  aux_input        (unused)
 //     bits  64-65  aux_mode         (unused)
 //     bits  66-87  battery_current  (/1000 → A, sentinel 0x3FFFFF)
-//     bits  88-107 consumed_ah      (unused)
+//     bits  88-107 consumed_ah      (/10 → Ah, negated; sentinel 0xFFFFF; diag-only)
 //     bits 108-117 SoC              (/10 → %, sentinel 0x3FF = not synchronized)
 //
 // References:
@@ -387,14 +387,18 @@ static bool decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t n
   float current_a;
   float soc_pct;
   bool  soc_valid;
+  float consumed_ah       = 0.0f;
+  bool  consumed_ah_valid = false;  // old format does not carry consumed_ah
 
   if (new_fmt) {
     sources::ShuntDecodedNewFmt d;
     if (!sources::decode_shunt_new_fmt(plain, dec_len, d)) return false;
-    voltage_v = d.voltage_valid ? d.voltage_v : 0.0f;
-    current_a = d.current_valid ? d.current_a : 0.0f;
-    soc_pct   = d.soc_pct;
-    soc_valid = d.soc_valid;
+    voltage_v         = d.voltage_valid ? d.voltage_v : 0.0f;
+    current_a         = d.current_valid ? d.current_a : 0.0f;
+    soc_pct           = d.soc_pct;
+    soc_valid         = d.soc_valid;
+    consumed_ah       = d.consumed_ah;
+    consumed_ah_valid = d.consumed_ah_valid;
   } else {
     uint16_t batt_v_raw = (uint16_t)((uint16_t)plain[0] | ((uint16_t)plain[1] << 8));
     int16_t  curr_raw   = (int16_t) ((uint16_t)plain[2] | ((uint16_t)plain[3] << 8));
@@ -407,7 +411,8 @@ static bool decode_shunt(const uint8_t* md, size_t len, bool new_fmt, uint32_t n
     soc_valid = true;  // no documented "unsynced" sentinel for the old format
   }
 
-  s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, soc_valid, now_ms);
+  s_shunt->set_decoded_values(current_a, voltage_v, soc_pct, soc_valid,
+                              consumed_ah, consumed_ah_valid, now_ms);
 
   ESP_LOGD(TAG, "Shunt(%s): %.3f A  %.2f V  %s%.1f%%",
            new_fmt ? "new" : "old", current_a, voltage_v,
