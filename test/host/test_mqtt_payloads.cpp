@@ -125,6 +125,25 @@ TEST_CASE("build_cells: produces valid JSON with cells_v array") {
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"bms_id\""));
 }
 
+// Regression: the per-cell-level HA discovery PACK_ENTITIES (Pack N
+// Voltage/Current/SOC) read value_json.{voltage,current,soc} from this same
+// Cells JSON. If those keys go missing the entities show "Unknown" in HA while
+// Pack N Alarms (value_json.alarm_bits) keeps working. Guard all three keys
+// with the exact names the value_templates expect, plus their values.
+TEST_CASE("build_cells: includes pack voltage/current/soc for HA value_templates") {
+  BmsSystemSnapshot snap = make_snap(1);
+  const BmsPackSnapshot& pack = snap.pack[0];  // voltage 52.0, current 5.0, soc 75
+
+  char buf[1024];
+  size_t n = mqtt::payloads::build_cells(pack, 2000000ULL, buf, sizeof(buf));
+  REQUIRE(n > 0);
+
+  std::string s(buf, n);
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"voltage\":52"));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"current\":5"));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc\":75"));
+}
+
 TEST_CASE("build_cells: fits in 1024 bytes for 16 cells") {
   BmsSystemSnapshot snap = make_snap(1);
   snap.pack[0].cell_count = 16;

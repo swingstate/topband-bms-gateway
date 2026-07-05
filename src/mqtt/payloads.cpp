@@ -159,6 +159,17 @@ size_t build_cells(const BmsPackSnapshot& pack, uint64_t ts_ms,
   s_doc_cells["cell_v_drift"] = pack.cell_drift_v;
   s_doc_cells["alarm_bits"]   = pack.alarm_bits;
 
+  // Pack-level summary scalars. These feed the per-cell-level HA discovery
+  // PACK_ENTITIES sensors (Pack N Voltage/Current/SOC), whose state_topic is
+  // this Cells JSON blob and whose value_template reads value_json.{voltage,
+  // current,soc}. Without these keys those three entities resolve to nothing
+  // and HA shows "Unknown" — while Pack N Alarms (value_json.alarm_bits) works,
+  // because alarm_bits was the only summary key present. Latent since Phase H1.
+  // Key names MUST match the value_templates in ha_discovery.cpp PACK_ENTITIES.
+  s_doc_cells["voltage"] = pack.pack_voltage;
+  s_doc_cells["current"] = pack.pack_current;
+  s_doc_cells["soc"]     = pack.soc;
+
   size_t n = serializeJson(s_doc_cells, out, out_size);
   return (n > 0 && n < out_size) ? n : 0;
 }
