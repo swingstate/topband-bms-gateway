@@ -293,8 +293,11 @@ static void housekeeping_task_entry(void* /*arg*/) {
 
     // ── Solar MPPT IndivTopics every 10 ticks (10 s) ─────────────────────────
     // Published only when BLE MPPT is enabled. When the source is stale (> 30 s)
-    // or a field has a Victron sentinel, publish "unavailable" so HA shows the
-    // sensor as unavailable rather than the last decoded value.
+    // or a field has a Victron sentinel, we skip the publish entirely rather than
+    // posting a literal "unavailable" string: the discovery config carries
+    // expire_after (60 s), so HA auto-marks the sensor unavailable on timeout.
+    // Publishing "unavailable" on numeric device-class topics threw ValueError
+    // spam in HA's MQTT layer (V3.2 fix).
     if (cfg.ble_mppt_enabled && (s_tick % 10 == 0)) {
       sources::MpptSource* mppt = sources::mppt_source();
       if (mppt && mppt->enabled()) {
@@ -315,44 +318,34 @@ static void housekeeping_task_entry(void* /*arg*/) {
 
         char sv[32];
 
-        if (stale || !d.pv_power_valid) {
-          post_solar("/solar/pv_power", "unavailable");
-        } else {
+        // On stale/invalid, skip the publish and let HA's expire_after (60 s,
+        // set in the discovery config) mark the sensor unavailable on timeout.
+        if (!stale && d.pv_power_valid) {
           snprintf(sv, sizeof(sv), "%.1f", d.pv_power_w);
           post_solar("/solar/pv_power", sv);
         }
 
-        if (stale || !d.batt_v_valid) {
-          post_solar("/solar/output_voltage", "unavailable");
-        } else {
+        if (!stale && d.batt_v_valid) {
           snprintf(sv, sizeof(sv), "%.2f", d.batt_voltage_v);
           post_solar("/solar/output_voltage", sv);
         }
 
-        if (stale || !d.batt_i_valid) {
-          post_solar("/solar/output_current", "unavailable");
-        } else {
+        if (!stale && d.batt_i_valid) {
           snprintf(sv, sizeof(sv), "%.2f", d.batt_current_a);
           post_solar("/solar/output_current", sv);
         }
 
-        if (stale || !d.batt_v_valid || !d.batt_i_valid) {
-          post_solar("/solar/output_power", "unavailable");
-        } else {
+        if (!stale && d.batt_v_valid && d.batt_i_valid) {
           snprintf(sv, sizeof(sv), "%.1f", d.batt_voltage_v * d.batt_current_a);
           post_solar("/solar/output_power", sv);
         }
 
-        if (stale || !d.yield_valid) {
-          post_solar("/solar/yield_today", "unavailable");
-        } else {
+        if (!stale && d.yield_valid) {
           snprintf(sv, sizeof(sv), "%.3f", d.yield_today_wh / 1000.0f);
           post_solar("/solar/yield_today", sv);
         }
 
-        if (stale) {
-          post_solar("/solar/charger_state", "unavailable");
-        } else {
+        if (!stale) {
           static const char* CS_LABELS[] = {
             "Off", "Low power", "Fault", "Bulk", "Absorption", "Float",
             "Storage", "Equalize",
@@ -361,9 +354,8 @@ static void housekeeping_task_entry(void* /*arg*/) {
             post_solar("/solar/charger_state", CS_LABELS[d.charge_state]);
           } else if (d.charge_state == 252) {
             post_solar("/solar/charger_state", "ESS");
-          } else if (d.charge_state == 255) {
-            post_solar("/solar/charger_state", "unavailable");
-          } else {
+          } else if (d.charge_state != 255) {
+            // 255 = Victron "unavailable" sentinel: skip, let expire_after handle it.
             snprintf(sv, sizeof(sv), "State %u", (unsigned)d.charge_state);
             post_solar("/solar/charger_state", sv);
           }

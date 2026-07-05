@@ -29,6 +29,10 @@ struct EntityDef {
   const char* unit;           // unit_of_measurement (nullptr = none)
   const char* state_class;    // "measurement" | "total_increasing" | nullptr
   const char* icon;           // optional icon override (nullptr = default)
+  uint16_t    expire_after = 0; // HA expire_after seconds (0 = never expire).
+                              // For sources published intermittently (solar/MPPT),
+                              // lets HA mark the entity unavailable on publish
+                              // timeout instead of us posting a literal string.
 };
 
 // Each entity uses its own individual plain-text topic (no value_template needed).
@@ -63,13 +67,18 @@ static constexpr size_t N_SYSTEM = sizeof(SYSTEM_ENTITIES) / sizeof(SYSTEM_ENTIT
 // and are intentionally omitted.
 // "output_*" names the MPPT's output terminal — not "battery" — because with
 // Solar-Passthrough the energy may go directly to the load, not the battery.
+// expire_after (60 s) lets HA auto-mark these unavailable on a publish timeout.
+// Publish cadence is ~10 s (see housekeeping solar block), so 60 s is 6x margin:
+// healthy operation never falsely expires, and a real MPPT dropout resolves to
+// "Unavailable" in HA without us ever posting a literal placeholder string
+// (which throws ValueError on numeric device-class sensors in HA's MQTT layer).
 static const EntityDef SOLAR_ENTITIES[] = {
-  { "solar_pv_power",       "/solar/pv_power",       "Victron MPPT \xe2\x80\x94 PV Power",                    "power",   "W",   "measurement",      "mdi:solar-power"         },
-  { "solar_output_voltage", "/solar/output_voltage", "Victron MPPT \xe2\x80\x94 Charger Output Voltage",      "voltage", "V",   "measurement",      nullptr                   },
-  { "solar_output_current", "/solar/output_current", "Victron MPPT \xe2\x80\x94 Charger Output Current",      "current", "A",   "measurement",      nullptr                   },
-  { "solar_output_power",   "/solar/output_power",   "Victron MPPT \xe2\x80\x94 Charger Output Power",        "power",   "W",   "measurement",      nullptr                   },
-  { "solar_yield_today",    "/solar/yield_today",    "Victron MPPT \xe2\x80\x94 Yield Today",                 "energy",  "kWh", "total_increasing", "mdi:solar-power"         },
-  { "solar_charger_state",  "/solar/charger_state",  "Victron MPPT \xe2\x80\x94 Charger State",               nullptr,   nullptr, nullptr,          "mdi:battery-charging"    },
+  { "solar_pv_power",       "/solar/pv_power",       "Victron MPPT \xe2\x80\x94 PV Power",                    "power",   "W",   "measurement",      "mdi:solar-power",       60 },
+  { "solar_output_voltage", "/solar/output_voltage", "Victron MPPT \xe2\x80\x94 Charger Output Voltage",      "voltage", "V",   "measurement",      nullptr,                 60 },
+  { "solar_output_current", "/solar/output_current", "Victron MPPT \xe2\x80\x94 Charger Output Current",      "current", "A",   "measurement",      nullptr,                 60 },
+  { "solar_output_power",   "/solar/output_power",   "Victron MPPT \xe2\x80\x94 Charger Output Power",        "power",   "W",   "measurement",      nullptr,                 60 },
+  { "solar_yield_today",    "/solar/yield_today",    "Victron MPPT \xe2\x80\x94 Yield Today",                 "energy",  "kWh", "total_increasing", "mdi:solar-power",       60 },
+  { "solar_charger_state",  "/solar/charger_state",  "Victron MPPT \xe2\x80\x94 Charger State",               nullptr,   nullptr, nullptr,          "mdi:battery-charging",  60 },
 };
 static constexpr size_t N_SOLAR = sizeof(SOLAR_ENTITIES) / sizeof(SOLAR_ENTITIES[0]);
 
@@ -202,6 +211,7 @@ static void publish_system_entity(const EntityDef& ent,
   if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
   if (ent.state_class)  s_disc_doc["state_class"]         = ent.state_class;
   if (ent.icon)         s_disc_doc["icon"]                = ent.icon;
+  if (ent.expire_after) s_disc_doc["expire_after"]        = ent.expire_after;
   build_device_block(s_disc_doc, device_uid);
 
   char buf[640];
