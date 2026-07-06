@@ -82,6 +82,19 @@ static const EntityDef SOLAR_ENTITIES[] = {
 };
 static constexpr size_t N_SOLAR = sizeof(SOLAR_ENTITIES) / sizeof(SOLAR_ENTITIES[0]);
 
+// SmartShunt entities (Victron SmartShunt BLE, gated on cfg.ble_shunt_enabled).
+// Bank-level only, read-only cross-check — NOT fused into any dashboard/CAN value.
+// consumed_ah is the shunt's own hardware Coulomb counter (negative = discharged).
+// No HA device_class exists for charge/Ah, so it is a plain numeric sensor with a
+// custom "Ah" unit. Same intermittent-publish contract as the solar entities:
+// housekeeping skips the publish when stale or the raw sentinel is present, and
+// expire_after (60 s, 6x the ~10 s publish cadence) lets HA auto-mark it
+// unavailable on timeout instead of us posting a literal placeholder string.
+static const EntityDef SHUNT_ENTITIES[] = {
+  { "shunt_consumed_ah", "/shunt/consumed_ah", "Victron SmartShunt \xe2\x80\x94 Consumed Ah", nullptr, "Ah", "measurement", "mdi:battery-minus", 60 },
+};
+static constexpr size_t N_SHUNT = sizeof(SHUNT_ENTITIES) / sizeof(SHUNT_ENTITIES[0]);
+
 // Per-pack entity suffixes appended as "pack_{n}_{key}"
 // Published at PerCell level (state_topic = JSON cells topic, needs value_template).
 struct PackEntityDef {
@@ -454,6 +467,20 @@ void publish_all(const Config& cfg,
     } else {
       char disc_topic[160];
       if (mqtt::topics::build_ha_discovery(device_uid, SOLAR_ENTITIES[i].key,
+                                            disc_topic, sizeof(disc_topic))) {
+        enqueue_disc(disc_topic, nullptr, 0);
+      }
+    }
+  }
+
+  // SmartShunt entities: publish when BLE shunt is enabled; tombstone when
+  // disabled so HA removes stale shunt sensors after the user disables it.
+  for (size_t i = 0; i < N_SHUNT; ++i) {
+    if (cfg.ble_shunt_enabled) {
+      publish_system_entity(SHUNT_ENTITIES[i], device_uid, effective_base);
+    } else {
+      char disc_topic[160];
+      if (mqtt::topics::build_ha_discovery(device_uid, SHUNT_ENTITIES[i].key,
                                             disc_topic, sizeof(disc_topic))) {
         enqueue_disc(disc_topic, nullptr, 0);
       }
