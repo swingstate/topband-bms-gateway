@@ -13,6 +13,7 @@
 //   [pylontech]           Property tests: manufacturer ID, signed current, enable flags
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <cstring>
 #include <cstdint>
 
@@ -469,6 +470,52 @@ TEST_CASE("Pylontech 0x355 SOC falls back to BMS soc_avg when fused invalid", "[
   uint8_t out[8];
   can::pylontech::build_0x355(s, out);
   REQUIRE(out[0] == 72);  // BMS soc_avg fallback
+}
+
+TEST_CASE("Pylontech 0x356 current follows fused Combined Current when valid", "[pylontech][current]") {
+  // current_display_valid → CAN 0x356 uses the shunt-led fused current, not the
+  // raw BMS pack_current_total. Reproduces the field bug: BMS reads 0.0 A (blind
+  // below ~0.5 A) while the shunt sees -0.8 A discharge.
+  SafetyState s{};
+  s.pack_current_total    = 0.0f;    // BMS blind spot
+  s.current_display       = -0.8f;   // shunt-fused Combined Current
+  s.current_display_valid = true;
+  s.pack_voltage_avg      = 52.1f;
+  s.temp_avg              = 25.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x356(s, out);
+  // -0.8 A → int(-0.8*10) = -8 = 0xFFF8 signed 16-bit LE
+  REQUIRE(out[2] == 0xF8);
+  REQUIRE(out[3] == 0xFF);
+}
+
+TEST_CASE("Pylontech 0x356 current falls back to BMS pack_current_total when fused invalid",
+          "[pylontech][current]") {
+  SafetyState s{};
+  s.pack_current_total    = -15.5f;  // BMS current
+  s.current_display       = -0.8f;   // stale/garbage
+  s.current_display_valid = false;   // no valid fused value → fall back to BMS
+  uint8_t out[8];
+  can::pylontech::build_0x356(s, out);
+  // -15.5 A → int(-15.5*10) = -155 = 0xFF65 signed 16-bit LE
+  REQUIRE(out[2] == 0x65);
+  REQUIRE(out[3] == 0xFF);
+}
+
+TEST_CASE("can_tx_current follows fused Combined Current, BMS fallback when invalid",
+          "[pylontech][current]") {
+  // Shared helper: the single source for CAN 0x356 current across all three
+  // protocols and the MQTT {base}/current topic. Mirrors can_tx_soc().
+  SafetyState s{};
+  s.pack_current_total = -15.5f;
+
+  s.current_display_valid = true;
+  s.current_display = -0.8f;  REQUIRE(can_tx_current(s) == Catch::Approx(-0.8f));   // sub-amp shunt read
+  s.current_display = 12.3f;  REQUIRE(can_tx_current(s) == Catch::Approx(12.3f));   // charging
+
+  // Fallback path (fused invalid) uses raw BMS current, preserving sign.
+  s.current_display_valid = false;
+  REQUIRE(can_tx_current(s) == Catch::Approx(-15.5f));
 }
 
 TEST_CASE("can_tx_soc rounds half-up so CAN/MQTT match the dashboard's toFixed(0)", "[pylontech][soc]") {

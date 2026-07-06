@@ -15,6 +15,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   state of health). This is a reporting change only: the charge-taper safety logic in
   `runSafety.cpp` remains strictly on raw BMS `soc_avg` and is unaffected — the two
   are deliberately distinct. Resolves the CAN-TX-SOC item flagged in `docs/ROADMAP.md`.
+- **CAN TX now reports the dashboard's fused Combined Current** (was raw BMS-only).
+  All three protocol builders (Victron 0x356, Pylontech 0x356, SMA 0x356) now take
+  the instantaneous current from `can_tx_current()`, which returns the Battery Value
+  Sources fused value (shunt-led when fresh, BMS `pack_current_total` fallback
+  otherwise) — the same number shown as "Combined Current" on the dashboard and
+  published on the MQTT `{base}/current` topic. This closes the same sub-0.5 A blind
+  spot the SmartShunt integration exists to fix: a battery idling at -0.8 A showed
+  "Strom 0,0 A" on the inverter (the BMS reports 0.0 A below ~0.5 A) while the
+  dashboard's shunt read the real current. The current analogue of the SOC change
+  above, applied to all three protocols for the same reason. Reporting/telemetry
+  only: the CCL/DCL limits (0x351), the charge/discharge-enable bits (0x35C / 0x35A)
+  and the charge-taper logic all remain strictly on the raw BMS fields and are
+  unaffected. Voltage and temperature in 0x356 stay on the raw BMS aggregates.
 
 ### Fixed
 
