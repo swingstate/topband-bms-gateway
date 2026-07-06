@@ -312,6 +312,17 @@ SmartShunt provides 1-Hz precision current measurements via BLE. If a SmartShunt
   display/reporting choice only: the charge-taper safety logic (`runSafety.cpp`)
   remains strictly on raw BMS `soc_avg` and is unaffected — the two are deliberately
   distinct and must not be unified.
+- **CAN TX current**: RESOLVED (V3.2.0-preview.5). The instantaneous current reported
+  over CAN (0x356) now follows the dashboard's "Combined Current" — the Battery Value
+  Sources fused value (shunt-led when fresh, BMS `pack_current_total` fallback
+  otherwise) via `can_tx_current()` — in all three protocol builders (Victron 0x356,
+  Pylontech 0x356, SMA 0x356). The current analogue of the CAN TX SOC change above:
+  the earlier SOC work was scoped to SOC only, leaving 0x356 current on raw BMS
+  current, so a battery idling at -0.8 A showed "Strom 0,0 A" on the inverter (the
+  BMS is blind below ~0.5 A) while the dashboard's shunt saw the real current. This
+  is a reporting choice only: the CCL/DCL limits (0x351), the charge/discharge-enable
+  bits and the charge-taper logic all stay strictly on raw BMS fields and are
+  unaffected. Voltage/temperature in 0x356 stay on the raw BMS aggregates.
 
 ### Architectural upside
 

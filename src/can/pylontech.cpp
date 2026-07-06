@@ -47,9 +47,14 @@ void build_0x355(const SafetyState& s, uint8_t out[8]) {
 void build_0x356(const SafetyState& s, uint8_t out[8]) {
   memset(out, 0, 8);
   // V2.67 lines 2340-2341: v=int(avgVoltage*100), i=int(totalCurrent*10), t=int(avgTemp*10)
-  int v = static_cast<int>(s.pack_voltage_avg   * 100.0f);
-  int i = static_cast<int>(s.pack_current_total * 10.0f);
-  int t = static_cast<int>(s.temp_avg           * 10.0f);
+  // V3.2: current follows the dashboard's Combined Current (Battery Value Sources
+  // fused value, shunt-led when fresh; BMS pack_current_total fallback otherwise)
+  // via can_tx_current() — the current analogue of the can_tx_soc() 0x355 fix.
+  // Fixes "Strom 0,0 A" on the inverter while the shunt saw real sub-0.5 A current
+  // the BMS is blind to. Voltage/temperature stay on the raw BMS aggregates.
+  int v = static_cast<int>(s.pack_voltage_avg     * 100.0f);
+  int i = static_cast<int>(can_tx_current(s)      * 10.0f);
+  int t = static_cast<int>(s.temp_avg             * 10.0f);
   out[0] = static_cast<uint8_t>(v & 0xFF);  out[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
   out[2] = static_cast<uint8_t>(i & 0xFF);  out[3] = static_cast<uint8_t>((i >> 8) & 0xFF);
   out[4] = static_cast<uint8_t>(t & 0xFF);  out[5] = static_cast<uint8_t>((t >> 8) & 0xFF);

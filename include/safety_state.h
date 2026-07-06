@@ -125,3 +125,25 @@ inline int can_tx_soc(const SafetyState& s) {
   float v = s.soc_display_valid ? s.soc_display : s.soc_avg;
   return static_cast<int>(v + 0.5f);  // round half-up; SOC domain is [0, 100]
 }
+
+// Reported current (V3.2): the instantaneous current reported over CAN (0x356
+// byte 2-3) follows the dashboard's "Combined Current" — the Battery Value
+// Sources fused reading (shunt-led when fresh, BMS fallback otherwise), via the
+// exact same rule the MQTT {base}/current topic uses (app/housekeeping.cpp
+// iv_current). Falls back to raw BMS pack_current_total whenever no fused value
+// is currently valid, because a reported frame must always carry a number.
+//
+// WHY: the BMS is blind below ~0.5 A and reports 0.0 A, so a battery idling at
+// -0.8 A showed "Strom 0,0 A" on the inverter while the dashboard's shunt read
+// the real sub-amp current. This is the current analogue of can_tx_soc(): the
+// inverter, Home Assistant and the dashboard now agree on the same live current.
+//
+// Sign convention is preserved (negative = discharge). Returned in amps (float);
+// the CAN builders apply the ×10 scale and signed-16-bit encoding themselves.
+//
+// IMPORTANT: this is the DISPLAY/reporting current only. It is deliberately NOT
+// a safety input. CCL/DCL limits, charge-taper and the enable bits all stay on
+// the plain BMS fields (see safety/runSafety.cpp) — do not conflate the two.
+inline float can_tx_current(const SafetyState& s) {
+  return s.current_display_valid ? s.current_display : s.pack_current_total;
+}
