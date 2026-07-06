@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Consumed Ah published over MQTT** (`{base}/shunt/consumed_ah`, HA entity
+  `shunt_consumed_ah`). Bank-level, read-only reference: the SmartShunt's own
+  hardware Coulomb counter (negative = discharged), already visible on the
+  Diagnostics page and `/api/diag`. Published ~10 s while the shunt is enabled and
+  fresh; when stale or not-yet-synced the publish is skipped and HA's
+  `expire_after` (60 s) marks the entity unavailable rather than posting a literal
+  string on a numeric topic (same contract as the solar/MPPT topics). Not fused
+  into any dashboard, CAN, or `*_display` value, and no dashboard tile was added.
+
 ### Changed
 
 - **CAN TX now reports the dashboard's fused Combined SOC** (was interim BMS-only).
@@ -30,6 +41,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   unaffected. Voltage and temperature in 0x356 stay on the raw BMS aggregates.
 
 ### Fixed
+
+- **CAN status pill in the top bar used the wrong color palette.** It rendered in
+  the teal/aubergine source-badge style instead of the green health-status style
+  already used by the WiFi/BMS/MQTT/MPPT/SHUNT pills, so a healthy CAN bus did not
+  read as green like its siblings. The healthy `.pill-can` rule now uses
+  `--color-success` + white, matching the other pills (alarm = coral, off = grey
+  were already correct). CSS-only, no behavior change.
 
 - **Pylontech CAN 0x359 alarm bits were mismapped, causing a false
   "Untertemperatur" (under-temperature) alarm on a healthy battery that disabled

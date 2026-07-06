@@ -146,6 +146,25 @@ integer SOC on `{base}/soc` and on CAN 0x355 come from one shared helper
 `pack{N}/*` topics always use the plain BMS value, never any `*_display` field —
 see `docs/research/v3.2-shunt-soc-fusion.md`.
 
+### SmartShunt cross-check topic (when `ble_shunt_enabled`)
+
+| Topic | Value type | Example |
+|---|---|---|
+| `{base}/shunt/consumed_ah` | float Ah (1 dp) | `-3.0` |
+
+Bank-level, retained, published ~10 s. The SmartShunt's own hardware Coulomb
+counter (negative = discharged). Read-only reference only — **not** fused into any
+`*_display`, CAN, or dashboard value.
+
+Published only while the shunt is enabled, fresh (< 30 s), and reporting a real
+counter value. When the shunt is stale or returns its raw "not synchronized"
+sentinel, the publish is skipped and the HA entity carries `expire_after: 60`, so
+Home Assistant marks it *unavailable* rather than the gateway posting a literal
+placeholder string on a numeric topic (same contract as the solar/MPPT topics).
+The matching HA discovery entity is `shunt_consumed_ah` (plain numeric sensor,
+unit `Ah`, `state_class: measurement`, no device class — HA has no charge/Ah
+class). The entity is tombstoned when `ble_shunt_enabled` is turned off.
+
 ### Level 2+ — Alarm topic (not retained)
 
 Published on each safety state transition. Topic: `{base}/alarm`.

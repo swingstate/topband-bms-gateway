@@ -223,8 +223,8 @@ a { text-decoration: none; color: inherit; }
 }
 .pill-bms       { background: var(--color-success); color: #fff; }
 .pill-bms.alarm { background: var(--brand-coral);   color: #fff; }
-.pill-can { background: var(--brand-teal);    color: var(--brand-aubergine); }
-.pill-can.alarm { background: var(--brand-coral); color: #fff; }
+.pill-can       { background: var(--color-success); color: #fff; }
+.pill-can.alarm { background: var(--brand-coral);   color: #fff; }
 .pill-mqtt { background: var(--color-success); color: #fff; }
 .pill-mqtt.alarm { background: var(--brand-coral); color: #fff; }
 /* WiFi signal quality */

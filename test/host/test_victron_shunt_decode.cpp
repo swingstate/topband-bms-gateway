@@ -109,6 +109,33 @@ TEST_CASE("victron_shunt_decode: sentinel SOC (0x3FF) means shunt not yet synchr
   REQUIRE_FALSE(out.soc_valid);
 }
 
+TEST_CASE("victron_shunt_decode: consumed_ah decodes negated in 0.1 Ah units",
+          "[victron_shunt_decode]") {
+  // 123.4 Ah drawn -> raw 1234; decoder negates -> -123.4 Ah (VictronConnect
+  // "Consumed Amp Hours" convention: discharged reads negative).
+  uint8_t payload[15];
+  build_payload(payload, 0, 5009, 0, 0, 0, 1500, /*consumed_ah=*/1234, 650);
+
+  ShuntDecodedNewFmt out;
+  REQUIRE(decode_shunt_new_fmt(payload, sizeof(payload), out));
+  REQUIRE(out.consumed_ah_valid);
+  REQUIRE_THAT(out.consumed_ah, WithinAbs(-123.4f, 0.001f));
+}
+
+TEST_CASE("victron_shunt_decode: consumed_ah sentinel (0xFFFFF) is not available",
+          "[victron_shunt_decode]") {
+  uint8_t payload[15];
+  build_payload(payload, 0, 5009, 0, 0, 0, 1500, /*consumed_ah=*/0xFFFFF, 650);
+
+  ShuntDecodedNewFmt out;
+  REQUIRE(decode_shunt_new_fmt(payload, sizeof(payload), out));
+  REQUIRE_FALSE(out.consumed_ah_valid);
+  // A downstream field (SOC) must still decode correctly, proving the 20-bit
+  // consumed_ah field occupies exactly its documented bit span.
+  REQUIRE(out.soc_valid);
+  REQUIRE_THAT(out.soc_pct, WithinAbs(65.0f, 0.001f));
+}
+
 TEST_CASE("victron_shunt_decode: negative current sign-extends correctly",
           "[victron_shunt_decode]") {
   // -2.5 A discharge -> raw -2500 as 22-bit two's complement.

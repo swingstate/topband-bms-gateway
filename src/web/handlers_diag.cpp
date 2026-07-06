@@ -388,6 +388,11 @@ esp_err_t handle_diag(httpd_req_t* req) {
         hs_str(s, ",\"soc_pct\":");
         { char t[16]; snprintf(t,sizeof(t),"%.1f",d.soc_pct);   hs_str(s,t); }
         hs_str(s, ",\"soc_valid\":"); hs_bool(s, d.soc_valid);
+        // Read-only diagnostic reference: shunt's own Coulomb counter. Not fused
+        // into any dashboard/MQTT/CAN value — cross-check only.
+        hs_str(s, ",\"consumed_ah_valid\":"); hs_bool(s, d.consumed_ah_valid);
+        hs_str(s, ",\"consumed_ah\":");
+        { char t[16]; snprintf(t,sizeof(t),"%.1f",d.consumed_ah); hs_str(s,t); }
       }
       hs_str(s, "}");
     }

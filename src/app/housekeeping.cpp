@@ -11,6 +11,7 @@
 #include "storage/boot_reasons.h"
 #include "sources/registry.h"
 #include "sources/mppt_source.h"
+#include "sources/shunt_source.h"
 #include "driver/temperature_sensor.h"
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -359,6 +360,35 @@ static void housekeeping_task_entry(void* /*arg*/) {
             snprintf(sv, sizeof(sv), "State %u", (unsigned)d.charge_state);
             post_solar("/solar/charger_state", sv);
           }
+        }
+      }
+    }
+
+    // ── SmartShunt IndivTopics every 10 ticks (10 s) ────────────────────────
+    // Bank-level, read-only cross-check. Consumed Ah is the shunt's own hardware
+    // Coulomb counter (negative = discharged) — NOT fused into any dashboard/CAN
+    // value. Same intermittent-publish contract as the solar block above: when
+    // stale (> 30 s) or the shunt reports its raw "not synced" sentinel
+    // (consumed_ah_valid == false), we skip the publish entirely and let HA's
+    // expire_after (60 s, in the discovery config) mark it unavailable, rather
+    // than posting a literal string on a numeric topic.
+    if (cfg.ble_shunt_enabled && (s_tick % 10 == 0)) {
+      sources::ShuntSource* shunt = sources::shunt_source();
+      if (shunt && shunt->enabled()) {
+        sources::ShuntSource::DiagSnap d = shunt->diag_snap();
+        bool stale = !d.seen || (shunt->ms_since_last_seen((uint32_t)(esp_timer_get_time() / 1000LL))
+                                  > 30000u);   // matches ShuntSource::STALE_MS
+        if (!stale && d.consumed_ah_valid) {
+          char sv[32];
+          snprintf(sv, sizeof(sv), "%.1f", d.consumed_ah);
+          s_req.topic    = MqttPublishRequest::Topic::IndividualValue;
+          s_req.pack_id  = 0xFF;
+          s_req.retained = true;
+          snprintf(s_req.topic_suffix, sizeof(s_req.topic_suffix), "/shunt/consumed_ah");
+          size_t vlen = strlen(sv);
+          memcpy(s_req.payload, sv, vlen + 1);
+          s_req.payload_len = (uint16_t)vlen;
+          post_mqtt(s_req);
         }
       }
     }
