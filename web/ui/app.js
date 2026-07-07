@@ -262,6 +262,25 @@ function alarmTemp(v) {
 }
 function alarmSoc(v)      { return v !== null && v < 10; }
 
+// Human reason for a direction-specific protection lockout. Mirrors
+// src/bms/poller.cpp lockout_reason() and runSafety's block_charge/block_discharge.
+// dir: 0x01 = charge disabled, 0x02 = discharge disabled.
+function lockoutReason(dir, flags, tempAlarm) {
+  flags = flags || 0; tempAlarm = tempAlarm || 0;
+  if (flags & 0x80) return 'no packs online';
+  if (dir === 0x01) {
+    if (flags & 0x02) return 'cell/pack over-voltage';
+    if (flags & 0x08) return (tempAlarm & 0x01) ? 'temperature too low to charge'
+                                                : 'temperature out of charge range';
+    if (flags & 0x40) return 'BMS critical alarm';
+  } else {
+    if (flags & 0x10) return 'cell/pack under-voltage';
+    if (flags & 0x08) return 'temperature out of discharge range';
+    if (flags & 0x40) return 'BMS critical alarm';
+  }
+  return 'protection active';
+}
+
 async function fetchLive() {
   try {
     const r = await apiFetch('/api/live');
@@ -495,6 +514,16 @@ function updateDashboardCards() {
   const rtState = (g_live && g_live.runtime_est_state) || 'idle';
   const rtLabels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
 
+  // Direction-aware protection lockout (safety.lockout_flags): 0x01 charge,
+  // 0x02 discharge. Drives the Runtime Estimate banner + a lighter charge note.
+  const lockout    = safety.lockout_flags || 0;
+  const tempAlarm  = safety.temp_alarm || 0;
+  const dischgOff  = !!(lockout & 0x02);
+  const chargeOff  = !!(lockout & 0x01);
+  const rtSub = dischgOff
+    ? `<span style="color:var(--red)">Discharge disabled: ${lockoutReason(0x02, alarmFlags, tempAlarm)}</span>`
+    : (rtLabels[rtState] || 'Idle');
+
   // Sources section (MPPT / Shunt data from firmware aggregator).
   const sources   = (g_live && g_live.sources) || {};
   const mpptSrc   = sources.mppt || {};
@@ -565,7 +594,7 @@ function updateDashboardCards() {
   const cards = [
     // Row 1
     col1top,
-    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: cur !== null ? chargePill(cur) : '',        color: 'var(--text-primary)', alarm: false,            src: powSrcId },
+    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: (cur !== null ? chargePill(cur) : '') + (chargeOff ? ` <span style="color:var(--amber);font-size:10px">Charge disabled: ${lockoutReason(0x01, alarmFlags, tempAlarm)}</span>` : ''), color: 'var(--text-primary)', alarm: false,            src: powSrcId },
     { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: socSrcId },
     { label: 'Cell Drift',            value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
     { label: 'Temperature',           value: temp !== null ? fmt(temp, 1) : '—',   unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
@@ -577,7 +606,7 @@ function updateDashboardCards() {
     // current/voltage as the Combined Current tile, so its badge follows
     // curSrcId too rather than being hardwired to BMS.
     { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: curSrcId },
-    { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtSub, color: 'var(--text-primary)', alarm: dischgOff, src: 'bms' },
   ];
 
   // Build card structure once (or when count / col-1 label changes — MPPT toggled).
@@ -4459,6 +4488,14 @@ function renderDiagData(d) {
                 'Derived exactly as the encoder: dcl ≥ 0.1 A. \"NO\" here is why an inverter stops discharging.')}
         ${kvRow('Force charge (0x35C bit5)', bat.has_data ? (((bat.alarm_flags||0) & 0x10) ? 'yes' : 'no') : '—',
                 'Requested on undervolt only')}
+        ${kvRow('Protection lockout', bat.has_data ? (function() {
+            const lk = bat.lockout_flags || 0;
+            const parts = [];
+            if (lk & 0x01) parts.push('charge: ' + lockoutReason(0x01, bat.alarm_flags, bat.temp_alarm));
+            if (lk & 0x02) parts.push('discharge: ' + lockoutReason(0x02, bat.alarm_flags, bat.temp_alarm));
+            return parts.join(' | ') || 'none';
+          })() : '—',
+            'Direction-aware: over-voltage blocks charge only, under-voltage blocks discharge only')}
         ${kvRow('Active alarms (0x359)', bat.has_data ? (decodeAlarmFlags(bat.alarm_flags).join('; ') || 'none') : '—')}
         ${(bat.has_data && (bat.temp_alarm||0)) ? kvRow('Temperature direction', decodeTempAlarm(bat.temp_alarm).join('; ')) : ''}
         ${bat.has_data && bat.sys_message ? kvRow('Safety message', bat.sys_message) : ''}

@@ -248,6 +248,7 @@ esp_err_t handle_diag(httpd_req_t* req) {
   if (has_safety) {
     hs_str(s, ",\"alarm_flags\":"); hs_uint(s, safety.alarm_flags);
     hs_str(s, ",\"temp_alarm\":");  hs_uint(s, safety.temp_alarm);
+    hs_str(s, ",\"lockout_flags\":"); hs_uint(s, safety.lockout_flags);
     hs_str(s, ",\"packs_online\":"); hs_uint(s, safety.packs_online);
     hs_str(s, ",\"packs_configured\":"); hs_uint(s, safety.packs_configured);
     hs_str(s, ",\"cvl_volts\":"); hs_f2(s, safety.cvl_volts);

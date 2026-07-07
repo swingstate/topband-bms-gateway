@@ -151,6 +151,11 @@ esp_err_t handle_live(httpd_req_t* req) {
     saf["pack_voltage_avg"]   = safety.pack_voltage_avg;
     saf["pack_current_total"] = safety.pack_current_total;
     saf["alarm_flags"]        = safety.alarm_flags;
+    // Direction-aware protection lockout (0x01 charge, 0x02 discharge) — drives
+    // the dashboard "charge/discharge disabled" banner. Distinct from a bare
+    // ccl/dcl of 0, which can also mean the benign near-full SoC taper.
+    saf["lockout_flags"]      = safety.lockout_flags;
+    saf["temp_alarm"]         = safety.temp_alarm;
     saf["sys_message"]        = safety.sys_message;
     saf["packs_online"]       = safety.packs_online;
     saf["packs_configured"]   = safety.packs_configured;

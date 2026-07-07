@@ -121,7 +121,10 @@ Live battery system state. Polled by the UI dashboard every 2.5 s.
   cell min/max/drift, CVL/CCL/DCL, alarm flags, system message
 - Per-pack array: each pack's online state, cell voltages, temperatures, SOC,
   alarms, communication statistics
-- Safety state: factor_charge, factor_discharge
+- Safety state: factor_charge, factor_discharge, `lockout_flags` (0x01 charge
+  disabled by protection, 0x02 discharge disabled by protection — drives the
+  dashboard banner; distinct from a bare CCL/DCL of 0, which can also be the
+  benign near-full SoC taper), `temp_alarm` (0x01 cold, 0x02 hot)
 - Energy counters: today in/out, 7-day, monthly
 - Runtime estimate
 

@@ -51,6 +51,9 @@ static SysparamCache s_sysparam_cache[16] = {};
 // BmsWentOffline/BmsCameOnline events from runSafety took over — see A1/A2.)
 // Last safety alarm_flags for all-clear edge detection.
 static uint8_t s_last_alarm_flags = 0;
+// Last direction-aware lockout_flags (0x01 charge, 0x02 discharge) for
+// engage/clear edge detection on the alert log.
+static uint8_t s_last_lockout = 0;
 
 // ── Safety state (Phase D) ────────────────────────────────────────────────────
 // Single-slot with a critical-section copy. Phase E can upgrade to seqlock.
@@ -207,6 +210,24 @@ static void alarm_flags_to_str(uint8_t flags, char* buf, size_t sz) {
   if (buf[0] == '\0' && sz > 0) {
     snprintf(buf, sz, "0x%02X", (unsigned)flags);  // fallback for unknown bits
   }
+}
+
+// Human reason for a direction-specific lockout, chosen from the active safety
+// flags in the order a physical fault would dominate. dir is 0x01 (charge) or
+// 0x02 (discharge). Kept in sync with runSafety's block_charge/block_discharge.
+static const char* lockout_reason(uint8_t dir, uint8_t flags, uint8_t temp_alarm) {
+  if (flags & 0x80) return "no packs online";
+  if (dir == 0x01) {                       // charge disabled
+    if (flags & 0x02) return "cell/pack over-voltage";
+    if (flags & 0x08) return (temp_alarm & 0x01) ? "temperature too low to charge"
+                                                 : "temperature out of charge range";
+    if (flags & 0x40) return "BMS critical alarm";
+  } else {                                 // discharge disabled
+    if (flags & 0x10) return "cell/pack under-voltage";
+    if (flags & 0x08) return "temperature out of discharge range";
+    if (flags & 0x40) return "BMS critical alarm";
+  }
+  return "protection active";
 }
 
 // Post one alarm event to q_mqtt_publish. Separated from control_task_entry
@@ -540,6 +561,29 @@ static void control_task_entry(void* param) {
             diag::alerts::emit(diag::alerts::Severity::Info, "safety", "Safety alarm cleared");
           }
           s_last_alarm_flags = tmp.alarm_flags;
+        }
+
+        // Direction-specific lockout alert (engage / clear). Distinct from the
+        // raw-flag alert above so the Alerts history says which DIRECTION was
+        // disabled and why — e.g. over-voltage now disables charge only, so the
+        // log makes clear discharge stayed available.
+        {
+          uint8_t lk       = tmp.lockout_flags;
+          uint8_t engaged  = lk & ~s_last_lockout;
+          uint8_t cleared  = s_last_lockout & ~lk;
+          if (engaged & 0x01)
+            diag::alerts::emit(diag::alerts::Severity::Warn, "safety",
+                               "Charge disabled: %s",
+                               lockout_reason(0x01, tmp.alarm_flags, tmp.temp_alarm));
+          if (engaged & 0x02)
+            diag::alerts::emit(diag::alerts::Severity::Warn, "safety",
+                               "Discharge disabled: %s",
+                               lockout_reason(0x02, tmp.alarm_flags, tmp.temp_alarm));
+          if (cleared & 0x01)
+            diag::alerts::emit(diag::alerts::Severity::Info, "safety", "Charge re-enabled");
+          if (cleared & 0x02)
+            diag::alerts::emit(diag::alerts::Severity::Info, "safety", "Discharge re-enabled");
+          s_last_lockout = lk;
         }
 
         portENTER_CRITICAL(&s_safety_mux);
