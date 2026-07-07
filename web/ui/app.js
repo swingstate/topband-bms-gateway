@@ -4272,6 +4272,76 @@ function rssiQuality(rssi) {
   return ' (weak)';
 }
 
+// Decode SafetyState.alarm_flags (the value that FEEDS the CAN encoders) into
+// human labels, annotated with the Pylontech 0x359 bit each one drives. Single
+// source of the bit meaning — the firmware sends the raw byte, this decodes it.
+// Mirrors src/safety/runSafety.cpp (flag assignment) and src/can/pylontech.cpp
+// build_0x359() (bit mapping). Keep the two in sync.
+function decodeAlarmFlags(af) {
+  af = af || 0;
+  const out = [];
+  if (af & 0x02) out.push('Overvoltage → 0x359 byte0 bit1');
+  if (af & 0x10) out.push('Undervoltage → 0x359 byte0 bit2');
+  if (af & 0x08) out.push('Temperature stop → 0x359 byte0 bit3/4');
+  if (af & 0x40) out.push('BMS critical alarm → 0x359 byte1 bit3');
+  if (af & 0x80) out.push('No packs online → 0x359 byte1 bit3');
+  if (af & 0x20) out.push('Cell imbalance (UI/MQTT only — no 0x359 bit)');
+  return out;
+}
+function decodeTempAlarm(ta) {
+  ta = ta || 0;
+  const out = [];
+  if (ta & 0x01) out.push('Under-temperature (cold) → 0x359 byte0 bit4');
+  if (ta & 0x02) out.push('Over-temperature (hot) → 0x359 byte0 bit3');
+  return out;
+}
+
+// Per-pack RS485 comms table (id, address, online, last-seen age, poll counts).
+function diagRs485Table(packs) {
+  if (!packs.length) return '<div style="color:var(--text-muted);font-size:12px">No packs configured.</div>';
+  return `<table class="diag-tasks-table">
+    <thead><tr><th>Pack</th><th>Addr</th><th>Online</th><th>Last seen</th>
+      <th>Polls</th><th>OK</th><th>Timeout</th><th>CRC/err</th><th>Success</th></tr></thead>
+    <tbody>${packs.map(p => {
+      const bad = p.polls > 0 && p.success_pct < 90;
+      return `<tr${bad ? ' class="diag-task-low"' : ''}>
+        <td>${p.id}</td>
+        <td>${p.bms_id != null ? p.bms_id : p.id}</td>
+        <td>${p.online ? 'yes' : 'no'}</td>
+        <td>${fmtAgeS(p.last_seen_age_ms != null ? Math.round(p.last_seen_age_ms / 1000) : -1)}</td>
+        <td>${(p.polls||0).toLocaleString()}</td>
+        <td>${(p.ok||0).toLocaleString()}</td>
+        <td>${(p.timeouts||0).toLocaleString()}</td>
+        <td>${(p.errors||0).toLocaleString()}</td>
+        <td>${p.polls ? (p.success_pct||0) + ' %' : '—'}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+// Per-pack Battery/BMS table (cells, drift, SoC/SoH, sysparam limits, alarm bits).
+function diagBatteryTable(packs) {
+  if (!packs.length) return '<div style="color:var(--text-muted);font-size:12px">No packs configured.</div>';
+  return `<table class="diag-tasks-table">
+    <thead><tr><th>Pack</th><th>SoC</th><th>SoH</th><th>Cell min</th><th>Cell max</th>
+      <th>Drift</th><th>CCL</th><th>DCL</th><th>Cell-OV limit</th><th>Alarm bits</th></tr></thead>
+    <tbody>${packs.map(p => {
+      const sp = p.sysparam_valid;
+      const alarmSet = p.alarm_bits && p.alarm_bits !== '0x0000000000000000';
+      return `<tr${alarmSet ? ' class="diag-task-low"' : ''}>
+        <td>${p.id}</td>
+        <td>${p.online ? (p.soc||0) + ' %' : '—'}</td>
+        <td>${p.online ? (p.soh||0) + ' %' : '—'}</td>
+        <td>${p.online ? Number(p.cell_min_v||0).toFixed(3) + ' (#' + (p.cell_min_idx+1) + ')' : '—'}</td>
+        <td>${p.online ? Number(p.cell_max_v||0).toFixed(3) + ' (#' + (p.cell_max_idx+1) + ')' : '—'}</td>
+        <td>${p.online ? (p.drift_mv||0) + ' mV' : '—'}</td>
+        <td>${sp ? Number(p.sys_charge_max_a||0).toFixed(1) + ' A' : '—'}</td>
+        <td>${sp ? Number(p.sys_discharge_max_a||0).toFixed(1) + ' A' : '—'}</td>
+        <td>${sp ? Number(p.sys_cell_high_v||0).toFixed(3) + ' V' : '—'}</td>
+        <td title="Raw 0x44 alarm bitmap">${alarmSet ? p.alarm_bits : 'none'}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
 function renderDiagData(d) {
   const root = document.getElementById('diag-root');
   if (!root) return;
@@ -4283,6 +4353,8 @@ function renderDiagData(d) {
   const sys = d.system || {};
   const pol = d.poller || {};
   const can = d.can    || {};
+  const bat = d.battery || {};
+  const packs = d.packs || [];
   const sn  = d.snapshot_bus || {};
   const mq  = d.mqtt   || {};
   const ntp = d.ntp    || {};
@@ -4336,27 +4408,61 @@ function renderDiagData(d) {
     </div>
 
     <div class="diag-section">
-      <h3>Poller</h3>
+      <h3>Poller / cycle</h3>
       <div class="diag-kv-grid">
         ${kvRow('Cycles', pol.cycles_completed||0)}
         ${kvRow('Cycle avg', (pol.cycle_avg_ms||0) + ' ms')}
         ${kvRow('Cycle max', (pol.cycle_max_ms||0) + ' ms')}
-        ${kvRow('RS485 polls', pol.rs485_polls||0)}
-        ${kvRow('RS485 ok', pol.rs485_ok||0)}
-        ${kvRow('RS485 timeouts', pol.rs485_timeouts||0)}
-        ${kvRow('RS485 parse err', pol.rs485_parse_err||0)}
-        ${kvRow('Alarm polls (ok / err)', (pol.alarm_polls_ok||0) + ' / ' + (pol.alarm_polls_err||0))}
-        ${kvRow('Sysparam polls (ok / err)', (pol.sysparam_polls_ok||0) + ' / ' + (pol.sysparam_polls_err||0),
-                'Sysparam freshness drives the Auto battery-config modes')}
-        ${kvRow('Wrong-address frames', pol.wrong_addr||0,
-                'Checksum-valid frames from a different pack than polled; discarded')}
         ${kvRow('Snapshot bus (pub / read / retry)',
                 (sn.publishes||0) + ' / ' + (sn.reads||0) + ' / ' + (sn.retries||0))}
       </div>
     </div>
 
     <div class="diag-section">
-      <h3>CAN</h3>
+      <h3>RS485 bus</h3>
+      <div class="diag-kv-grid" style="margin-bottom:12px">
+        ${kvRow('Analog polls (ok / timeout / parse err)',
+                (pol.rs485_ok||0) + ' / ' + (pol.rs485_timeouts||0) + ' / ' + (pol.rs485_parse_err||0),
+                'Aggregate 0x42 measurement-frame polls across all packs')}
+        ${kvRow('Alarm polls (ok / err)', (pol.alarm_polls_ok||0) + ' / ' + (pol.alarm_polls_err||0),
+                '0x44 alarm-frame polls')}
+        ${kvRow('Sysparam polls (ok / err)', (pol.sysparam_polls_ok||0) + ' / ' + (pol.sysparam_polls_err||0),
+                '0x47 sysparam polls; freshness drives the Auto battery-config modes')}
+        ${kvRow('Wrong-address frames', pol.wrong_addr||0,
+                'Checksum-valid frames whose responder address ≠ the polled pack; discarded, never mis-attributed')}
+      </div>
+      ${diagRs485Table(packs)}
+    </div>
+
+    <div class="diag-section">
+      <h3>Battery / BMS (per pack)</h3>
+      ${diagBatteryTable(packs)}
+      <div style="color:var(--text-muted);font-size:11px;margin-top:6px">
+        CCL/DCL/Cell-OV limit are the pack's own 0x47 sysparam values (Auto modes). A highlighted
+        row has a non-zero 0x44 alarm bitmap. Aggregated limits sent to the inverter are in the CAN section.
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>CAN → inverter</h3>
+      <div class="diag-kv-grid" style="margin-bottom:12px">
+        ${kvRow('Active protocol', (can.protocol||'—').toUpperCase())}
+        ${kvRow('Modules on CAN (0x359 byte4)', bat.packs_online != null ? bat.packs_online : '—',
+                'Packs reported online to the inverter; should match the RS485 online count above')}
+        ${kvRow('Charge voltage limit CVL (0x351)', bat.has_data ? Number(bat.cvl_volts||0).toFixed(2) + ' V' : '—')}
+        ${kvRow('Charge current limit CCL (0x351)', bat.has_data ? Number(bat.ccl_amps||0).toFixed(1) + ' A' : '—')}
+        ${kvRow('Discharge current limit DCL (0x351)', bat.has_data ? Number(bat.dcl_amps||0).toFixed(1) + ' A' : '—')}
+        ${kvRow('Discharge voltage limit DVL (0x351)', bat.has_data ? Number(bat.dvl_volts||0).toFixed(2) + ' V' : '—')}
+        ${kvRow('Charge enable (0x35C bit7)', bat.has_data ? ((bat.ccl_amps||0) >= 0.1 ? 'yes' : 'NO') : '—',
+                'Derived exactly as the encoder: ccl ≥ 0.1 A')}
+        ${kvRow('Discharge enable (0x35C bit6)', bat.has_data ? ((bat.dcl_amps||0) >= 0.1 ? 'yes' : 'NO') : '—',
+                'Derived exactly as the encoder: dcl ≥ 0.1 A. \"NO\" here is why an inverter stops discharging.')}
+        ${kvRow('Force charge (0x35C bit5)', bat.has_data ? (((bat.alarm_flags||0) & 0x10) ? 'yes' : 'no') : '—',
+                'Requested on undervolt only')}
+        ${kvRow('Active alarms (0x359)', bat.has_data ? (decodeAlarmFlags(bat.alarm_flags).join('; ') || 'none') : '—')}
+        ${(bat.has_data && (bat.temp_alarm||0)) ? kvRow('Temperature direction', decodeTempAlarm(bat.temp_alarm).join('; ')) : ''}
+        ${bat.has_data && bat.sys_message ? kvRow('Safety message', bat.sys_message) : ''}
+      </div>
       <div class="diag-kv-grid">
         ${kvRow('TX ok', can.tx_ok||0)}
         ${kvRow('TX fail', can.tx_fail||0)}

@@ -338,6 +338,19 @@ heap/PSRAM, MQTT counters, CAN counters, NTP state, task high-water marks,
 coredump summary (if a coredump exists), and the last 200 lines of the log ring
 buffer.
 
+Also includes, for the Diagnostics page RS485 / Battery / CAN sections:
+
+- `can.protocol` — active inverter protocol (`victron` / `pylontech` / `sma`).
+- `battery` — the aggregated `SafetyState` fields that FEED the CAN encoders:
+  `alarm_flags`, `temp_alarm` (raw bytes; decoded client-side), `packs_online`,
+  `cvl_volts` / `ccl_amps` / `dcl_amps` / `dvl_volts` (0x351 limits),
+  `factor_charge` / `factor_discharge`, and `sys_message`. Lets a discharge-lockout
+  report be diagnosed from the UI alone (e.g. overvolt → DCL 0 → discharge-enable No).
+- `packs[]` — per-pack diagnostics indexed by pack: RS485 comms
+  (`polls`/`ok`/`timeouts`/`errors`/`success_pct`), `last_seen_age_ms`, `bms_id`,
+  `soc`/`soh`, `cell_min_v`/`cell_max_v` (+ indices), `drift_mv`, raw `alarm_bits`,
+  and (when `sysparam_valid`) `sys_charge_max_a`/`sys_discharge_max_a`/`sys_cell_high_v`.
+
 **Response** `200 application/json` — chunked transfer (large response).
 
 ---
