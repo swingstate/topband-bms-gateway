@@ -439,13 +439,36 @@ void runSafety(const BmsSystemSnapshot& snap,
         set_message(out, "ALARM: PACK UNDERVOLT");
     }
 
-    // ── Lock to zero rule (V2.67 line 2211) ─────────────────────────────
-    if ((out.alarm_flags & 0x02) ||
-        (out.alarm_flags & 0x10) ||
-        (out.alarm_flags & 0x40)) {
-      safe_chg = 0.0f;
-      safe_dis = 0.0f;
-    }
+    // ── Direction-aware protection lock (V3.2; replaces V2.67 blanket lock) ──
+    // The old V2.67 rule zeroed BOTH charge and discharge on over-voltage,
+    // under-voltage OR a BMS critical alarm. That is physically backwards for
+    // over-voltage: discharging LOWERS cell voltage, moving away from the fault,
+    // so blocking discharge only prevents the battery from self-correcting (this
+    // was the confirmed root cause of the Deye "won't discharge" report). Each
+    // condition now zeroes ONLY the direction whose continuation worsens it. The
+    // block booleans are computed here but APPLIED after the SoC taper below, so
+    // a genuine protection stop is authoritative and the near-full charge taper
+    // can never re-open a trickle into a cell that is over-voltage or too cold.
+    //
+    //   over-voltage  (0x02)         → block CHARGE    (charging raises V)
+    //   under-voltage (0x10)         → block DISCHARGE (discharging lowers V)
+    //   charge temp cutoff           → block CHARGE    (factor_charge == 0)
+    //   discharge temp cutoff        → block DISCHARGE (factor_discharge == 0)
+    //   BMS critical alarm (0x40)    → block BOTH      (non-directional; the BMS
+    //     0x44 bitmap is not decoded per-direction here, so the conservative
+    //     response to any BMS-reported critical fault is to stop everything)
+    //
+    // Temperature is ALREADY direction-separated: factor_charge uses the charge
+    // temperature window and factor_discharge the discharge window, and each is
+    // applied only to its own limit above. Folding the factor==0 cutoffs into the
+    // block set here just makes that cutoff survive the taper and lets it be
+    // reported as a lockout reason. Soft-zone throttling (0.2 / 0.5) is untouched.
+    const bool block_charge    = (out.alarm_flags & 0x02) ||
+                                 (out.factor_charge == 0.0f) ||
+                                 (out.alarm_flags & 0x40);
+    const bool block_discharge = (out.alarm_flags & 0x10) ||
+                                 (out.factor_discharge == 0.0f) ||
+                                 (out.alarm_flags & 0x40);
 
     // ── SOC-based charge taper (V2.67 lines 2226-2233) ──────────────────
     // PERMANENT SAFETY INVARIANT — not a TODO, not pending further validation:
@@ -481,8 +504,20 @@ void runSafety(const BmsSystemSnapshot& snap,
       }
     }
 
+    // Apply the direction-aware protection lock AFTER the taper (see rationale
+    // where block_charge/block_discharge are computed). A protection stop is
+    // authoritative; the taper only shapes the non-faulted charge current.
+    if (block_charge)    safe_chg = 0.0f;
+    if (block_discharge) safe_dis = 0.0f;
+
     out.ccl_amps = safe_chg;
     out.dcl_amps = safe_dis;
+
+    // Record which direction (if any) a PROTECTION condition disabled — used for
+    // the dashboard banner and alert log. The SoC taper zeroing charge at 100%
+    // is intentionally NOT flagged here: that is "battery full", not a fault.
+    if (block_charge)    out.lockout_flags |= 0x01;
+    if (block_discharge) out.lockout_flags |= 0x02;
 
   } else {
     // ── No packs online (V2.67 line 2267) ────────────────────────────────
@@ -491,6 +526,8 @@ void runSafety(const BmsSystemSnapshot& snap,
     out.ccl_amps = 0.0f;
     out.dcl_amps = 0.0f;
     out.cvl_volts = 0.0f;
+    // No data at all → both directions disabled; report as a protection lockout.
+    out.lockout_flags = 0x03;
 
     if (prev.was_packs_online_any)
       emit_event(out, SafetyState::NoPacksOnline);

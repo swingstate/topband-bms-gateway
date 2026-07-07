@@ -59,14 +59,34 @@ Each cycle:
    sysparam values take precedence. CVL is similarly capped from
    `sys_module_high_v - 0.20 V`, further bounded by `safe_pack_volt - 0.20 V`
    and `cvl_voltage`.
-4. **Cutoff zeroing**: if `alarm_flags & (0x02 | 0x10 | 0x40)` (overvolt, undervolt,
-   or BMS critical alarm), both CCL and DCL are forced to 0.0 A immediately.
-5. **SOC taper** (when `maint_charge_enabled = false`): CCL is reduced to 2 A/pack
-   at SOC ≥ 99 %, zeroed at SOC = 100 %.
+4. **SOC taper** (when `maint_charge_enabled = false`): CCL is reduced to 2 A/pack
+   at SOC ≥ 99 %, zeroed at SOC = 100 %. This shapes charge near full; it is not
+   a fault and is not reported as a lockout.
+5. **Direction-aware protection lock** (V3.2, applied AFTER the taper so a genuine
+   fault stop is authoritative): each protection condition zeroes ONLY the
+   direction whose continuation would worsen it:
+
+   | Condition | Blocks | Rationale |
+   |---|---|---|
+   | Cell/pack over-voltage (`0x02`) | charge only | discharging lowers voltage, helping; charging worsens it |
+   | Cell/pack under-voltage (`0x10`) | discharge only | charging raises voltage, helping; discharging worsens it |
+   | Charge temp cutoff (`factor_charge == 0`, hot or cold) | charge only | too hot/cold to charge; discharging cold is fine |
+   | Discharge temp cutoff (`factor_discharge == 0`) | discharge only | too hot to discharge |
+   | BMS-reported critical alarm (`0x40`) | both | 0x44 bitmap not decoded per-direction; conservative |
+   | No packs online (`0x80`) | both | no data at all |
+
+   Prior to V3.2 a single blanket rule zeroed BOTH directions on `0x02 | 0x10 |
+   0x40`. That was physically backwards for over-voltage (blocking discharge
+   prevented the pack from self-correcting) and was the confirmed root cause of a
+   field report where an inverter refused to discharge a full battery.
+
+   `lockout_flags` (0x01 charge, 0x02 discharge) records which direction a
+   *protection* condition disabled — driving the dashboard banner and alert log.
+   The SoC taper reaching 100 % is deliberately NOT flagged (battery full ≠ fault).
 
 The resulting CVL/CCL/DCL values are sent to the inverter on every CAN cycle
 (see CAN protocols below). A value of 0.0 A for CCL/DCL is the protective
-"stop" signal to the inverter.
+"stop" signal to the inverter — now applied per direction.
 
 ---
 
