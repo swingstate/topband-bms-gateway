@@ -103,6 +103,19 @@ struct SafetyState {
   // events_overflowed — net-zero internal DRAM (the pre-events region is already
   // 8-byte-aligned, so a byte there would cost a full 8-byte slot instead).
   uint8_t  temp_alarm;
+
+  // Direction-aware protection lockout (V3.2). Set by runSafety() to record that
+  // a genuine PROTECTION condition forced a direction's current limit to zero —
+  // as opposed to the near-full SoC charge taper, which is not a fault. Drives
+  // the dashboard "discharge/charge disabled" banner and the alert-log entry;
+  // the CCL/DCL values themselves already carry the limit. A direction bit is set
+  // iff ccl_amps / dcl_amps was zeroed by protection (over/under-voltage, a
+  // temperature cutoff, a BMS-reported critical alarm, or no packs online), never
+  // by the SoC taper reaching 100%.
+  //   0x01 = charge disabled by protection
+  //   0x02 = discharge disabled by protection
+  // Shares the same 8-byte tail-padding slot as temp_alarm above → net-zero DRAM.
+  uint8_t  lockout_flags;
 };
 
 // Reported SOC (V3.2): the integer SOC reported to the outside world follows the

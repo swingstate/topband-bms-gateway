@@ -64,6 +64,15 @@ static void hs_uint(HStream& s, uint64_t v) {
 static void hs_f2(HStream& s, float v) {
   char t[16]; snprintf(t, sizeof(t), "%.2f", v); hs_str(s, t);
 }
+static void hs_f3(HStream& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.3f", v); hs_str(s, t);
+}
+static void hs_f1(HStream& s, float v) {
+  char t[16]; snprintf(t, sizeof(t), "%.1f", v); hs_str(s, t);
+}
+static void hs_int(HStream& s, int64_t v) {
+  char t[24]; snprintf(t, sizeof(t), "%lld", (long long)v); hs_str(s, t);
+}
 static void hs_bool(HStream& s, bool v) { hs_str(s, v ? "true" : "false"); }
 static void hs_json_str(HStream& s, const char* v) {
   hs_str(s, "\"");
@@ -128,6 +137,15 @@ esp_err_t handle_diag(httpd_req_t* req) {
 
   can::tx::CanStats cs{};
   can::tx::get_stats(cs);
+
+  // Snapshot + aggregated safety state, read once and reused by the RS485,
+  // Battery/BMS and CAN diagnostic sections below (all three describe the same
+  // BMS cycle). The snapshot bus is a lock-free double buffer; a read is ~µs.
+  BmsSystemSnapshot snap{};
+  bool has_snap = bus::snapshot_bus::read(snap);
+  SafetyState safety{};
+  bool has_safety = bms::poller::read_safety_state(safety);
+  uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -199,8 +217,16 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, "}");
 
   // ── can ───────────────────────────────────────────────────────────────────
+  const char* can_proto_str = "victron";
+  switch (app::get_config().can_protocol) {
+    case Config::CanProtocol::Pylontech: can_proto_str = "pylontech"; break;
+    case Config::CanProtocol::SMA:       can_proto_str = "sma";       break;
+    case Config::CanProtocol::Victron:   can_proto_str = "victron";   break;
+    default: break;
+  }
   hs_str(s, ",\"can\":{");
-  hs_str(s, "\"tx_ok\":"); hs_uint(s, cs.tx_ok);
+  hs_str(s, "\"protocol\":"); hs_json_str(s, can_proto_str);
+  hs_str(s, ",\"tx_ok\":"); hs_uint(s, cs.tx_ok);
   hs_str(s, ",\"tx_fail\":"); hs_uint(s, cs.tx_fail);
   hs_str(s, ",\"tx_fail_streak_max\":"); hs_uint(s, cs.tx_fail_streak_max);
   hs_str(s, ",\"heartbeats\":"); hs_uint(s, cs.heartbeats);
@@ -208,6 +234,83 @@ esp_err_t handle_diag(httpd_req_t* req) {
   hs_str(s, ",\"bus_off_count\":"); hs_uint(s, cs.bus_off_count);
   hs_str(s, ",\"driver_restarts\":"); hs_uint(s, cs.driver_restart_count);
   hs_str(s, "}");
+
+  // ── battery (aggregated safety state that FEEDS the CAN encoders) ───────────
+  // These are the exact SafetyState fields the CAN builders read, so a report
+  // like the Deye "stops discharging" one can be diagnosed from the gateway UI
+  // alone: alarm_flags drives the Pylontech 0x359 protection bits and the
+  // 0x35C enable bits; temp_alarm splits the over/under-temperature 0x359 bits;
+  // cvl/ccl/dcl/dvl are the 0x351 limits; packs_online is 0x359 byte 4. The UI
+  // decodes alarm_flags / temp_alarm bit-by-bit (single source of the bit
+  // meaning is the JS decoder, not re-derived here).
+  hs_str(s, ",\"battery\":{");
+  hs_str(s, "\"has_data\":"); hs_bool(s, has_safety);
+  if (has_safety) {
+    hs_str(s, ",\"alarm_flags\":"); hs_uint(s, safety.alarm_flags);
+    hs_str(s, ",\"temp_alarm\":");  hs_uint(s, safety.temp_alarm);
+    hs_str(s, ",\"lockout_flags\":"); hs_uint(s, safety.lockout_flags);
+    hs_str(s, ",\"packs_online\":"); hs_uint(s, safety.packs_online);
+    hs_str(s, ",\"packs_configured\":"); hs_uint(s, safety.packs_configured);
+    hs_str(s, ",\"cvl_volts\":"); hs_f2(s, safety.cvl_volts);
+    hs_str(s, ",\"ccl_amps\":");  hs_f1(s, safety.ccl_amps);
+    hs_str(s, ",\"dcl_amps\":");  hs_f1(s, safety.dcl_amps);
+    hs_str(s, ",\"dvl_volts\":"); hs_f2(s, safety.dvl_volts);
+    hs_str(s, ",\"factor_charge\":");    hs_f2(s, safety.factor_charge);
+    hs_str(s, ",\"factor_discharge\":"); hs_f2(s, safety.factor_discharge);
+    hs_str(s, ",\"sys_message\":"); hs_json_str(s, safety.sys_message);
+  }
+  hs_str(s, "}");
+
+  // ── packs (per-pack RS485 comms + BMS/battery values + sysparam) ───────────
+  // Consolidates everything the operator needs for an RS485/BMS investigation
+  // in one place, indexed by pack. RS485 counters come from PollerStats.pack[i];
+  // the battery/sysparam values come from the same snapshot the safety loop and
+  // dashboard use, so nothing here can diverge from what the gateway believes.
+  hs_str(s, ",\"packs\":[");
+  if (has_snap) {
+    uint8_t n_cfg = snap.pack_count_configured < 16 ? snap.pack_count_configured : 16;
+    for (uint8_t i = 0; i < n_cfg; i++) {
+      const BmsPackSnapshot& p = snap.pack[i];
+      const auto& pc = ps.pack[i];
+      uint32_t age_ms = (p.last_seen_ms > 0 && now_ms >= p.last_seen_ms)
+                        ? (now_ms - p.last_seen_ms) : 0;
+      uint32_t succ = (pc.polls > 0) ? (pc.ok * 100u / pc.polls) : 0;
+      int32_t drift_mv = (int32_t)(p.cell_drift_v * 1000.0f + 0.5f);
+      char alarm_hex[20];
+      snprintf(alarm_hex, sizeof(alarm_hex), "0x%016llX",
+               (unsigned long long)p.alarm_bits);
+
+      if (i > 0) hs_str(s, ",");
+      hs_str(s, "{\"id\":"); hs_uint(s, i);
+      hs_str(s, ",\"bms_id\":"); hs_uint(s, p.bms_id);
+      hs_str(s, ",\"online\":"); hs_bool(s, p.online);
+      hs_str(s, ",\"last_seen_age_ms\":"); hs_uint(s, age_ms);
+      // RS485 comms
+      hs_str(s, ",\"polls\":");    hs_uint(s, pc.polls);
+      hs_str(s, ",\"ok\":");       hs_uint(s, pc.ok);
+      hs_str(s, ",\"timeouts\":"); hs_uint(s, pc.timeouts);
+      hs_str(s, ",\"errors\":");   hs_uint(s, pc.errors);
+      hs_str(s, ",\"success_pct\":"); hs_uint(s, succ);
+      // BMS / battery
+      hs_str(s, ",\"soc\":"); hs_uint(s, p.soc);
+      hs_str(s, ",\"soh\":"); hs_uint(s, p.soh);
+      hs_str(s, ",\"cell_min_v\":"); hs_f3(s, p.cell_min_v);
+      hs_str(s, ",\"cell_max_v\":"); hs_f3(s, p.cell_max_v);
+      hs_str(s, ",\"cell_min_idx\":"); hs_uint(s, p.cell_min_idx);
+      hs_str(s, ",\"cell_max_idx\":"); hs_uint(s, p.cell_max_idx);
+      hs_str(s, ",\"drift_mv\":"); hs_int(s, drift_mv);
+      hs_str(s, ",\"alarm_bits\":"); hs_json_str(s, alarm_hex);
+      // Sysparam (0x47) — the per-pack limits that feed Auto/AutoMargin
+      hs_str(s, ",\"sysparam_valid\":"); hs_bool(s, p.sysparam_valid);
+      if (p.sysparam_valid) {
+        hs_str(s, ",\"sys_charge_max_a\":");    hs_f1(s, p.sys_charge_max_a);
+        hs_str(s, ",\"sys_discharge_max_a\":"); hs_f1(s, p.sys_discharge_max_a);
+        hs_str(s, ",\"sys_cell_high_v\":");     hs_f3(s, p.sys_cell_high_v);
+      }
+      hs_str(s, "}");
+    }
+  }
+  hs_str(s, "]");
 
   // ── snapshot_bus ──────────────────────────────────────────────────────────
   hs_str(s, ",\"snapshot_bus\":{");
@@ -322,9 +425,8 @@ esp_err_t handle_diag(httpd_req_t* req) {
 
     // BMS total current (for side-by-side comparison with shunt current).
     {
-      BmsSystemSnapshot snap{};
       float bms_total_current = 0.0f;
-      if (bus::snapshot_bus::read(snap)) {
+      if (has_snap) {
         for (uint8_t i = 0; i < snap.pack_count_configured && i < 16; ++i) {
           if (snap.pack[i].online) bms_total_current += snap.pack[i].pack_current;
         }
