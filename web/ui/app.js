@@ -5526,13 +5526,17 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     const numsTitle = hasBand ? (c.d5min + '-' + c.d5max + ' mV over 5 days') : '';
 
     const tagHtml = (ffWin && ci === pack.ff_mode_idx)
-      ? '<span class="drift-cell-tag">fills first</span>' : '';
+      ? '<div class="drift-cell-tag-line"><span class="drift-cell-tag">fills first</span></div>' : '';
 
+    // The tag is a row-level element (not inside the fixed-width 22px label)
+    // so it reflows onto its own line under the bar instead of overflowing the
+    // label box and clipping/overlapping the track.
     rows += '<div class="drift-cell-row' + (isOutlier(ci) ? '' : ' dim') + '">' +
-      '<div class="drift-cell-lbl">C' + (ci + 1) + tagHtml + '</div>' +
+      '<div class="drift-cell-lbl">C' + (ci + 1) + '</div>' +
       '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
       '<div class="drift-cell-nums"' +
         (numsTitle ? ' title="' + numsTitle + '"' : '') + '>' + numsStr + '</div>' +
+      tagHtml +
       '</div>';
   }
 
