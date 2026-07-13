@@ -380,6 +380,25 @@ target_compile_options(test_victron_shunt_decode PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_victron_shunt_decode PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_victron_shunt_decode)
 
+# ── test_wifi_backoff ─────────────────────────────────────────────────────────
+# wifi_backoff.h is a header-only pure policy (no IDF, no FreeRTOS) extracted
+# from net/wifi.cpp's event-driven reconnect state machine specifically so the
+# backoff/never-gives-up algorithm can be verified on host — wifi.cpp itself
+# depends on esp_wifi/esp_netif/esp_event and cannot be built here.
+add_executable(test_wifi_backoff
+  test_wifi_backoff.cpp
+)
+
+target_include_directories(test_wifi_backoff PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_wifi_backoff PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_wifi_backoff PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_wifi_backoff PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_wifi_backoff)
+
 # ── test_nvs_store ─────────────────────────────────────────────────────────────
 # Compiles the REAL nvs_store.cpp (normally ESP-IDF-only: esp_log.h, nvs.h,
 # nvs_flash.h) against a fake in-memory NVS backing store

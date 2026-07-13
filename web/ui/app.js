@@ -4581,6 +4581,32 @@ function renderDiagData(d) {
 
     <div class="diag-section">
       <h3>WiFi</h3>
+      <div class="diag-kv-grid" style="margin-bottom:12px">
+        ${(function() {
+          const stateLabels = {
+            connected:    'Connected',
+            reconnecting: 'Reconnecting…',
+            backoff_wait: 'Waiting to retry (backoff)',
+            failed:       'Failed',
+            ap_active:    'AP mode',
+            off:          'Off',
+          };
+          const st = ble.wifi_state || 'off';
+          const outageActive = (ble.wifi_outage_duration_s||0) > 0;
+          const fmtMs = ms => (ms >= 1000) ? (ms/1000).toFixed(0) + ' s' : ms + ' ms';
+          return `
+        ${kvRow('State', stateLabels[st] || st,
+                'Connectivity keeps retrying forever once it has connected at least once — '
+                + 'this never permanently gives up, unlike pre-V3.2 firmware')}
+        ${outageActive ? kvRow('Current outage duration', formatUptime(ble.wifi_outage_duration_s),
+                'Time since the last successful connection; RS485/CAN battery monitoring is unaffected') : ''}
+        ${outageActive ? kvRow('Reconnect attempts (this outage)', ble.wifi_reconnect_attempts||0) : ''}
+        ${(st === 'backoff_wait') ? kvRow('Next attempt in', fmtMs(ble.wifi_backoff_ms||0)) : ''}
+        ${kvRow('Reconnect attempts (total since boot)', ble.wifi_reconnect_attempts_total||0)}
+        ${(ble.wifi_last_outage_duration_s||0) > 0 ? kvRow('Last completed outage', formatUptime(ble.wifi_last_outage_duration_s)) : ''}
+          `;
+        })()}
+      </div>
       <div class="diag-kv-grid">
         ${kvRow('SSID', ble.wifi_ssid || '—')}
         ${kvRow('IP', ble.wifi_ip || '—')}

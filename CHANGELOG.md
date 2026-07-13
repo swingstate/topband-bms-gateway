@@ -42,6 +42,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **WiFi reconnect permanently gave up after 5 failed attempts (~15-30 s),
+  leaving the gateway unreachable until manually power-cycled.** Confirmed root
+  cause of a field report where a 6-pack installation went unreachable every
+  24-48h with no coredump (see `docs/research/v3.2-6pack-hang-investigation.md`).
+  Once the STA has connected successfully at least once, a runtime disconnect no
+  longer counts toward any give-up threshold: the first reconnect attempt is
+  immediate, every attempt after that backs off exponentially (3 s doubling,
+  capped at 2 min — `net/wifi_backoff.h`), and it retries forever for as long as
+  credentials are configured. There is still no automatic runtime switch to
+  AP/captive-portal mode — that fallback remains boot-only (unreachable AP on
+  first boot) or an explicit user action from Settings, unchanged. RS485
+  polling, CAN TX and `runSafety()` have no WiFi dependency and are unaffected
+  by any outage. The Diagnostics page's WiFi section now shows live state
+  (connected / reconnecting / waiting on backoff), attempt counts, and current
+  and last-completed outage duration; the Alerts log gets a single entry when
+  connectivity is lost, low-frequency "still down" entries every 15 min during
+  an extended outage, and one recovery entry with total duration — all through
+  the existing persisted alert path, so the record survives a power-cycle.
 - **CAN status pill in the top bar used the wrong color palette.** It rendered in
   the teal/aubergine source-badge style instead of the green health-status style
   already used by the WiFi/BMS/MQTT/MPPT/SHUNT pills, so a healthy CAN bus did not

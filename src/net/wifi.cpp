@@ -1,4 +1,5 @@
 #include "wifi.h"
+#include "net/wifi_backoff.h"
 #include "app/self_test.h"
 #include "diag/alerts.h"
 #include "esp_log.h"
@@ -25,11 +26,31 @@ static constexpr EventBits_t BIT_SCAN_DONE = BIT2;
 static net::wifi::Mode g_mode           = net::wifi::Mode::Off;
 static bool            g_connected      = false;
 static int             g_retry          = 0;
+// MAX_RETRY bounds only: (a) the very first connection attempt after boot
+// (feeds start_sta()'s blocking wait -> captive-portal fallback, boot-only)
+// and (b) the explicit captive-portal "test connect" (connect_task()). Once
+// g_had_ip is true (STA has connected at least once), a runtime disconnect
+// NEVER consults MAX_RETRY — it retries forever via the backoff path below.
 static constexpr int   MAX_RETRY        = 5;
 static int64_t         g_connect_us     = 0;       // esp_timer_get_time() at connect
 static char            g_hostname[32]   = {};
 // Coexistence diagnostic: counts every STA disconnection since boot.
 static uint32_t        g_disconnect_count = 0;
+
+// ── Runtime reconnect-forever state (V3.2) ───────────────────────────────────
+// See wifi.h "Runtime outage handling" and net/wifi_backoff.h for the policy
+// this drives. g_had_ip distinguishes "still trying the first-ever connection
+// this boot" (bounded, MAX_RETRY, may fall back to captive portal — unchanged)
+// from "lost a connection we'd already established" (unbounded, backoff,
+// never gives up).
+static bool             g_had_ip                    = false;
+static uint32_t         g_reconn_attempts            = 0;  // attempts in current outage
+static uint32_t         g_reconn_attempts_total      = 0;  // lifetime, never resets
+static uint32_t         g_current_backoff_ms         = 0;  // 0 = no wait pending
+static int64_t          g_outage_start_us            = 0;  // 0 = no active outage
+static int64_t          g_last_still_down_alert_us   = 0;
+static uint32_t         g_last_outage_duration_s     = 0;  // most recently completed outage
+static esp_timer_handle_t g_reconnect_timer          = nullptr;
 
 // BSSID pin state — managed by start_sta() and the disconnect event handler.
 // g_bssid_pin_active: true while the driver config has bssid_set=true for the pin.
@@ -74,6 +95,32 @@ static void apply_selection_settings(wifi_config_t& cfg, int8_t rssi_floor) {
   cfg.sta.threshold.rssi = rssi_floor;
 }
 
+// Fires when a backoff wait (scheduled by schedule_reconnect below) elapses.
+// Runs in the esp_timer task context — safe to call esp_wifi_connect() from
+// here. Guarded on g_mode so a stray/late timer firing after the device has
+// since reconnected some other way (e.g. the BSSID-pin-fallback immediate
+// retry beat it) is a no-op rather than an extra spurious connect attempt.
+static void reconnect_timer_cb(void* /*arg*/) {
+  if (g_mode == net::wifi::Mode::StaConnecting) {
+    esp_wifi_connect();
+  }
+}
+
+// Schedule the next reconnect attempt after delay_ms. delay_ms == 0 means
+// "immediately" (the standard first-attempt-after-disconnect case). If the
+// backoff timer somehow isn't available (creation failed at init(), e.g. out
+// of internal RAM), fall back to an immediate synchronous retry rather than
+// silently stalling — degraded (no backoff, may hammer a bit faster than
+// intended) beats the alternative of the outage having nothing driving
+// recovery at all.
+static void schedule_reconnect(uint32_t delay_ms) {
+  if (delay_ms > 0 && g_reconnect_timer) {
+    esp_timer_start_once(g_reconnect_timer, static_cast<uint64_t>(delay_ms) * 1000ULL);
+  } else {
+    esp_wifi_connect();
+  }
+}
+
 // ── Event handler ─────────────────────────────────────────────────────────────
 
 static void on_wifi_event(void* arg, esp_event_base_t base,
@@ -89,12 +136,14 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
     uint8_t reason = ev ? ev->reason : 0;
 
     if (was_connected) {
-      // Post-connection disconnect (AP reboot, range loss, etc.).
-      // Reconnect immediately; with WIFI_ALL_CHANNEL_SCAN + WIFI_CONNECT_AP_BY_SIGNAL
-      // already in the driver config this naturally picks the best available AP of
-      // the SSID — this is the "roaming" mechanism for this ESP32 implementation.
-      // Note: 802.11r/k/v seamless BSS transition is not supported by ESP-IDF 5.x;
-      // roaming here is explicit disconnect+reconnect with signal-based re-selection.
+      // Post-connection disconnect (AP reboot, range loss, etc.) — begin a
+      // fresh reconnect sequence. First attempt is immediate; with
+      // WIFI_ALL_CHANNEL_SCAN + WIFI_CONNECT_AP_BY_SIGNAL already in the
+      // driver config this naturally picks the best available AP of the SSID
+      // — this is the "roaming" mechanism for this ESP32 implementation.
+      // Note: 802.11r/k/v seamless BSS transition is not supported by
+      // ESP-IDF 5.x; roaming here is explicit disconnect+reconnect with
+      // signal-based re-selection.
       g_mode  = net::wifi::Mode::StaConnecting;
       g_retry = 0;
       // Do not clear g_bssid_pin_active here: if pin was set, let it try again;
@@ -120,15 +169,33 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
         }
       }
 
+      // V3.2: start tracking a fresh outage (guarded — can't already be open
+      // from a was_connected transition, but harmless if it somehow is) and
+      // reset the per-outage attempt counter. This is purely bookkeeping for
+      // Diagnostics/Alerts: RS485 polling, CAN TX and runSafety() live on
+      // ControlTask and read the snapshot bus / SafetyState directly — they
+      // have no WiFi dependency and are unaffected by anything in this file.
+      if (g_outage_start_us == 0) {
+        g_outage_start_us          = esp_timer_get_time();
+        g_last_still_down_alert_us = g_outage_start_us;
+      }
+      g_reconn_attempts = 1;
+      g_reconn_attempts_total++;
+      g_current_backoff_ms = 0;  // this attempt is immediate, no wait
+
       ESP_LOGW(TAG, "STA disconnected (was connected, reason=%d) — reconnecting", (int)reason);
-      diag::alerts::emit(diag::alerts::Severity::Warn, "wifi", "disconnected");
+      diag::alerts::emit(diag::alerts::Severity::Warn, "wifi",
+                         "connectivity lost — reconnecting automatically "
+                         "(RS485/CAN battery monitoring unaffected)");
       esp_wifi_connect();
 
     } else if (g_mode == net::wifi::Mode::StaConnecting) {
-      // Initial or recovery connection attempt failed.
+      // A connection attempt just failed.
       if (g_bssid_pin_active && g_retry >= net::wifi::WIFI_BSSID_PIN_MAX_RETRY) {
         // Pinned BSSID tried WIFI_BSSID_PIN_MAX_RETRY times without success.
         // Fall back to strongest-AP selection so the gateway always gets online.
+        // This is a bounded fallback of the PIN preference only — it is not
+        // the overall give-up path, which no longer exists once g_had_ip.
         g_bssid_pin_active = false;
         wifi_config_t cfg = {};
         if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
@@ -137,6 +204,7 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
           esp_wifi_set_config(WIFI_IF_STA, &cfg);
         }
         g_retry = 0;
+        if (g_had_ip) g_reconn_attempts_total++;
         ESP_LOGW(TAG,
                  "wifi: BSSID pin fallback — pinned AP unreachable after %d tries; "
                  "switching to strongest-AP selection of same SSID",
@@ -145,20 +213,58 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
                            "BSSID pin fallback — using strongest-AP selection");
         esp_wifi_connect();
 
-      } else if (g_retry < MAX_RETRY) {
-        g_retry++;
-        ESP_LOGW(TAG, "STA disconnected (reason=%d) — retry %d/%d",
-                 (int)reason, g_retry, MAX_RETRY);
-        esp_wifi_connect();
+      } else if (!g_had_ip) {
+        // Bounded initial-connect attempt (STA has never obtained an IP this
+        // boot). Unchanged from pre-V3.2 behavior: feeds start_sta()'s
+        // blocking wait, which falls back to captive portal on exhaustion —
+        // intentionally boot-only (see wifi.h "Runtime outage handling").
+        if (g_retry < MAX_RETRY) {
+          g_retry++;
+          ESP_LOGW(TAG, "STA disconnected (reason=%d) — retry %d/%d",
+                   (int)reason, g_retry, MAX_RETRY);
+          esp_wifi_connect();
+        } else {
+          ESP_LOGE(TAG, "STA connect failed after %d retries", g_retry);
+          g_mode = net::wifi::Mode::StaFailed;
+          if (g_events) xEventGroupSetBits(g_events, BIT_FAILED);
+        }
 
       } else {
-        ESP_LOGE(TAG, "STA connect failed after %d retries", g_retry);
-        g_mode = net::wifi::Mode::StaFailed;
-        if (g_events) xEventGroupSetBits(g_events, BIT_FAILED);
-      }
+        // V3.2: runtime outage continuation. STA has connected successfully
+        // at least once this boot, so this NEVER gives up — retry forever
+        // with capped exponential backoff (net::wifi::backoff). This is the
+        // fix for the confirmed root cause of the 6-pack "unreachable every
+        // 24-48h, no coredump" report: the old MAX_RETRY=5 counter used to
+        // apply here too and left the device permanently unreachable after
+        // any AP outage longer than ~30 s.
+        g_retry++;  // keeps the BSSID-pin-retry check above working mid-outage
+        uint32_t delay_ms = net::wifi::backoff::next_delay_ms(g_reconn_attempts);
+        g_current_backoff_ms = delay_ms;
+        ESP_LOGW(TAG, "STA reconnect attempt %lu failed (reason=%d) — retrying in %lu ms",
+                 (unsigned long)g_reconn_attempts, (int)reason, (unsigned long)delay_ms);
 
+        // Low-frequency "still down" alert so an extended outage stays
+        // visible in the persisted Alerts log without one entry per retry
+        // (which, once backoff hits its cap, would otherwise be every 2 min).
+        int64_t now = esp_timer_get_time();
+        if (g_outage_start_us != 0 &&
+            (now - g_last_still_down_alert_us) >=
+                (int64_t)net::wifi::backoff::STILL_DOWN_ALERT_INTERVAL_MS * 1000) {
+          uint32_t outage_s = (uint32_t)((now - g_outage_start_us) / 1000000LL);
+          diag::alerts::emit(diag::alerts::Severity::Warn, "wifi",
+                             "still reconnecting after %lu s (%lu attempts) — "
+                             "RS485/CAN battery monitoring unaffected",
+                             (unsigned long)outage_s, (unsigned long)g_reconn_attempts);
+          g_last_still_down_alert_us = now;
+        }
+
+        g_reconn_attempts++;
+        g_reconn_attempts_total++;
+        schedule_reconnect(delay_ms);
+      }
     }
-    // If g_mode is StaFailed / ApActive / Off we have nothing useful to do.
+    // If g_mode is StaFailed / ApActive / Off we have nothing useful to do —
+    // StaFailed here can only be the bounded pre-g_had_ip case above.
 
     if (was_connected) {
       // Alert already emitted inside the was_connected block above.
@@ -193,8 +299,34 @@ static void on_wifi_event(void* arg, esp_event_base_t base,
     }
     char ip_str[16] = {};
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
-    diag::alerts::emit(diag::alerts::Severity::Info, "wifi",
-                       "connected to %s, IP=%s", ssid, ip_str);
+
+    // V3.2: cancel any pending backoff timer (harmless no-op if none is
+    // running — esp_timer_stop() on an inactive timer just returns an error
+    // we don't need to act on). If this connect closes out a tracked outage,
+    // emit one recovery alert with duration + attempt count instead of the
+    // plain "connected" line, so the Alerts log tells the whole story without
+    // two redundant entries.
+    if (g_reconnect_timer) esp_timer_stop(g_reconnect_timer);
+
+    if (g_outage_start_us != 0) {
+      int64_t now = esp_timer_get_time();
+      uint32_t outage_s = (uint32_t)((now - g_outage_start_us) / 1000000LL);
+      g_last_outage_duration_s = outage_s;
+      diag::alerts::emit(diag::alerts::Severity::Info, "wifi",
+                         "connectivity restored after %lu s (%lu attempts), IP=%s — "
+                         "RS485/CAN battery monitoring ran uninterrupted throughout",
+                         (unsigned long)outage_s, (unsigned long)g_reconn_attempts, ip_str);
+      g_outage_start_us          = 0;
+      g_last_still_down_alert_us = 0;
+    } else {
+      diag::alerts::emit(diag::alerts::Severity::Info, "wifi",
+                         "connected to %s, IP=%s", ssid, ip_str);
+    }
+
+    g_had_ip              = true;
+    g_reconn_attempts     = 0;
+    g_current_backoff_ms  = 0;
+
     app::self_test::mark_passed(app::self_test::WIFI_CONNECTED);
     if (g_events) xEventGroupSetBits(g_events, BIT_CONNECTED);
 
@@ -244,6 +376,28 @@ bool init() {
     ESP_LOGE(TAG, "register IP_EVENT handler: %s", esp_err_to_name(ret));
     return false;
   }
+
+  // V3.2: one-shot software timer that drives the capped-backoff runtime
+  // reconnect (see reconnect_timer_cb / schedule_reconnect above). Creation
+  // failure is logged but non-fatal to init() — schedule_reconnect() falls
+  // back to an immediate synchronous retry if this handle is null, so the
+  // "never permanently gives up" guarantee holds either way, just without
+  // the backoff spacing.
+  const esp_timer_create_args_t reconnect_timer_args = {
+    .callback = &reconnect_timer_cb,
+    .arg      = nullptr,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name     = "wifi_reconn",
+    .skip_unhandled_events = false,
+  };
+  ret = esp_timer_create(&reconnect_timer_args, &g_reconnect_timer);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "esp_timer_create(wifi_reconn) failed: %s — "
+             "reconnects will retry immediately without backoff",
+             esp_err_to_name(ret));
+    g_reconnect_timer = nullptr;
+  }
+
   return true;
 }
 
@@ -612,5 +766,20 @@ uint32_t connected_for_s() {
 }
 
 uint32_t get_disconnect_count() { return g_disconnect_count; }
+
+// ── Reconnect / outage diagnostics (V3.2) ────────────────────────────────────
+
+uint32_t get_reconnect_attempts()       { return g_reconn_attempts; }
+uint32_t get_reconnect_attempts_total() { return g_reconn_attempts_total; }
+uint32_t get_reconnect_backoff_ms()     { return g_current_backoff_ms; }
+
+uint32_t get_outage_duration_s() {
+  if (g_outage_start_us == 0) return 0;
+  int64_t now  = esp_timer_get_time();
+  int64_t diff = (now - g_outage_start_us) / 1000000LL;
+  return (diff > 0) ? (uint32_t)diff : 0;
+}
+
+uint32_t get_last_outage_duration_s() { return g_last_outage_duration_s; }
 
 }  // namespace net::wifi

@@ -35,6 +35,17 @@
 //   this is the "roaming" mechanism. Full 802.11r/k/v is not supported by ESP-IDF;
 //   roaming here is explicit disconnect+reconnect, not seamless BSS transition.
 //
+// Runtime outage handling (V3.2 — see net/wifi_backoff.h):
+//   Once the STA has connected successfully at least once, a subsequent loss of
+//   connectivity NEVER reaches a terminal give-up state: the first reconnect
+//   attempt is immediate, and every attempt after that backs off exponentially
+//   (capped, see wifi_backoff.h) and retries forever until the AP is reachable
+//   again. There is no runtime auto-switch to AP/captive-portal mode — that
+//   fallback stays boot-only (see below) or an explicit user action from
+//   Settings. This does NOT apply to the very first connection attempt after
+//   boot (see start_sta() below), which stays bounded on purpose so a device
+//   with no reachable AP yet still falls back to captive portal for setup.
+//
 // Captive-portal connect path (from HTTP handler):
 //   save_creds(ssid, pass) → start_connection_async() → browser polls get_state()
 //   On StaConnected: esp_restart() is scheduled automatically by the task.
@@ -47,9 +58,15 @@ static constexpr int WIFI_BSSID_PIN_MAX_RETRY = 3;
 
 enum class Mode : uint8_t {
   Off,            // before init()
-  StaConnecting,  // esp_wifi_connect() in progress
+  StaConnecting,  // esp_wifi_connect() attempt in flight, or its backoff wait pending
   StaConnected,   // IP obtained
-  StaFailed,      // connection timed out / credential error
+  // Terminal ONLY for the bounded attempts that use it: the very first
+  // connection attempt after boot (start_sta()'s blocking wait) and the
+  // explicit captive-portal "test connect" (start_connection_async()). Once
+  // the STA has connected successfully at least once, a runtime disconnect
+  // never reaches this state again — see wifi_backoff.h and on_wifi_event()'s
+  // g_had_ip branch in wifi.cpp.
+  StaFailed,      // connection timed out / credential error (bounded attempts only)
   ApActive,       // open AP, no STA session
 };
 
@@ -160,6 +177,35 @@ uint32_t get_disconnect_count();
 
 // True while a BSSID pin is in effect (cleared on fallback or reconnect-after-connected).
 bool is_bssid_pin_active();
+
+// ── Reconnect / outage diagnostics (V3.2) ────────────────────────────────────
+// Surfaced on the Diagnostics page so a live outage is immediately visible
+// there instead of leaving no trace anywhere (the original diagnostic gap
+// that let the permanent-give-up bug go unnoticed for months).
+
+// Connect attempts made during the CURRENT outage (0 if not currently in one).
+// Resets to 0 on every successful connect.
+uint32_t get_reconnect_attempts();
+
+// Lifetime connect attempts since boot (never resets). Includes the initial
+// boot-time attempt(s), all runtime reconnects, and BSSID-pin retries.
+uint32_t get_reconnect_attempts_total();
+
+// Backoff interval (ms) currently being waited before the next reconnect
+// attempt. 0 when connected, or when an attempt is immediately in flight
+// (the first attempt after a disconnect is always immediate — see wifi.h
+// runtime-outage comment above).
+uint32_t get_reconnect_backoff_ms();
+
+// Seconds since the current outage began; 0 if currently connected (no
+// active outage). Doubles as "time since last successful connection" while
+// an outage is in progress.
+uint32_t get_outage_duration_s();
+
+// Duration (s) of the most recently COMPLETED outage this boot; 0 if none
+// has occurred yet. Lets Diagnostics show "the last outage lasted N s" even
+// after recovery, without needing to catch it live.
+uint32_t get_last_outage_duration_s();
 
 // Expose the AP netif for captdns to query the gateway IP.
 esp_netif_t* get_ap_netif();
