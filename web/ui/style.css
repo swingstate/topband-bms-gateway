@@ -1322,24 +1322,28 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 .drift-cell-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin-bottom: 5px;
 }
 /* Non-outlier rows are dimmed so the defining cells stand out (review 2.5) */
 .drift-cell-row.dim { opacity: 0.55; }
 
-/* Tag on the repeated first-full cell's row */
+/* Indicator marking the repeated first-full cell. The wrapper is a flex child
+   with flex-basis:100%, forcing it onto its own line below the bar at every
+   viewport width (deterministic — not dependent on how the track flex-grows),
+   indented to the track start (22px label + 8px gap) so it reads as belonging
+   to that row. Styled as understated inline text (no box/border/background) to
+   match the "worst cell C4" sub-label convention used in the KPI tiles. */
+.drift-cell-tag-line {
+  flex-basis: 100%;
+  margin-left: 30px;
+}
 .drift-cell-tag {
-  font-size: 8px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-warning);
-  border: 1px solid var(--color-warning);
-  border-radius: 3px;
-  padding: 0 3px;
-  margin-left: 4px;
-  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-muted);
 }
 
 /* Band legend under the scale axis */
