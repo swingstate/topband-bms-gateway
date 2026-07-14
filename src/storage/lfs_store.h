@@ -18,8 +18,16 @@ bool init();
 bool exists(const char* path);
 
 // Read a text file into buf (null-terminates). Returns number of bytes read,
-// or 0 on failure. buf_size must include room for the null terminator.
+// or 0 on failure. buf_size must include room for the null terminator, so at
+// most buf_size - 1 bytes of file content are ever returned. Not suitable for
+// reading a fixed-size binary blob back to its exact length — use
+// read_file_exact() for that.
 size_t read_file(const char* path, char* buf, size_t buf_size);
+
+// Read exactly `len` bytes of a fixed-size binary file into buf. No null
+// terminator is reserved or written. Returns true only if the file exists
+// and yields exactly `len` bytes; false if missing, short, or unreadable.
+bool read_file_exact(const char* path, uint8_t* buf, size_t len);
 
 // Atomic write: writes to <path>.tmp, then renames to <path>.
 // Prevents partial-write corruption from power loss.

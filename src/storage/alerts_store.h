@@ -37,4 +37,11 @@ bool persist();
 // Number of alerts currently stored in RAM.
 size_t stored_count();
 
+#ifdef NATIVE_BUILD
+// Test-only: simulate a power cycle by dropping in-RAM state and clearing
+// the inited flag, so the next init() call re-reads the on-disk ring file
+// as if this were a fresh boot.
+void test_simulate_reboot();
+#endif
+
 }  // namespace storage::alerts_store
