@@ -417,6 +417,30 @@ esp_err_t handle_diag(httpd_req_t* req) {
     { char hn[48] = {}; net::wifi::get_hostname(hn, sizeof(hn));
       hs_str(s, ",\"wifi_hostname\":"); hs_json_str(s, hn); }
     hs_str(s, ",\"wifi_connected_for_s\":"); hs_uint(s, net::wifi::connected_for_s());
+    // Runtime reconnect / outage visibility (V3.2). "state" collapses Mode +
+    // whether a backoff wait is currently pending into the single string the
+    // Diagnostics page shows; the raw counters/durations back it up so a live
+    // outage is never ambiguous or silent again (the original diagnostic gap
+    // — see docs/research/v3.2-6pack-hang-investigation.md).
+    {
+      uint32_t backoff_ms = net::wifi::get_reconnect_backoff_ms();
+      const char* wifi_state_str = "off";
+      switch (net::wifi::get_state()) {
+        case net::wifi::Mode::StaConnected:  wifi_state_str = "connected"; break;
+        case net::wifi::Mode::StaConnecting:
+          wifi_state_str = (backoff_ms > 0) ? "backoff_wait" : "reconnecting";
+          break;
+        case net::wifi::Mode::StaFailed:     wifi_state_str = "failed";    break;
+        case net::wifi::Mode::ApActive:      wifi_state_str = "ap_active"; break;
+        default: break;
+      }
+      hs_str(s, ",\"wifi_state\":"); hs_json_str(s, wifi_state_str);
+      hs_str(s, ",\"wifi_backoff_ms\":"); hs_uint(s, backoff_ms);
+    }
+    hs_str(s, ",\"wifi_reconnect_attempts\":"); hs_uint(s, net::wifi::get_reconnect_attempts());
+    hs_str(s, ",\"wifi_reconnect_attempts_total\":"); hs_uint(s, net::wifi::get_reconnect_attempts_total());
+    hs_str(s, ",\"wifi_outage_duration_s\":"); hs_uint(s, net::wifi::get_outage_duration_s());
+    hs_str(s, ",\"wifi_last_outage_duration_s\":"); hs_uint(s, net::wifi::get_last_outage_duration_s());
     hs_str(s, ",\"handler_last_ms\":"); hs_uint(s, web::live_handler_last_ms());
     hs_str(s, ",\"handler_max_ms\":"); hs_uint(s, web::live_handler_max_ms());
     hs_str(s, ",\"ble_gap_events\":"); hs_uint(s, sources::ble_scanner::gap_event_count());

@@ -33,9 +33,16 @@ static constexpr size_t   BODY_SIZE   =
     storage::alerts_store::RING_CAPACITY * sizeof(AlertEntry);
 static constexpr size_t   FILE_SIZE   = HEADER_SIZE + BODY_SIZE;
 
+#ifndef NATIVE_BUILD
 static constexpr const char* RING_PATH = "/lfs/alerts/ring.bin";
-static constexpr const char* RING_TMP  = "/lfs/alerts/ring.bin.tmp";
 static constexpr const char* RING_DIR  = "/lfs/alerts";
+#else
+// Host tests run against the real filesystem (no ESP VFS mount), so use a
+// relative path confined to the test binary's CWD instead of the real "/lfs"
+// root.
+static constexpr const char* RING_PATH = "./alerts_store_test_ring.bin";
+static constexpr const char* RING_DIR  = ".";
+#endif
 
 // ── In-RAM state ──────────────────────────────────────────────────────────────
 // s_ring and s_io_buf are PSRAM-allocated in init() to avoid filling DRAM BSS
@@ -86,8 +93,11 @@ static bool write_to_disk() {
 static bool read_from_disk() {
   if (!s_ring || !s_io_buf) return false;
 
-  size_t n = storage::lfs::read_file(RING_PATH, (char*)s_io_buf, FILE_SIZE);
-  if (n < FILE_SIZE) return false;
+  // The ring file is a fixed-size binary blob, not text — read_file() always
+  // reserves one byte for a null terminator, so requesting FILE_SIZE bytes
+  // through it can only ever return FILE_SIZE - 1 and this check would always
+  // fail. Use the exact-size binary reader instead.
+  if (!storage::lfs::read_file_exact(RING_PATH, s_io_buf, FILE_SIZE)) return false;
 
   uint32_t magic = 0;
   memcpy(&magic, s_io_buf + 0, 4);
@@ -193,5 +203,18 @@ bool persist() {
 size_t stored_count() {
   return s_count;
 }
+
+#ifdef NATIVE_BUILD
+// Test-only: drop in-RAM state and clear the inited flag so a subsequent
+// init() call re-reads whatever is currently on disk, simulating a power
+// cycle without re-running the whole process.
+void test_simulate_reboot() {
+  s_inited = false;
+  s_head   = 0;
+  s_count  = 0;
+  s_dirty  = false;
+  if (s_ring) memset(s_ring, 0, BODY_SIZE);
+}
+#endif
 
 }  // namespace storage::alerts_store

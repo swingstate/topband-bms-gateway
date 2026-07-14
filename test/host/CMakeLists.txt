@@ -380,6 +380,25 @@ target_compile_options(test_victron_shunt_decode PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_victron_shunt_decode PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_victron_shunt_decode)
 
+# ── test_wifi_backoff ─────────────────────────────────────────────────────────
+# wifi_backoff.h is a header-only pure policy (no IDF, no FreeRTOS) extracted
+# from net/wifi.cpp's event-driven reconnect state machine specifically so the
+# backoff/never-gives-up algorithm can be verified on host — wifi.cpp itself
+# depends on esp_wifi/esp_netif/esp_event and cannot be built here.
+add_executable(test_wifi_backoff
+  test_wifi_backoff.cpp
+)
+
+target_include_directories(test_wifi_backoff PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_wifi_backoff PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_wifi_backoff PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_wifi_backoff PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_wifi_backoff)
+
 # ── test_nvs_store ─────────────────────────────────────────────────────────────
 # Compiles the REAL nvs_store.cpp (normally ESP-IDF-only: esp_log.h, nvs.h,
 # nvs_flash.h) against a fake in-memory NVS backing store
@@ -405,3 +424,27 @@ target_compile_definitions(test_nvs_store PRIVATE ${HOST_COMPILE_DEFS})
 target_compile_options(test_nvs_store PRIVATE ${HOST_COMPILE_OPTS})
 target_link_libraries(test_nvs_store PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_nvs_store)
+
+# ── test_alerts_store ─────────────────────────────────────────────────────────
+# Compiles the REAL alerts_store.cpp + lfs_store.cpp against the real host
+# filesystem (NATIVE_BUILD skips the ESP LittleFS VFS mount and uses a
+# relative path under the test binary's CWD instead). This is what makes it
+# possible to reproduce the V3.2 alerts-persistence bug end-to-end: the bug
+# was in lfs_store's read_file() being reused for a fixed-size binary read
+# (it always reserves a null-terminator byte), so no in-memory-only test of
+# alerts_store's ring logic would have caught it.
+add_executable(test_alerts_store
+  test_alerts_store.cpp
+  ../../src/storage/alerts_store.cpp
+  ../../src/storage/lfs_store.cpp
+)
+
+target_include_directories(test_alerts_store PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_alerts_store PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_alerts_store PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_alerts_store PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_alerts_store)
