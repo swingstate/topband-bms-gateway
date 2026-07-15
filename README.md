@@ -4,11 +4,25 @@ ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to Victron, Pyl
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-3.1.0-blue)
+![Version](https://img.shields.io/badge/version-3.2.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange)
 
-> **New in V3.1: Bluetooth support.** The gateway can now read a Victron MPPT solar charger over Bluetooth LE. Its data shows up on the dashboard, is published to MQTT, and feeds into the energy view. More BLE devices (such as Victron SmartShunt) are planned for a later release.
+> **New in V3.2: SmartShunt battery monitor support.** The gateway can now pair with a Victron SmartShunt over Bluetooth LE for a more accurate whole-bank current, voltage, and charge-percentage reading, alongside a batch of correctness fixes to the inverter connection and WiFi reliability. See [What's new in V3.2](#whats-new-in-v32) below, or the full [release notes](release-notes-v3.2.0.md).
+
+## What's new in V3.2
+
+V3.2 builds on V3.1 and adds:
+
+- **Bluetooth LE / Victron SmartShunt.** Pair a SmartShunt battery monitor for a whole-bank current, voltage, and charge-percentage reading, plus a consumed-amp-hours reference value. A **Battery Value Sources** setting (Battery tab) lets you choose whether the shunt or the BMS packs lead on the dashboard, or set it to switch automatically. Charging and discharging decisions always use the BMS packs' own numbers, never the shunt.
+- **More accurate inverter reporting.** When a SmartShunt is connected, the charge percentage and current sent to your inverter follow the same reading shown on the dashboard, instead of the BMS-only value — this fixes very small currents getting rounded down and reported as "no current flowing." Charge/discharge safety limits still come strictly from the BMS packs.
+- **Direction-aware safety lockout.** A cell voltage problem now only blocks the affected direction — for example, a cell that's too full blocks charging but still allows discharging, so the pack can recover on its own — instead of locking out both directions at once.
+- **More reliable WiFi.** The gateway now keeps retrying a lost WiFi connection indefinitely instead of eventually giving up and needing a manual power-cycle. You can also pin the gateway to a specific access point when several share the same network name.
+- **Reorganized Settings and Diagnostics pages**, with inverter/CAN settings now on their own page.
+- **Correctness fixes to the Pylontech CAN output** (used by Deye and other inverters) that could make a perfectly healthy battery appear to refuse charging or discharging, or report the wrong number of connected packs.
+- **Alert history now survives a power cycle**, and a bug that could silently reset all settings to factory defaults during certain updates was fixed.
+
+See the full [release notes](release-notes-v3.2.0.md) for the complete list, including everything from the V3.1 line below.
 
 ## What's new in V3.1
 
@@ -20,7 +34,7 @@ V3.1 builds on V3.0 and adds:
 - **Reworked Diagnostics page.** Bluetooth, WiFi, and MPPT are now in clearly separated sections.
 - **Smaller fixes.** Charts update in place instead of redrawing (no more flicker), the login session stays valid across browser restarts, and internal memory use was reduced.
 
-The CAN output, BMS polling, safety logic, and MQTT/Home Assistant integration are unchanged from V3.0. If you don't use a Victron MPPT, V3.1 behaves like V3.0.
+The CAN output, BMS polling, safety logic, and MQTT/Home Assistant integration are unchanged from V3.0 unless noted above. If you don't use a Victron MPPT or SmartShunt, V3.2 behaves like V3.0.
 
 ## Architecture
 
@@ -37,15 +51,17 @@ A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it direc
 ## Features
 
 - **Multi-pack support** up to 16 BMS packs on one RS485 bus, with per-pack and per-cell data
-- **Bluetooth LE** read a Victron MPPT solar charger; data flows into the dashboard, MQTT, and energy tracking
+- **Bluetooth LE** read a Victron MPPT solar charger and/or a Victron SmartShunt battery monitor; data flows into the dashboard, MQTT, and energy tracking
+- **Battery Value Sources** choose whether the SmartShunt or the BMS packs lead the dashboard's current/voltage/charge-percentage reading, automatically or manually — charging/discharging decisions always use the BMS packs regardless
 - **Web dashboard** with glassmorphism sidebar UI, light/dark mode, responsive mobile layout
 - **Live charts** for power, voltage, SOC, temperature, and cell drift — with persistent history (2-hour fine, 7-day coarse)
 - **Solar page** day chart of solar power, MPPT charger output, and Solar-Passthrough status
 - **Battery Drift Details** per-cell balance and drift over 5 days, measured at the charge extremes
 - **Energy tracking** rolling today / 7-day / monthly counters
 - **MQTT publishing** with Home Assistant auto-discovery, per-pack and per-cell topics
-- **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis
-- **CAN output** Victron, Pylontech, or SMA protocol — selectable at runtime
+- **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis; a voltage lockout only blocks the affected direction (charge or discharge), not both
+- **CAN output** Victron, Pylontech, or SMA protocol — selectable at runtime; reports the SmartShunt-fused current/charge-percentage to the inverter when a shunt is connected
+- **Preferred WiFi access point** optional BSSID pin for multi-AP/mesh networks, with automatic fallback and re-pin
 - **Battery config modes** Auto (from BMS parameters), Auto+Margin, or Manual
 - **OTA firmware updates** with 5-minute self-test and automatic rollback on failure
 - **Telegram notifications** for safety alerts — configurable debounce to prevent alert floods
@@ -84,10 +100,10 @@ Download the release files from the [Releases page](../../releases).
 
 ```bash
 # macOS / Linux
-esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.1.0.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.2.0.bin
 
 # Windows (adjust COM port)
-esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.1.0.bin
+esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.2.0.bin
 ```
 
 If upgrading from V2.67.x, erase the flash first (new partition layout):
@@ -96,7 +112,7 @@ If upgrading from V2.67.x, erase the flash first (new partition layout):
 esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX erase_flash
 ```
 
-**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.1.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
+**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.2.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
 
 > Upgrading from V2.67.x to V3.x via OTA is not supported. Use the USB factory image. Back up your V2 settings first (General → Maintenance → Export settings in V2), then restore them after V3 first boot.
 
@@ -126,13 +142,14 @@ Navigate to the Battery tab and configure:
 
 Settings → Battery → Apply auto-config reads the BMS system parameter frame (0x47) and suggests safe values based on the manufacturer's limits. Choose Auto to apply directly, Auto+Margin to apply with a safety margin, or Manual to set all limits yourself.
 
-### Bluetooth / Victron MPPT
+### Bluetooth / Victron MPPT and SmartShunt
 
-Navigate to Network → Bluetooth:
+Navigate to Settings → Bluetooth LE:
 
-- Enable Bluetooth and enter the MPPT's encryption key (from the VictronConnect app)
-- Once paired, the MPPT's solar data appears on the Solar page and the dashboard
-- This is read-only — the gateway never sends commands to the charger
+- Enable Bluetooth and enter the device's encryption key (from the VictronConnect app) — MPPT and SmartShunt are configured independently, and you can use either or both
+- Once paired, the MPPT's solar data appears on the Solar page and the dashboard; the SmartShunt's current, voltage, and charge percentage appear on the Battery page and dashboard
+- Both are read-only — the gateway never sends commands to either device
+- With a SmartShunt paired, set **Battery Value Sources** (Battery tab) to choose whether the shunt or the BMS packs lead the dashboard reading — Auto lets the shunt lead whenever its reading is fresh and falls back to the BMS packs otherwise; charging/discharging safety limits always use the BMS packs regardless of this setting
 
 ### MQTT and Home Assistant
 
@@ -225,18 +242,20 @@ The Victron MPPT is read over Bluetooth, not CAN — it does not use these frame
 - Ensure inverter and gateway share ground
 - Check CAN status in the dashboard header pill
 
-### Bluetooth / MPPT not showing data
+### Bluetooth / MPPT or SmartShunt not showing data
 
-- Confirm the encryption key matches the one in the VictronConnect app
-- The MPPT must be within Bluetooth range of the gateway
+- Confirm the encryption key matches the one in the VictronConnect app — pasted keys with extra characters (from a photo/OCR) are cleaned up automatically, but check the Diagnostics page's **Key valid** row if data still isn't showing
+- The device must be within Bluetooth range of the gateway
 - Solar data only appears once the MPPT is actively charging or reporting; check the Bluetooth section on the Diagnostics page for advertisement counts
 - The first solar chart point appears about 5 minutes after boot (the chart samples every 5 minutes)
+- A SmartShunt that has never been set up in the VictronConnect app shows as **Not synced** rather than a charge percentage — pair it in VictronConnect first
 
 ### Safety lockout
 
 - Triggered by cell voltage, pack voltage, drift, or temperature exceeding configured limits
+- A cell voltage problem only blocks the affected direction — over-voltage blocks charging, under-voltage blocks discharging — so the pack can still self-correct in the other direction
 - Clears automatically once the underlying condition resolves within normal range
-- Check the Alert log for the specific event and timestamp
+- Check the Alert log for the specific event, direction, and timestamp
 - If limits are triggering incorrectly, review the thresholds in the Battery tab
 
 ### Factory reset / password reset
@@ -247,11 +266,11 @@ Factory reset and password reset are done via the web UI: Settings → Factory R
 
 ### OTA Upgrades
 
-OTA upgrades are supported between V3.x releases, including V3.0 to V3.1. The first install of V3.x requires a USB reflash with the factory image (new partition layout). After that, all updates can be done via OTA.
+OTA upgrades are supported between V3.x releases, including V3.0 through V3.2. The first install of V3.x requires a USB reflash with the factory image (new partition layout). After that, all updates can be done via OTA.
 
 ### Home Assistant Entities
 
-V3.1 adds new MQTT entities for the Victron MPPT (solar power, charger output, yield, charger state). They register automatically via HA discovery. If you upgrade from V3.0, use Settings → Send HA Discovery to register the new solar entities.
+V3.1 added new MQTT entities for the Victron MPPT (solar power, charger output, yield, charger state). V3.2 adds entities for the Victron SmartShunt (current, voltage, charge percentage, consumed amp-hours) and per-pack current/charge-percentage/power entities. They register automatically via HA discovery. If you're upgrading from an earlier version, use Settings → Send HA Discovery to register any new entities.
 
 V3.x MQTT topic names and payload fields differ from V2.67.x. Existing V2 HA dashboards need to be updated.
 
@@ -260,7 +279,6 @@ V3.x MQTT topic names and payload fields differ from V2.67.x. Existing V2 HA das
 - No TLS for HTTP or MQTT connections (planned for a future release)
 - Telegram is the only supported notification channel for now
 - SD card logging is not supported
-- The Victron SmartShunt is not yet integrated (planned for a later release)
 - Drift history: completed days persist across reboots; the current day's partial data rebuilds after a restart
 
 ## License
