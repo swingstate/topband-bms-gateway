@@ -135,12 +135,13 @@ TEST_CASE("Round-trip: empty notify fields survive serialize/deserialize", "[con
   REQUIRE(dst.notify_telegram_chat_id[0] == '\0');
 }
 
-TEST_CASE("Config struct is 692 bytes (v5 layout unchanged from v4)", "[config]") {
-  // v3: 644 B.  v4 adds char[32]+uint32+uint32+uint16+uint16+bool → 692 B.
-  // v5 adds uint16_t notify_debounce_s into former 3-byte tail padding → still 692 B.
-  // This test mirrors the static_assert in config.cpp and catches ABI drift.
-  REQUIRE(sizeof(Config) == 692);
-  REQUIRE(CURRENT_SCHEMA_VERSION == 5);
+TEST_CASE("Config struct is 880 bytes (v11 layout)", "[config]") {
+  // Stale expectation from the v5 era (692 B / schema 5) — the struct has
+  // grown through v6..v11 since (see config.h schema-version comment and the
+  // static_assert in config.cpp for the full per-version derivation).
+  // This test mirrors that static_assert and catches ABI drift.
+  REQUIRE(sizeof(Config) == 880);
+  REQUIRE(CURRENT_SCHEMA_VERSION == 11);
 }
 
 // ── v3 → v4 migration tests ────────────────────────────────────────────────────
