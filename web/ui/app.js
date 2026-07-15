@@ -410,6 +410,7 @@ function updateLiveUI() {
   if (p === '/' || p === '/dashboard') {
     updateDashboardCards();
     updatePackCards();
+    updateChartBadges();
   } else if (p === '/battery') {
     updateBatteryOverviewCards();
     updateDriftNow();
@@ -1057,13 +1058,11 @@ function renderPackCard(card, p) {
 // chartSrc: which source badge (if any) to show next to the chart title.
 // - drift is always BMS: the shunt is bank-level only and can't inform
 //   per-cell drift, so this is a hard fact, not a live-updating label.
-// - voltage's history ring (history_task.cpp make_fine_point()) is a raw
-//   average of BmsSystemSnapshot.pack[].pack_voltage — it does NOT (yet)
-//   follow the Battery Value Sources fusion the live "Pack Voltage"
-//   dashboard tile uses, so its badge is a static, honest "BMS" label
-//   rather than a live indicator. Making it follow the active source would
-//   need history_task.cpp to read SafetyState.voltage_display, which it
-//   currently has no path to (deferred; flagged as a follow-up).
+// - voltage's history ring (history_task.cpp make_fine_point()) now records
+//   the same fused Battery Value Sources value (SafetyState.voltage_display)
+//   the "Pack Voltage" dashboard tile uses, so its badge is a live indicator
+//   too — see chartLiveSrc() below. chartSrc here is just the initial/
+//   fallback label before the first live poll lands.
 // power/soc/temp/solar have no chart-title badge (unset = hidden).
 const SERIES_DEFS = {
   power:   { label: 'Power',      color: '#76D2D9', dec: 0, unit: 'W' },
@@ -1073,6 +1072,39 @@ const SERIES_DEFS = {
   drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV', chartSrc: 'bms' },
   solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
+
+// Live badge source for a chart series. voltage follows the exact same fused
+// result (sources.battery_voltage_src) as the Pack Voltage tile — same rule
+// as the aggregate-box badges — so it can never disagree with the dashboard.
+// Every other series keeps its static chartSrc label (drift is hard-BMS;
+// power/soc/temp/solar have no badge).
+function chartLiveSrc(key) {
+  const def = SERIES_DEFS[key];
+  if (!def) return null;
+  if (key === 'voltage') {
+    return (g_live && g_live.sources && g_live.sources.battery_voltage_src) || def.chartSrc;
+  }
+  return def.chartSrc;
+}
+
+// Refresh just the chart-title badges from the latest /api/live poll, without
+// touching the uPlot instances — keeps the badge live (2 s cadence) even
+// though the chart data itself only reloads every 60 s (loadCharts()).
+function updateChartBadges() {
+  const cfg = getChartConfig();
+  [['chart-a-src', cfg.a], ['chart-b-src', cfg.b]].forEach(([badgeId, key]) => {
+    const badgeEl = document.getElementById(badgeId);
+    if (!badgeEl) return;
+    const src = chartLiveSrc(key);
+    if (src) {
+      badgeEl.className = `card-src card-src-${src}`;
+      badgeEl.textContent = src.toUpperCase();
+      badgeEl.style.display = '';
+    } else {
+      badgeEl.style.display = 'none';
+    }
+  });
+}
 
 function getChartConfig() {
   return {
@@ -1216,7 +1248,7 @@ async function loadCharts() {
       if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
       const badgeEl = document.getElementById(badgeId);
       if (badgeEl) {
-        const src = SERIES_DEFS[key].chartSrc;
+        const src = chartLiveSrc(key);
         if (src) {
           badgeEl.className = `card-src card-src-${src}`;
           badgeEl.textContent = src.toUpperCase();
