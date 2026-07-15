@@ -729,15 +729,19 @@ TEST_CASE("lock: UV flag (0x10) → blocks DISCHARGE only, charge stays availabl
 }
 
 TEST_CASE("lock: BMS critical alarm (0x40) → blocks BOTH (non-directional)", "[lock]") {
-  // Pack with fresh non-UV critical alarm (bit 4) — the 0x44 bitmap is not
-  // decoded per-direction, so the conservative response stays "stop everything".
+  // Pack with fresh non-UV, non-OC critical alarm (bit 11, short-circuit
+  // protect) — this bit is not decoded per-direction, so the conservative
+  // response stays "stop everything". (Bit 4 used to stand in for "generic
+  // critical" here, but as of V3.3 bit 4 is DISCHARGE_OVER_CURRENT1_PROTECT
+  // and is direction-aware — see the charge/discharge over-current tests
+  // below — so this test now uses a bit that genuinely has no direction.)
   BmsSystemSnapshot snap{};
   snap.cycle_id              = 1;
   snap.produced_ms           = 150000;
   snap.pack_count_configured = 1;
   snap.pack_count_online     = 1;
   snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);
-  snap.pack[0].alarm_bits    = (1ULL << 4);  // critical, not UV/OV
+  snap.pack[0].alarm_bits    = (1ULL << 11);  // SHORT_CIRCUIT_PROTECT: critical, not UV/OV/OC
   snap.pack[0].last_alarm_ms = 120000;
 
   auto cfg  = make_cfg();
@@ -750,6 +754,86 @@ TEST_CASE("lock: BMS critical alarm (0x40) → blocks BOTH (non-directional)", "
   CHECK(out.ccl_amps == Catch::Approx(0.0f));
   CHECK(out.dcl_amps == Catch::Approx(0.0f));
   CHECK(out.lockout_flags == 0x03);                     // both directions flagged
+}
+
+TEST_CASE("lock: charge over-current (0x01) → blocks CHARGE only", "[lock]") {
+  // Pack with fresh charge over-current protect bit (bit 2). V3.3 direction-
+  // aware fix: this must block charge only, mirroring OV/UV, not fall into
+  // the old undifferentiated "BMS critical" both-directions bucket.
+  BmsSystemSnapshot snap{};
+  snap.cycle_id              = 1;
+  snap.produced_ms           = 150000;
+  snap.pack_count_configured = 1;
+  snap.pack_count_online     = 1;
+  snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);
+  snap.pack[0].alarm_bits    = (1ULL << 2);  // CHARGE_OVER_CURRENT_PROTECT
+  snap.pack[0].last_alarm_ms = 120000;
+
+  auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+
+  REQUIRE(out.alarm_flags & 0x01);
+  CHECK_FALSE(out.alarm_flags & 0x40);                  // not folded into the generic bucket
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));           // charging worsens charge-OC → blocked
+  CHECK(out.dcl_amps == Catch::Approx(1 * 30.0f));      // discharging unaffected → available
+  CHECK((out.lockout_flags & 0x01));
+  CHECK_FALSE((out.lockout_flags & 0x02));
+}
+
+TEST_CASE("lock: discharge over-current (0x04) → blocks DISCHARGE only", "[lock]") {
+  // Pack with fresh discharge over-current protect bit (bit 4). V3.3
+  // direction-aware fix: this must block discharge only.
+  BmsSystemSnapshot snap{};
+  snap.cycle_id              = 1;
+  snap.produced_ms           = 150000;
+  snap.pack_count_configured = 1;
+  snap.pack_count_online     = 1;
+  snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);
+  snap.pack[0].alarm_bits    = (1ULL << 4);  // DISCHARGE_OVER_CURRENT1_PROTECT
+  snap.pack[0].last_alarm_ms = 120000;
+
+  auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+
+  REQUIRE(out.alarm_flags & 0x04);
+  CHECK_FALSE(out.alarm_flags & 0x40);                  // not folded into the generic bucket
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));           // discharging worsens discharge-OC → blocked
+  CHECK(out.ccl_amps == Catch::Approx(1 * 30.0f));      // charging unaffected → available
+  CHECK((out.lockout_flags & 0x02));
+  CHECK_FALSE((out.lockout_flags & 0x01));
+}
+
+TEST_CASE("lock: charge-OC and under-voltage combined on one pack → both classified independently", "[lock]") {
+  // Regression for the if/else -> independent-classification rewrite: a single
+  // BMS alarm response can report multiple critical bits at once. Both must be
+  // classified, not just the first match (UV) swallowing the OC bit.
+  BmsSystemSnapshot snap{};
+  snap.cycle_id              = 1;
+  snap.produced_ms           = 150000;
+  snap.pack_count_configured = 1;
+  snap.pack_count_online     = 1;
+  snap.pack[0] = make_pack(0, true, 30.0f, 0.0f, 30, 2.0f, 0.10f, 25.0f, 25.0f);
+  snap.pack[0].alarm_bits    = (1ULL << 2) | (1ULL << 12);  // charge-OC + cell UV
+  snap.pack[0].last_alarm_ms = 120000;
+
+  auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+
+  REQUIRE(out.alarm_flags & 0x01);   // charge-OC classified
+  REQUIRE(out.alarm_flags & 0x10);   // UV also classified, not swallowed
+  CHECK_FALSE(out.alarm_flags & 0x40);
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));           // OV-path: charge-OC blocks charge
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));           // UV blocks discharge
+  CHECK(out.lockout_flags == 0x03);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

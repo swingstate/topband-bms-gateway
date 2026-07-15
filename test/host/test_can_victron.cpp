@@ -193,12 +193,17 @@ TEST_CASE("0x356 negative current encoded as signed 16-bit LE", "[can]") {
   REQUIRE(out[3] == 0xFF);
 }
 
-TEST_CASE("0x35A alarm_flags bits 0x01 and 0x40 both map to byte4 bit7", "[can]") {
+TEST_CASE("0x35A alarm_flags bits 0x01, 0x04 and 0x40 all map to byte4 bit7", "[can]") {
   SafetyState s{};
   uint8_t out[8];
 
-  SECTION("bit 0x01 only") {
+  SECTION("bit 0x01 only (charge over-current)") {
     s.alarm_flags = 0x01;
+    can::victron::build_0x35A(s, out);
+    REQUIRE((out[4] & 0x80) != 0);
+  }
+  SECTION("bit 0x04 only (discharge over-current, V3.3)") {
+    s.alarm_flags = 0x04;
     can::victron::build_0x35A(s, out);
     REQUIRE((out[4] & 0x80) != 0);
   }
@@ -207,8 +212,8 @@ TEST_CASE("0x35A alarm_flags bits 0x01 and 0x40 both map to byte4 bit7", "[can]"
     can::victron::build_0x35A(s, out);
     REQUIRE((out[4] & 0x80) != 0);
   }
-  SECTION("bits 0x01|0x40 combined: byte4=0x80 only once") {
-    s.alarm_flags = 0x01 | 0x40;
+  SECTION("bits 0x01|0x04|0x40 combined: byte4=0x80 only once") {
+    s.alarm_flags = 0x01 | 0x04 | 0x40;
     can::victron::build_0x35A(s, out);
     REQUIRE(out[4] == 0x80);
   }
