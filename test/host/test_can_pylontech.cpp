@@ -426,6 +426,28 @@ TEST_CASE("Pylontech 0x359 AUDIT: over-current bits never fabricated from CCL/DC
   REQUIRE((out[0] & 0x10) == 0);  // and definitely not under-temperature
 }
 
+TEST_CASE("Pylontech 0x359 AUDIT: charge over-current bit0 paired (V3.3)", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[1] & 0x01) == 0);
+  s.alarm_flags = 0x01;                       // genuine charge over-current
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[1] & 0x01) != 0);
+  REQUIRE((out[0] & 0x80) == 0);              // discharge bit stays clear
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: discharge over-current bit7 paired (V3.3)", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x80) == 0);
+  s.alarm_flags = 0x04;                       // genuine discharge over-current
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x80) != 0);
+  REQUIRE((out[1] & 0x01) == 0);              // charge bit stays clear
+}
+
 TEST_CASE("Pylontech 0x351 bytes 6-7 carry discharge voltage limit (DVL)", "[pylontech]") {
   SafetyState s{};
   s.cvl_volts = 53.5f;  s.ccl_amps = 120.0f;  s.dcl_amps = 120.0f;

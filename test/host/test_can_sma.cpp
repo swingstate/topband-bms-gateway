@@ -221,14 +221,19 @@ TEST_CASE("SMA 0x356 negative current encoded as signed 16-bit LE", "[sma]") {
   REQUIRE(out[3] == 0xFF);
 }
 
-TEST_CASE("SMA 0x35A bits 0x01+0x40 both set byte4 bit7 (high-priority alarm)", "[sma]") {
+TEST_CASE("SMA 0x35A bits 0x01, 0x04 and 0x40 all set byte4 bit7 (high-priority alarm)", "[sma]") {
   SafetyState s{};
   s.ccl_amps = 100.0f;
   s.dcl_amps = 100.0f;
   uint8_t out[8];
 
-  SECTION("bit 0x01 only") {
+  SECTION("bit 0x01 only (charge over-current)") {
     s.alarm_flags = 0x01;
+    can::sma::build_0x35A(s, out);
+    REQUIRE((out[4] & 0x80) != 0);
+  }
+  SECTION("bit 0x04 only (discharge over-current, V3.3)") {
+    s.alarm_flags = 0x04;
     can::sma::build_0x35A(s, out);
     REQUIRE((out[4] & 0x80) != 0);
   }

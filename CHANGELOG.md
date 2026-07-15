@@ -18,6 +18,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Direction-aware overcurrent lockout** (mirrors the earlier over-voltage/
+  under-voltage fix). Charge overcurrent and discharge overcurrent, reported by
+  the BMS as distinct bits, now block only their own direction (`alarm_flags`
+  0x01 / 0x04) instead of falling into the old undifferentiated "BMS critical"
+  bucket that blocked both. See `docs/research/v3.3-oc-direction-aware.md`.
+  **Awaiting owner hardware sign-off before release.**
 - **CAN TX now reports the dashboard's fused Combined SOC** (was interim BMS-only).
   All three protocol builders (Victron 0x355, Pylontech 0x355, SMA 0x355) now take
   their SOC from `can_tx_soc()`, which returns the Battery Value Sources fused value

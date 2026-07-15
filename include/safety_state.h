@@ -48,13 +48,19 @@ struct SafetyState {
   float    factor_charge;
   float    factor_discharge;
 
-  // Alarm bitmap — byte-identical to V2.67 (CAN-level constraint; see arch §4.4)
+  // Alarm bitmap — the 0x02/0x08/0x10/0x20/0x40/0x80 bits are byte-identical to
+  // V2.67 (CAN-level constraint; see arch §4.4). 0x01/0x04 are unused in V2.67
+  // (confirmed against test/host/fixtures/v267/v267_reference.py) and were
+  // added in V3.3 for direction-aware over-current — see below.
   uint8_t  alarm_flags;
+  // 0x01 = charge over-current (V3.3; BMS 0x44 CHARGE_OVER_CURRENT_PROTECT)
   // 0x02 = pack/cell overvolt
+  // 0x04 = discharge over-current (V3.3; BMS 0x44 DISCHARGE_OVER_CURRENT1_PROTECT)
   // 0x08 = temperature stop (charge or discharge cutoff)
   // 0x10 = pack/cell undervolt  (sysparam-sourced or BMS alarm UV bits)
   // 0x20 = cell drift / imbalance warning
-  // 0x40 = BMS reported critical alarm via 0x44
+  // 0x40 = BMS reported critical alarm via 0x44 (whatever is left after
+  //        UV/charge-OC/discharge-OC classification — not decoded per-direction)
   // 0x80 = no packs online
   // Direction of an active temperature stop (0x08 above is combined; see
   // temp_alarm below). temp_alarm is declared further down to sit in existing

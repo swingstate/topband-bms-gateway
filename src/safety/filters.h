@@ -26,6 +26,19 @@ constexpr uint64_t OV_ALARM_BITS = (1ULL << 0) | (1ULL << 58);
 // Bit positions for temperature alarm bits (V2.67 line 1420)
 constexpr uint64_t TEMP_ALARM_BITS = (1ULL << 5) | (1ULL << 6) | (1ULL << 59);
 
+// ── Over-current alarm bits (V3.3 direction-aware fix) ───────────────────────
+// TB_ALRMS::CHARGE_OVER_CURRENT_PROTECT (bit 2) and DISCHARGE_OVER_CURRENT1_PROTECT
+// (bit 4) — both already part of CRITICAL_ALARM_MASK above, previously folded
+// undifferentiated into the generic "BMS critical" bucket (alarm_flags 0x40,
+// blocks both directions). Split out here so the caller can block only the
+// direction that is actually overcurrent, mirroring the OV/UV fix.
+// NOTE: TB_ALRMS::DISCHARGE_OVER_CURRENT2_PROTECT (bit 56) is a second discharge
+// over-current stage that was never part of V2.67's CRITICAL_ALARM_MASK (see
+// above) and is deliberately left out of scope here — adding it would be a new
+// alarm detection, not a direction-aware routing fix of an existing one.
+constexpr uint64_t OC_CHARGE_ALARM_BITS    = (1ULL << 2);
+constexpr uint64_t OC_DISCHARGE_ALARM_BITS = (1ULL << 4);
+
 // ── Helper functions (V2.67 lines 1373-1407) ─────────────────────────────────
 
 // Per V2.67 tbUnderVoltSanityCap: returns an implausibility cap for pack UV.

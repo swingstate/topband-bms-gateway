@@ -86,10 +86,16 @@ void build_0x359(const SafetyState& s, uint8_t out[8]) {
   //
   // Not encoded: cell drift / imbalance (alarm_flags 0x20) has no standard
   // Pylontech 0x359 slot; it is surfaced via the gateway UI/MQTT, not invented
-  // onto an unrelated bit. There is no BMS-sourced over-current flag in
-  // alarm_flags, so byte0 bit7 / byte1 bit0 are only ever driven by a genuine
-  // BMS-reported alarm below, never by CCL/DCL being at their limit (which is
-  // already communicated via 0x351 current limits and 0x35C enable bits).
+  // onto an unrelated bit.
+  //
+  // V3.3: byte0 bit7 (discharge over-current) and byte1 bit0 (charge
+  // over-current) are now driven by alarm_flags 0x04/0x01 respectively — the
+  // BMS 0x44 bitmap's direction-aware over-current bits (see
+  // filters::OC_DISCHARGE_ALARM_BITS / OC_CHARGE_ALARM_BITS and
+  // docs/research/v3.3-oc-direction-aware.md). Still never driven by CCL/DCL
+  // being at their limit (that is communicated separately via 0x351 current
+  // limits and 0x35C enable bits) — only a genuine BMS-reported alarm sets
+  // these two bits.
   memset(out, 0, 8);
   const uint8_t af = s.alarm_flags;
 
@@ -98,8 +104,10 @@ void build_0x359(const SafetyState& s, uint8_t out[8]) {
   if (af & 0x10)            out[0] |= 0x04;  // bit2 under voltage
   if (s.temp_alarm & 0x02)  out[0] |= 0x08;  // bit3 over temperature (hot)
   if (s.temp_alarm & 0x01)  out[0] |= 0x10;  // bit4 under temperature (cold)
+  if (af & 0x04)            out[0] |= 0x80;  // bit7 discharge over-current (V3.3)
 
   // Byte 1 — alarms (protection) 2
+  if (af & 0x01)                  out[1] |= 0x01;  // bit0 charge over-current (V3.3)
   // BMS-reported critical alarm (0x44) and "no packs online" both map to the
   // BMS-internal / system-error bit — a genuine fault the inverter should see.
   if ((af & 0x40) || (af & 0x80)) out[1] |= 0x08;  // bit3 BMS internal / system error

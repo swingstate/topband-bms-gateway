@@ -60,13 +60,17 @@ void build_0x356(const SafetyState& s, uint8_t out[8]) {
 void build_0x35A(const SafetyState& s, uint8_t out[8]) {
   memset(out, 0, 8);
   // V2.67 line 2338 — Victron-protocol alarm flag translation.
-  // Bit 0x01 and 0x40 both map to byte4 bit 7 (high-priority alarm).
+  // Bits 0x01, 0x04 and 0x40 all map to byte4 bit 7 (high-priority alarm):
+  // charge over-current (V3.3), discharge over-current (V3.3) and BMS-reported
+  // critical alarm respectively — none has its own dedicated Victron bit, so
+  // each folds into the shared high-priority-alarm bit like 0x40 always did.
   // Bit 0x02 → byte4 bit 6 (overvolt alarm).
   // Bit 0x08 → byte4 bit 5 (temperature stop).
   // Bit 0x10 → byte4 bit 4 (undervolt alarm).
-  // Bits 0x20 (imbalance) and 0x80 (no packs) have no Victron CAN mapping.
+  // Bit 0x20 (imbalance) and 0x80 (no packs) have no Victron CAN mapping.
   uint8_t af = s.alarm_flags;
   if (af & 0x01) out[4] |= 0x80;
+  if (af & 0x04) out[4] |= 0x80;
   if (af & 0x40) out[4] |= 0x80;
   if (af & 0x02) out[4] |= 0x40;
   if (af & 0x08) out[4] |= 0x20;
