@@ -268,3 +268,15 @@ TEST_CASE("SMA 0x351 bytes 6-7 always zero", "[sma]") {
   REQUIRE(out[6] == 0x00);
   REQUIRE(out[7] == 0x00);
 }
+
+TEST_CASE("SMA 0x355 SOC follows fused Combined SOC when valid", "[sma]") {
+  SafetyState s{};
+  s.soc_avg = 72.0f;
+  s.soc_display = 88.0f;
+  s.soc_display_valid = true;
+  s.soh_avg = 98.0f;
+  uint8_t out[8];
+  can::sma::build_0x355(s, out);
+  REQUIRE(out[0] == 88);  // fused SOC, not soc_avg=72
+  REQUIRE(out[2] == 98);  // SOH stays BMS-only
+}

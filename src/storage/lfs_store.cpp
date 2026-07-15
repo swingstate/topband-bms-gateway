@@ -1,6 +1,13 @@
 #include "lfs_store.h"
+#ifndef NATIVE_BUILD
 #include "esp_littlefs.h"
 #include "esp_log.h"
+#else
+#define ESP_LOGI(tag, ...) (void)0
+#define ESP_LOGW(tag, ...) (void)0
+#define ESP_LOGE(tag, ...) (void)0
+#endif
+#include <cstdio>
 #include <cstring>
 #include <cerrno>
 #include <sys/stat.h>
@@ -8,13 +15,16 @@
 
 static const char* TAG = "lfs";
 
+#ifndef NATIVE_BUILD
 // LittleFS is registered under this VFS path prefix.
 static constexpr const char* LFS_BASE = "/lfs";
+#endif
 
 static bool g_mounted = false;
 
 namespace storage::lfs {
 
+#ifndef NATIVE_BUILD
 bool init() {
   esp_vfs_littlefs_conf_t conf = {
     .base_path              = LFS_BASE,
@@ -46,6 +56,14 @@ bool init() {
   }
   return false;
 }
+#else
+// NATIVE_BUILD: host tests operate directly on the real host filesystem
+// (relative paths under the test binary's CWD) with no VFS mount step.
+bool init() {
+  g_mounted = true;
+  return true;
+}
+#endif
 
 bool exists(const char* path) {
   struct stat st;
@@ -60,6 +78,14 @@ size_t read_file(const char* path, char* buf, size_t buf_size) {
   fclose(f);
   buf[n] = '\0';
   return n;
+}
+
+bool read_file_exact(const char* path, uint8_t* buf, size_t len) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return false;
+  size_t n = fread(buf, 1, len, f);
+  fclose(f);
+  return n == len;
 }
 
 bool write_file_atomic(const char* path, const uint8_t* data, size_t len) {
@@ -126,6 +152,7 @@ bool remove_file(const char* path) {
   return false;
 }
 
+#ifndef NATIVE_BUILD
 size_t total_bytes() {
   if (!g_mounted) return 0;
   size_t total = 0, used = 0;
@@ -139,5 +166,9 @@ size_t free_bytes() {
   esp_littlefs_info("littlefs", &total, &used);
   return total > used ? total - used : 0;
 }
+#else
+size_t total_bytes() { return 0; }
+size_t free_bytes()  { return 0; }
+#endif
 
 }  // namespace storage::lfs

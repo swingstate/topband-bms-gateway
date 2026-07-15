@@ -71,7 +71,9 @@ const routes = {
   '/shunt':     () => navigate('/battery'),
   '/general':   renderSettings,   // backward-compat alias
   '/settings':  renderSettings,
-  '/network':   renderNetwork,
+  // Network moved into Settings; rewrite old /network links/bookmarks to the
+  // Network section and render it in one pass (renderSettings reads location.hash).
+  '/network':   () => { history.replaceState({}, '', '/settings#network'); renderSettings(); },
   '/alerts':    renderAlerts,
   '/diag':      renderDiag,
 };
@@ -92,8 +94,9 @@ function navigate(path) {
     clearInterval(g_diag_timer);
     g_diag_timer = null;
   }
-  // Stop network polling when leaving the network page.
-  if (path !== '/network' && g_network_timer) {
+  // Stop network status polling when leaving Settings (the Network section lives
+  // there now). Switching between Settings sections is handled in renderSettingsSection.
+  if (path !== '/settings' && path !== '/general' && g_network_timer) {
     clearInterval(g_network_timer);
     g_network_timer = null;
   }
@@ -130,7 +133,6 @@ function updateSidebarActive(path) {
     if (path.startsWith('/battery') && href === '/battery') { el.classList.add('active'); return; }
     if (path === '/solar'  && href === '/solar')  { el.classList.add('active'); return; }
     if ((path === '/settings' || path === '/general') && href === '/settings') { el.classList.add('active'); return; }
-    if (path === '/network' && href === '/network') { el.classList.add('active'); return; }
   });
 }
 
@@ -166,8 +168,8 @@ function pill(text, cls) {
 }
 function chargePill(current) {
   const a = Number(current);
-  if (a > 0.5)  return pill('Charging',    'pill-charging');
-  if (a < -0.5) return pill('Discharging', 'pill-discharging');
+  if (a >= 0.5)  return pill('Charging',    'pill-charging');
+  if (a <= -0.5) return pill('Discharging', 'pill-discharging');
   return pill('Idle', 'pill-idle');
 }
 
@@ -259,6 +261,25 @@ function alarmTemp(v) {
   return v > (g_config.charge_temp_max - 5) || v < (g_config.charge_temp_min + 5);
 }
 function alarmSoc(v)      { return v !== null && v < 10; }
+
+// Human reason for a direction-specific protection lockout. Mirrors
+// src/bms/poller.cpp lockout_reason() and runSafety's block_charge/block_discharge.
+// dir: 0x01 = charge disabled, 0x02 = discharge disabled.
+function lockoutReason(dir, flags, tempAlarm) {
+  flags = flags || 0; tempAlarm = tempAlarm || 0;
+  if (flags & 0x80) return 'no packs online';
+  if (dir === 0x01) {
+    if (flags & 0x02) return 'cell/pack over-voltage';
+    if (flags & 0x08) return (tempAlarm & 0x01) ? 'temperature too low to charge'
+                                                : 'temperature out of charge range';
+    if (flags & 0x40) return 'BMS critical alarm';
+  } else {
+    if (flags & 0x10) return 'cell/pack under-voltage';
+    if (flags & 0x08) return 'temperature out of discharge range';
+    if (flags & 0x40) return 'BMS critical alarm';
+  }
+  return 'protection active';
+}
 
 async function fetchLive() {
   try {
@@ -435,11 +456,11 @@ function renderDashboard() {
     <div class="metrics-grid" id="metrics-grid"></div>
     <div class="charts-row">
       <div class="card chart-card">
-        <div class="chart-title" id="chart-a-title">Power / SOC — last 2 h</div>
+        <div class="chart-title"><span id="chart-a-title">Power / SOC — last 2 h</span><span class="card-src" id="chart-a-src" style="display:none"></span></div>
         <div id="chart-a-plot" class="chart-plot"></div>
       </div>
       <div class="card chart-card">
-        <div class="chart-title" id="chart-b-title">Voltage / Temp — last 2 h</div>
+        <div class="chart-title"><span id="chart-b-title">Voltage / Temp — last 2 h</span><span class="card-src" id="chart-b-src" style="display:none"></span></div>
         <div id="chart-b-plot" class="chart-plot"></div>
       </div>
     </div>
@@ -460,13 +481,18 @@ function updateDashboardCards() {
   const packs  = snap.packs || [];
 
   // Aggregate from safety (already computed by firmware).
-  const soc    = safety.soc_avg         !== undefined ? safety.soc_avg         : null;
+  // soc/volt/cur are the Battery Value Sources fused values (shunt leads per the
+  // Auto/Manual policy when fresh, else BMS — see sources.battery_*_src for
+  // which one is active per metric). soh/temp are BMS-only; the backend sends
+  // JSON null for any of these when the source has no usable data right now, so
+  // they come through here as null and render as "—", never a misleading 0.
+  const soc    = safety.soc_display     !== undefined ? safety.soc_display     : null;
   const soh    = safety.soh_avg         !== undefined ? safety.soh_avg         : null;
   const cvl    = safety.cvl_volts       !== undefined ? safety.cvl_volts       : null;
   const ccl    = safety.ccl_amps        !== undefined ? safety.ccl_amps        : null;
   const dcl    = safety.dcl_amps        !== undefined ? safety.dcl_amps        : null;
-  const cur    = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
-  const volt   = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
+  const cur    = safety.current_display !== undefined ? safety.current_display : null;
+  const volt   = safety.voltage_display !== undefined ? safety.voltage_display : null;
   const temp   = safety.temp_avg        !== undefined ? safety.temp_avg        : null;
 
   // Per-cell min/max/drift: find across all online packs.
@@ -488,12 +514,27 @@ function updateDashboardCards() {
   const rtState = (g_live && g_live.runtime_est_state) || 'idle';
   const rtLabels = { until_empty: 'Until empty', until_full: 'Until full', idle: 'Idle' };
 
+  // Direction-aware protection lockout (safety.lockout_flags): 0x01 charge,
+  // 0x02 discharge. Drives the Runtime Estimate banner + a lighter charge note.
+  const lockout    = safety.lockout_flags || 0;
+  const tempAlarm  = safety.temp_alarm || 0;
+  const dischgOff  = !!(lockout & 0x02);
+  const chargeOff  = !!(lockout & 0x01);
+  const rtSub = dischgOff
+    ? `<span style="color:var(--red)">Discharge disabled: ${lockoutReason(0x02, alarmFlags, tempAlarm)}</span>`
+    : (rtLabels[rtState] || 'Idle');
+
   // Sources section (MPPT / Shunt data from firmware aggregator).
   const sources   = (g_live && g_live.sources) || {};
   const mpptSrc   = sources.mppt || {};
   const shuntSrc  = sources.shunt || {};
   const curSrcId  = sources.battery_current_src || 'bms';
   const curBadge  = `<span class="source-badge badge-${curSrcId}">${curSrcId.toUpperCase()}</span>`;
+  const socSrcId  = sources.battery_soc_src || 'bms';
+  const voltSrcId = sources.battery_voltage_src || 'bms';
+  // Battery Power (Total) is derived from current x voltage; its badge follows
+  // Current's source since power tracks current's sign/magnitude most directly.
+  const powSrcId  = curSrcId;
 
   // MPPT tiles — only shown when MPPT enabled and seen.
   const mpptEnabled = mpptSrc.enabled && mpptSrc.seen;
@@ -553,16 +594,19 @@ function updateDashboardCards() {
   const cards = [
     // Row 1
     col1top,
-    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: chargePill(cur),                            color: 'var(--text-primary)', alarm: false,            src: 'bms' },
-    { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: 'bms' },
+    { label: 'Battery Power (Total)', value: power !== null ? fmt(power, 0) : '—', unit: 'W', sub: (cur !== null ? chargePill(cur) : '') + (chargeOff ? ` <span style="color:var(--amber);font-size:10px">Charge disabled: ${lockoutReason(0x01, alarmFlags, tempAlarm)}</span>` : ''), color: 'var(--text-primary)', alarm: false,            src: powSrcId },
+    { label: 'State of Charge',       value: soc !== null ? fmt(soc, 0) : '—',     unit: '%',  sub: soh !== null ? `SOH ${fmt(soh, 0)}%` : '', color: socColor(soc),         alarm: alarmSoc(soc),    src: socSrcId },
     { label: 'Cell Drift',            value: cellDrift !== null ? fmt(cellDrift * 1000, 0) : '—', unit: 'mV', sub: alarmFlags & 0x20 ? '<span style="color:var(--amber)">Imbalance</span>' : 'Normal', color: driftColor(cellDrift), alarm: alarmDrift(cellDrift), src: 'bms' },
     { label: 'Temperature',           value: temp !== null ? fmt(temp, 1) : '—',   unit: '°C', sub: alarmFlags & 0x08 ? '<span style="color:var(--red)">Temp stop</span>' : 'Normal', color: 'var(--text-primary)', alarm: alarmTemp(temp), src: 'bms' },
     // Row 2
     col1bot,
     { label: 'Current (total)',  value: cur !== null ? fmtA(cur) : '—',   unit: 'A', sub: `CCL ${fmt(ccl,0)} / DCL ${fmt(dcl,0)} A`, color: 'var(--text-primary)', alarm: false,           src: curSrcId },
-    { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: 'bms' },
-    { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: 'bms' },
-    { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtLabels[rtState] || 'Idle', color: 'var(--text-primary)', alarm: false, src: 'bms' },
+    { label: 'Pack Voltage',     value: volt !== null ? fmt(volt, 2) : '—', unit: 'V', sub: `CVL ${fmt(cvl, 2)} V`,                   color: 'var(--text-primary)', alarm: alarmVolt(volt), src: voltSrcId },
+    // Energy integration (poller.cpp) already accumulates from the same fused
+    // current/voltage as the Combined Current tile, so its badge follows
+    // curSrcId too rather than being hardwired to BMS.
+    { label: 'Energy Today',     value: energy.today_in_kwh !== undefined ? fmt(energy.today_in_kwh, 2) : '—', unit: 'kWh in', sub: energy.today_out_kwh !== undefined ? `Out: ${fmt(energy.today_out_kwh, 2)} kWh` : '', color: 'var(--text-primary)', alarm: false, src: curSrcId },
+    { label: 'Runtime Est.',     value: rtMin !== undefined && rtMin >= 0 ? formatRuntime(rtMin) : '—', unit: '', sub: rtSub, color: 'var(--text-primary)', alarm: dischgOff, src: 'bms' },
   ];
 
   // Build card structure once (or when count / col-1 label changes — MPPT toggled).
@@ -1010,12 +1054,23 @@ function renderPackCard(card, p) {
 
 /* ── History charts (uPlot) ─────────────────────────────────────────────────── */
 
+// chartSrc: which source badge (if any) to show next to the chart title.
+// - drift is always BMS: the shunt is bank-level only and can't inform
+//   per-cell drift, so this is a hard fact, not a live-updating label.
+// - voltage's history ring (history_task.cpp make_fine_point()) is a raw
+//   average of BmsSystemSnapshot.pack[].pack_voltage — it does NOT (yet)
+//   follow the Battery Value Sources fusion the live "Pack Voltage"
+//   dashboard tile uses, so its badge is a static, honest "BMS" label
+//   rather than a live indicator. Making it follow the active source would
+//   need history_task.cpp to read SafetyState.voltage_display, which it
+//   currently has no path to (deferred; flagged as a follow-up).
+// power/soc/temp/solar have no chart-title badge (unset = hidden).
 const SERIES_DEFS = {
   power:   { label: 'Power',      color: '#76D2D9', dec: 0, unit: 'W' },
   soc:     { label: 'SOC',        color: '#9B6FD4', dec: 1, unit: '%', scaleRange: { range: [0, 100] } },
-  voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V' },
+  voltage: { label: 'Voltage',    color: '#E25548', dec: 1, unit: 'V', chartSrc: 'bms' },
   temp:    { label: 'Temp',       color: '#E89C5C', dec: 1, unit: '°C' },
-  drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV' },
+  drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV', chartSrc: 'bms' },
   solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
 
@@ -1154,29 +1209,43 @@ async function loadCharts() {
       fetched[s] = (d && d.series && d.series[0]) || null;
     }
 
-    const doUpdate = (plotId, titleId, key, existing, existingKey) => {
+    const doUpdate = (plotId, titleId, badgeId, key, existing, existingKey) => {
       const plotEl = document.getElementById(plotId);
       if (!plotEl) return { chart: null, key: null };
       const titleEl = document.getElementById(titleId);
       if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
+      const badgeEl = document.getElementById(badgeId);
+      if (badgeEl) {
+        const src = SERIES_DEFS[key].chartSrc;
+        if (src) {
+          badgeEl.className = `card-src card-src-${src}`;
+          badgeEl.textContent = src.toUpperCase();
+          badgeEl.style.display = '';
+        } else {
+          badgeEl.style.display = 'none';
+        }
+      }
       return buildOrUpdateChart(plotEl, key, buildUplotData(fetched[key] || null), existing, existingKey, null);
     };
 
-    const ra = doUpdate('chart-a-plot', 'chart-a-title', cfg.a, g_chart_a, g_chart_a_key);
+    const ra = doUpdate('chart-a-plot', 'chart-a-title', 'chart-a-src', cfg.a, g_chart_a, g_chart_a_key);
     g_chart_a = ra.chart; g_chart_a_key = ra.key;
 
-    const rb = doUpdate('chart-b-plot', 'chart-b-title', cfg.b, g_chart_b, g_chart_b_key);
+    const rb = doUpdate('chart-b-plot', 'chart-b-title', 'chart-b-src', cfg.b, g_chart_b, g_chart_b_key);
     g_chart_b = rb.chart; g_chart_b_key = rb.key;
   } catch (_) { /* charts unavailable — silently ignore */ }
 }
 
 /* ── Battery overview page ──────────────────────────────────────────────────── */
 
-function batteryMBox(label, id) {
+function batteryMBox(label, id, withBadge) {
+  const badge = withBadge
+    ? `<div style="margin-top:4px"><span class="card-src" id="${id}-src">—</span></div>` : '';
   return `
     <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
       <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
       <div id="${id}" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
+      ${badge}
     </div>`;
 }
 
@@ -1187,58 +1256,6 @@ function batteryVDiv() {
 function renderBattery() {
   stopBatteryDetailPoll();
   const root = document.getElementById('page-root');
-  const shuntMode    = (g_config && g_config.shunt_current_mode != null) ? g_config.shunt_current_mode : 0;
-  const shuntEnabled = !!(g_config && g_config.ble_shunt_enabled);
-
-  const shuntCard = shuntEnabled ? `
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
-    <div class="card" style="padding-top:14px">
-      <div style="padding:0 18px 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div class="pack-status-dot offline" id="shunt-strip-dot" style="flex-shrink:0"></div>
-        <span style="font-weight:600;font-size:14px" id="shunt-strip-text">—</span>
-        <span style="margin-left:auto;font-size:12px;color:var(--text-muted)" id="shunt-strip-age"></span>
-      </div>
-      <div style="border-top:1px solid var(--border)"></div>
-      <div style="display:flex;align-items:center">
-        ${batteryMBox('Current', 'sagg-curr')}
-        ${batteryVDiv()}
-        ${batteryMBox('Voltage', 'sagg-volt')}
-        ${batteryVDiv()}
-        ${batteryMBox('SOC', 'sagg-soc')}
-      </div>
-      <div style="border-top:1px solid var(--border);padding:16px 18px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:12px">Current Source Mode</div>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="shunt_mode" value="0" ${shuntMode===0?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>Auto</strong> <span style="color:var(--text-muted)">— BMS leads; shunt fills in below 0.5&thinsp;A dead-zone</span></span>
-          </label>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="shunt_mode" value="1" ${shuntMode===1?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>Shunt leads</strong> <span style="color:var(--text-muted)">— SmartShunt always used when available, BMS fallback</span></span>
-          </label>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="radio" name="shunt_mode" value="2" ${shuntMode===2?'checked':''} style="margin-top:2px;width:auto">
-            <span><strong>BMS leads</strong> <span style="color:var(--text-muted)">— BMS always used; shunt ignored</span></span>
-          </label>
-        </div>
-        <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
-          <button class="btn btn-primary" onclick="saveShuntMode()">Save</button>
-          <span id="shunt-mode-feedback" style="font-size:12px"></span>
-          <span style="margin-left:auto;font-size:12px;color:var(--text-muted)">Active: <span class="card-src" id="shunt-active-src">—</span></span>
-        </div>
-      </div>
-    </div>` : (g_config ? `
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-top:20px;margin-bottom:8px">SmartShunt</div>
-    <div class="card" style="padding:18px">
-      <div style="display:flex;align-items:center;gap:14px">
-        <div style="flex-shrink:0;width:10px;height:10px;border-radius:50%;background:var(--neutral-300)"></div>
-        <div>
-          <div style="font-weight:600;font-size:14px;margin-bottom:4px">SmartShunt &mdash; coming in v3.2</div>
-          <div style="font-size:12px;color:var(--text-muted)">Battery-monitor integration (SOC, precise current, consumed Ah) is planned for the next release.</div>
-        </div>
-      </div>
-    </div>` : '');
 
   root.innerHTML = `
     <div style="max-width:860px;margin:0 auto">
@@ -1249,15 +1266,27 @@ function renderBattery() {
         <span id="batt-strip-pill"></span>
       </div>
       <!-- Aggregate metrics -->
-      <div class="card" style="padding-top:14px;padding-bottom:14px;margin-bottom:16px">
+      <div class="card" style="padding-top:10px;padding-bottom:14px;margin-bottom:16px">
+        <div style="padding:0 18px 10px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);margin-bottom:4px">
+          <div class="pack-status-dot offline" id="combined-fresh-dot" style="flex-shrink:0;width:8px;height:8px"></div>
+          <span style="font-size:11px;color:var(--text-muted)" id="combined-fresh-text">—</span>
+        </div>
         <div style="display:flex;align-items:center">
-          ${batteryMBox('Combined SOC', 'bagg-soc')}
+          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Combined SOC</div>
+            <div id="bagg-soc" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
+            <div style="margin-top:4px"><span class="card-src" id="bagg-soc-src">—</span></div>
+          </div>
           ${batteryVDiv()}
-          ${batteryMBox('Pack Voltage', 'bagg-volt')}
+          ${batteryMBox('Pack Voltage', 'bagg-volt', true)}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Current', 'bagg-curr')}
+          ${batteryMBox('Combined Current', 'bagg-curr', true)}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Power', 'bagg-pow')}
+          ${batteryMBox('Combined Power', 'bagg-pow', true)}
+        </div>
+        <div style="border-top:1px solid var(--border);padding:10px 18px 0;font-size:12px;color:var(--text-muted)">
+          <span id="combined-source-sentence">—</span>
+          Configure sources in <a href="/settings" style="color:var(--accent)" onclick="navigate('/settings');showSettingsSection('battery');return false;">Settings &rarr; Battery &rarr; Battery Value Sources</a>.
         </div>
       </div>
       <!-- Pack grid -->
@@ -1278,38 +1307,11 @@ function renderBattery() {
           <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">Loading drift data…</div>
         </div>
       </div>
-      ${shuntCard}
     </div>`;
   updateBatteryOverviewCards();
   if (g_drift_timer) { clearInterval(g_drift_timer); g_drift_timer = null; }
   loadDriftDetails();
   g_drift_timer = setInterval(loadDriftDetails, 30000);
-}
-
-async function saveShuntMode() {
-  const fb = document.getElementById('shunt-mode-feedback');
-  const sel = document.querySelector('input[name="shunt_mode"]:checked');
-  if (!sel) return;
-  const mode = parseInt(sel.value, 10);
-  const cfg = Object.assign({}, g_config, { shunt_current_mode: mode, auth_hash: '' });
-  try {
-    const r = await apiFetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    });
-    if (!r) return;
-    const data = await r.json();
-    if (r.ok) {
-      g_config = data;
-      if (fb) { fb.style.color = 'var(--color-success)'; fb.textContent = 'Saved.'; }
-      setTimeout(() => { if (fb) fb.textContent = ''; }, 2000);
-    } else {
-      if (fb) { fb.style.color = 'var(--red)'; fb.textContent = data.error || 'Save failed.'; }
-    }
-  } catch (e) {
-    if (fb) { fb.style.color = 'var(--red)'; fb.textContent = 'Network error.'; }
-  }
 }
 
 function setEl(id, text, color) {
@@ -1335,12 +1337,15 @@ function updateBatteryOverviewCards() {
   if (dot) { dot.className = 'pack-status-dot ' + (online > 0 ? 'online' : 'offline'); }
   setEl('batt-strip-text', `${online}/${total} packs online`);
   const pillEl = document.getElementById('batt-strip-pill');
-  if (pillEl) pillEl.innerHTML = safety.pack_current_total !== undefined ? chargePill(safety.pack_current_total) : '';
+  if (pillEl) pillEl.innerHTML = safety.current_display !== undefined && safety.current_display !== null
+    ? chargePill(safety.current_display) : '';
   // ── Aggregate metric boxes ──
-  const socAvg = safety.soc_avg;
-  const soc  = socAvg !== undefined ? socAvg : null;
-  const volt = safety.pack_voltage_avg !== undefined ? safety.pack_voltage_avg : null;
-  const cur  = safety.pack_current_total !== undefined ? safety.pack_current_total : null;
+  // All three are the Battery Value Sources fused values (see sources.battery_*_src
+  // for which source fed each one) — never the raw BMS-only safety.pack_voltage_avg/
+  // pack_current_total/soc_avg, which stay reserved for safety/CAN TX.
+  const soc  = (safety.soc_display     !== undefined) ? safety.soc_display     : null;
+  const volt = (safety.voltage_display !== undefined) ? safety.voltage_display : null;
+  const cur  = (safety.current_display !== undefined) ? safety.current_display : null;
   const pow  = (cur !== null && volt !== null) ? cur * volt : null;
 
   setEl('bagg-soc',  soc  !== null ? fmt(soc,  0)  + ' %' : '—', soc  !== null ? socColor(soc)         : 'var(--text-muted)');
@@ -1348,20 +1353,64 @@ function updateBatteryOverviewCards() {
   setEl('bagg-curr', cur  !== null ? fmtA(cur)  + ' A'   : '—', cur  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
   setEl('bagg-pow',  pow  !== null ? fmt(pow,  0)  + ' W' : '—', pow  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
 
-  // ── SmartShunt live values ──
-  const shunt = sources.shunt || {};
-  const shuntSeen  = !!shunt.seen;
-  const shuntStale = shuntSeen && (shunt.ms_since_last_seen || 0) > 30000;
-  const shuntDot = document.getElementById('shunt-strip-dot');
-  if (shuntDot) shuntDot.className = 'pack-status-dot ' + (shuntSeen && !shuntStale ? 'online' : 'offline');
-  setEl('shunt-strip-text', shuntSeen ? (shuntStale ? 'Stale' : 'Receiving data') : 'Not seen');
-  setEl('shunt-strip-age', shuntSeen ? Math.round((shunt.ms_since_last_seen || 0) / 1000) + ' s ago' : '');
-  setEl('sagg-curr', shunt.current_a !== undefined ? fmtA(shunt.current_a) + ' A' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
-  setEl('sagg-volt', shunt.voltage_v !== undefined ? fmt(shunt.voltage_v, 2) + ' V' : '—', shuntSeen ? 'var(--text-primary)' : 'var(--text-muted)');
-  setEl('sagg-soc',  shunt.soc_pct  !== undefined ? fmt(shunt.soc_pct, 1) + ' %' : '—', shuntSeen ? socColor(shunt.soc_pct) : 'var(--text-muted)');
-  const curSrcId = sources.battery_current_src || 'bms';
-  const srcEl = document.getElementById('shunt-active-src');
-  if (srcEl) { srcEl.textContent = curSrcId.toUpperCase(); srcEl.className = `card-src card-src-${curSrcId}`; }
+  // ── Source badges ── each badge MUST come from the same fused result as the
+  // number it's labelling (sources.battery_*_src mirrors safety.*_source_shunt),
+  // so a badge can never disagree with the value shown next to it. Power has no
+  // source of its own (derived V x I) so its badge follows Current's source —
+  // same rule already used for the Dashboard's "Battery Power (Total)" card.
+  const voltSrcId = sources.battery_voltage_src || 'bms';
+  const currSrcId = sources.battery_current_src || 'bms';
+  const socSrcId  = sources.battery_soc_src     || 'bms';
+  const badgeMap = {
+    'bagg-soc-src':  socSrcId,
+    'bagg-volt-src': voltSrcId,
+    'bagg-curr-src': currSrcId,
+    'bagg-pow-src':  currSrcId,
+  };
+  Object.entries(badgeMap).forEach(([id, srcId]) => {
+    const e = document.getElementById(id);
+    if (e) { e.textContent = srcId.toUpperCase(); e.className = `card-src card-src-${srcId}`; }
+  });
+
+  // ── Freshness indicator ── reflects whichever source is active for Current
+  // (the most dynamically live of the three combined metrics, same one the
+  // charge/discharge pill above is keyed on) — not hardcoded to the shunt, so
+  // it stays meaningful when Battery Value Sources is set to BMS-led.
+  {
+    const shunt = sources.shunt || {};
+    const shuntSeen  = !!shunt.seen;
+    const shuntStale = shuntSeen && (shunt.ms_since_last_seen || 0) > 30000;
+    const freshDot = document.getElementById('combined-fresh-dot');
+    let freshOk, freshText;
+    if (currSrcId === 'shunt') {
+      freshOk = shuntSeen && !shuntStale;
+      freshText = !shuntSeen ? 'SmartShunt: not seen yet'
+        : (shuntStale ? `SmartShunt: stale (${Math.round((shunt.ms_since_last_seen || 0) / 1000)}s ago)`
+                      : `SmartShunt: receiving data (${Math.round((shunt.ms_since_last_seen || 0) / 1000)}s ago)`);
+    } else {
+      // BMS freshness: age of the current pack snapshot vs. device uptime
+      // (both esp_timer-based clocks, directly comparable).
+      const nowDeviceMs = (g_live && g_live.uptime_s !== undefined) ? g_live.uptime_s * 1000 : null;
+      const bmsAgeMs = (nowDeviceMs !== null && snap.produced_ms !== undefined)
+        ? Math.max(0, nowDeviceMs - snap.produced_ms) : null;
+      freshOk = bmsAgeMs !== null && bmsAgeMs < 10000;
+      freshText = bmsAgeMs === null ? 'BMS: not yet polled'
+        : `BMS: updating (${Math.round(bmsAgeMs / 1000)}s ago)`;
+    }
+    if (freshDot) freshDot.className = 'pack-status-dot ' + (freshOk ? 'online' : 'offline');
+    setEl('combined-fresh-text', freshText);
+  }
+
+  // ── Dynamic explanatory sentence ── Auto mode always yields all-shunt or
+  // all-bms (uniform policy); Manual mode can mix per metric.
+  {
+    const allShunt = voltSrcId === 'shunt' && currSrcId === 'shunt' && socSrcId === 'shunt';
+    const allBms   = voltSrcId === 'bms'   && currSrcId === 'bms'   && socSrcId === 'bms';
+    const sentence = allShunt ? 'Combined values from SmartShunt.'
+      : allBms ? 'Combined values from BMS pack average.'
+               : 'Combined values sourced per metric — see badges above.';
+    setEl('combined-source-sentence', sentence);
+  }
 
   // ── Pack grid ──
   if (packs.length === 0) {
@@ -1593,12 +1642,16 @@ function pwField(id, label, autocomplete, placeholder) {
 const SETTINGS_SECTIONS = [
   { id: 'battery',  label: 'Battery',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M20 11h2v2h-2"/></svg>' },
+  { id: 'can',      label: 'CAN',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M7 14h.01M12 10h.01M12 14h.01M17 10h.01M17 14h.01"/></svg>' },
   { id: 'hardware', label: 'Hardware',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16M15 4v16M4 9h16M4 15h16"/></svg>' },
   { id: 'charts',  label: 'Charts',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' },
   { id: 'time',    label: 'Time',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
+  { id: 'network', label: 'Network',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12" y2="20"/></svg>' },
   { id: 'mqtt',    label: 'MQTT',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>' },
   { id: 'ble',     label: 'BLE',
@@ -1659,11 +1712,15 @@ function showSettingsSection(id) {
 function renderSettingsSection(id) {
   const content = document.getElementById('settings-content');
   if (!content || !g_config) return;
+  // Stop Network status polling left running from a previously-shown Network section.
+  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
   switch (id) {
     case 'battery':  content.innerHTML = renderSettingsBattery();  break;
+    case 'can':      content.innerHTML = renderSettingsCan();      break;
     case 'hardware': content.innerHTML = renderSettingsHardware(); break;
     case 'charts':   content.innerHTML = renderSettingsCharts();   break;
     case 'time':     content.innerHTML = renderSettingsTime();     break;
+    case 'network':  content.innerHTML = renderSettingsNetwork();  startNetworkStatusPoll(); break;
     case 'mqtt':          content.innerHTML = renderSettingsMqtt();          break;
     case 'ble':           content.innerHTML = renderSettingsBle();           break;
     case 'notifications': content.innerHTML = renderSettingsNotifications(); loadNotifyData(); break;
@@ -1886,6 +1943,122 @@ async function saveHardwareSection() {
   }
 }
 
+/* ── CAN / Inverter (Settings -> CAN) ──────────────────────────────────────────
+ * Moved off Settings -> Battery: CAN/inverter output protocol is a distinct
+ * concern from battery/BMS/shunt configuration. */
+function renderSettingsCan() {
+  const c = g_config;
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
+        <div class="settings-section-title">CAN / Inverter</div>
+        <div class="form-group">
+          <label>Inverter Protocol</label>
+          <div class="proto-options">
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="-1" ${!c.can_enabled ? 'checked' : ''}>
+              <span class="proto-name">Disabled</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="0" ${c.can_enabled && c.can_protocol === 0 ? 'checked' : ''}>
+              <span class="proto-name">Victron</span><span class="proto-desc">— HIL-verified</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="1" ${c.can_enabled && c.can_protocol === 1 ? 'checked' : ''}>
+              <span class="proto-name">Pylontech</span><span class="proto-desc">— Spec-derived, community-validated</span>
+            </label>
+            <label class="proto-option">
+              <input type="radio" name="can_protocol_radio" value="2" ${c.can_enabled && c.can_protocol === 2 ? 'checked' : ''}>
+              <span class="proto-name">SMA</span><span class="proto-desc">— Spec-derived, community-validated</span>
+            </label>
+          </div>
+          <div class="help" style="margin-top:8px">
+            Pylontech and SMA implementations are derived from spec.
+            The maintainer cannot HIL-verify these against their respective inverters.
+            Reports from users with Pylontech or SMA hardware are welcome.
+          </div>
+        </div>
+      </div>
+
+      <div id="can-feedback" class="feedback-msg"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveCanSection()">Save</button>
+      </div>
+    </div>
+  `;
+}
+
+function saveCanSection() {
+  const protoChecked = document.querySelector('input[name="can_protocol_radio"]:checked');
+  const protoVal = protoChecked ? Number(protoChecked.value) : null;
+
+  let overrides = {};
+  if (protoVal === -1) {
+    overrides = { can_enabled: false };
+  } else if (protoVal !== null && protoVal >= 0) {
+    overrides = { can_enabled: true, can_protocol: protoVal };
+  }
+
+  saveSectionFields([], 'can-feedback', overrides);
+}
+
+/* ── Battery Value Sources (Settings -> Battery) ──────────────────────────────
+ * Consolidates the former separate "Current Source Mode" / "Bank SOC Source
+ * Mode" selectors (previously scattered on the /battery overview page) into
+ * one Auto/Manual policy. Display/dashboard/MQTT only — charge-taper and CAN
+ * TX are permanently BMS-only regardless of this setting (runSafety.cpp). */
+function renderBatteryValueSourcesSection(c) {
+  const shuntEnabled = !!c.ble_shunt_enabled;
+  const policy = c.battery_source_policy !== undefined ? c.battery_source_policy : 0; // default Auto
+  const isManual = policy === 1;
+  const metrics = [
+    { key: 'voltage', label: 'Voltage' },
+    { key: 'current', label: 'Current' },
+    { key: 'soc',     label: 'SOC' },
+  ];
+  return `
+    <div class="settings-section">
+      <div class="settings-section-title">Battery Value Sources</div>
+      <div class="help" style="margin-bottom:10px">
+        Controls where the Voltage, Current, and SOC shown on the dashboard and published
+        to MQTT come from when the SmartShunt is enabled. Display only &mdash; charge-taper
+        safety logic and CAN TX to the inverter always use the BMS value, in Auto or Manual,
+        with no exceptions.
+      </div>
+      <div class="proto-options" id="cfg-bvs-policy-options">
+        <label class="proto-option">
+          <input type="radio" name="bvs_policy_radio" value="0" ${policy === 0 ? 'checked' : ''}
+                 onchange="updateBvsPolicyUI(0)">
+          <span class="proto-name">Auto</span><span class="proto-desc">— shunt leads whenever online &amp; fresh, BMS is the fallback, applied the same way to every metric</span>
+        </label>
+        <label class="proto-option">
+          <input type="radio" name="bvs_policy_radio" value="1" ${policy === 1 ? 'checked' : ''}
+                 onchange="updateBvsPolicyUI(1)">
+          <span class="proto-name">Manual</span><span class="proto-desc">— pick BMS or Shunt independently for each metric below</span>
+        </label>
+      </div>
+      <div id="cfg-bvs-manual-rows" style="margin-top:12px;${isManual ? '' : 'display:none'}">
+        ${metrics.map(m => {
+          const val = c[m.key + '_source'] !== undefined ? c[m.key + '_source'] : 0;
+          return `
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;max-width:260px">
+            <label style="min-width:70px;margin:0">${m.label}</label>
+            <select id="cfg-bvs-${m.key}">
+              <option value="0" ${val === 0 ? 'selected' : ''}>BMS</option>
+              <option value="1" ${val === 1 ? 'selected' : ''}>Shunt</option>
+            </select>
+          </div>`;
+        }).join('')}
+      </div>
+      ${!shuntEnabled ? `<div class="help" style="margin-top:8px;color:var(--brand-coral)">SmartShunt is not enabled &mdash; this policy has no effect until enabled in <a href="/settings#ble" onclick="navigate('/settings');showSettingsSection('ble');return false;">Settings &rarr; BLE</a>.</div>` : ''}
+    </div>`;
+}
+
+function updateBvsPolicyUI(newPolicy) {
+  const rows = document.getElementById('cfg-bvs-manual-rows');
+  if (rows) rows.style.display = newPolicy === 1 ? '' : 'none';
+}
+
 function renderSettingsBattery() {
   const c = g_config;
   const mode = c.battery_config_mode !== undefined ? c.battery_config_mode : 2; // default Manual
@@ -2027,35 +2200,7 @@ function renderSettingsBattery() {
         </div>
       </div>
 
-      <div class="settings-section">
-        <div class="settings-section-title">CAN / Inverter</div>
-        <div class="form-group">
-          <label>Inverter Protocol</label>
-          <div class="proto-options">
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="-1" ${!c.can_enabled ? 'checked' : ''}>
-              <span class="proto-name">Disabled</span>
-            </label>
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="0" ${c.can_enabled && c.can_protocol === 0 ? 'checked' : ''}>
-              <span class="proto-name">Victron</span><span class="proto-desc">— HIL-verified</span>
-            </label>
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="1" ${c.can_enabled && c.can_protocol === 1 ? 'checked' : ''}>
-              <span class="proto-name">Pylontech</span><span class="proto-desc">— Spec-derived, community-validated</span>
-            </label>
-            <label class="proto-option">
-              <input type="radio" name="can_protocol_radio" value="2" ${c.can_enabled && c.can_protocol === 2 ? 'checked' : ''}>
-              <span class="proto-name">SMA</span><span class="proto-desc">— Spec-derived, community-validated</span>
-            </label>
-          </div>
-          <div class="help" style="margin-top:8px">
-            Pylontech and SMA implementations are derived from spec.
-            The maintainer cannot HIL-verify these against their respective inverters.
-            Reports from users with Pylontech or SMA hardware are welcome.
-          </div>
-        </div>
-      </div>
+      ${renderBatteryValueSourcesSection(c)}
 
       <div id="battery-feedback" class="feedback-msg"></div>
       <div class="btn-row">
@@ -2965,20 +3110,24 @@ function updateBatteryModeUI(newMode) {
 }
 
 function saveBatterySection() {
-  const protoChecked = document.querySelector('input[name="can_protocol_radio"]:checked');
-  const protoVal = protoChecked ? Number(protoChecked.value) : null;
   const modeChecked = document.querySelector('input[name="batt_mode_radio"]:checked');
   const modeVal = modeChecked ? Number(modeChecked.value) : null;
 
   let overrides = {};
-  if (protoVal === -1) {
-    overrides = { can_enabled: false };
-  } else if (protoVal !== null && protoVal >= 0) {
-    overrides = { can_enabled: true, can_protocol: protoVal };
-  }
   if (modeVal !== null && modeVal >= 0 && modeVal <= 2) {
     overrides.battery_config_mode = modeVal;
   }
+
+  // Battery Value Sources (Auto/Manual policy + per-metric BMS/Shunt pickers).
+  // Display only — never touches charge-taper or CAN TX (see runSafety.cpp).
+  const bvsPolicyChecked = document.querySelector('input[name="bvs_policy_radio"]:checked');
+  if (bvsPolicyChecked) {
+    overrides.battery_source_policy = Number(bvsPolicyChecked.value);
+  }
+  ['voltage', 'current', 'soc'].forEach(m => {
+    const el = document.getElementById(`cfg-bvs-${m}`);
+    if (el) overrides[`${m}_source`] = Number(el.value);
+  });
 
   // In Auto/AutoMargin, pack-derived fields are readonly — read the current
   // g_config values so they round-trip unchanged rather than sending whatever
@@ -3088,14 +3237,15 @@ function renderSettingsBle() {
 
       <!-- ── SmartShunt ────────────────────────────────────────────────────── -->
       <div class="settings-section">
-        <div class="settings-section-title">SmartShunt (battery monitor) <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">planned for v3.2</span></div>
+        <div class="settings-section-title">SmartShunt (battery monitor)</div>
         <div style="padding:12px 16px;background:color-mix(in srgb,var(--neutral-300) 30%,var(--bg-card));border-radius:6px;font-size:12px;color:var(--text-muted);margin-bottom:12px">
-          SmartShunt integration (SOC, precise current, consumed Ah) is planned for v3.2. The fields below are
-          preserved for migration; the BLE stack is not initialised until a shunt is enabled.
+          SmartShunt integration adds precise 1&thinsp;Hz current and a shunt-derived bank SOC (see
+          <a href="/settings#battery" style="color:var(--accent)" onclick="navigate('/settings');showSettingsSection('battery');return false;">Settings &rarr; Battery &rarr; Battery Value Sources</a>
+          once enabled). Disabled by default; the BLE stack is not initialised until a shunt is enabled here.
         </div>
-        <div class="form-group" style="display:flex;align-items:center;gap:8px;opacity:.5">
-          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} disabled style="width:auto">
-          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source (v3.2)</label>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="cfg-ble_shunt_enabled" ${c.ble_shunt_enabled ? 'checked' : ''} style="width:auto">
+          <label for="cfg-ble_shunt_enabled" style="margin:0">Enable SmartShunt BLE source</label>
         </div>
         <div class="form-group">
           <label>BLE MAC Address</label>
@@ -3107,10 +3257,11 @@ function renderSettingsBle() {
           <label>Encryption Key (32 hex chars)</label>
           <div class="pw-wrap">
             <input type="password" id="cfg-ble_shunt_key" autocomplete="new-password"
-                   placeholder="Leave blank to keep current" style="font-family:monospace">
+                   placeholder="Leave blank to keep current" style="font-family:monospace"
+                   oninput="updateKeyHint('cfg-ble_shunt_key','ble-shunt-key-hint')">
             <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_shunt_key')" title="Show/hide">${EYE_SVG}</button>
           </div>
-          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+          <div class="help" id="ble-shunt-key-hint">Write-only — leave blank to keep the saved key. Extra text (label, spaces) is stripped automatically.</div>
         </div>
       </div>
 
@@ -3131,10 +3282,11 @@ function renderSettingsBle() {
           <label>Encryption Key (32 hex chars)</label>
           <div class="pw-wrap">
             <input type="password" id="cfg-ble_mppt_key" autocomplete="new-password"
-                   placeholder="Leave blank to keep current" style="font-family:monospace">
+                   placeholder="Leave blank to keep current" style="font-family:monospace"
+                   oninput="updateKeyHint('cfg-ble_mppt_key','ble-mppt-key-hint')">
             <button type="button" class="pw-toggle" onclick="togglePw('cfg-ble_mppt_key')" title="Show/hide">${EYE_SVG}</button>
           </div>
-          <div class="help">Write-only — never displayed. Leave blank to keep the saved key.</div>
+          <div class="help" id="ble-mppt-key-hint">Write-only — leave blank to keep the saved key. Extra text (label, spaces) is stripped automatically.</div>
         </div>
       </div>
 
@@ -3154,6 +3306,61 @@ function normalizeMacInput(raw) {
   const bare = raw.trim().toLowerCase().replace(/[:\-]/g, '');
   if (!/^[0-9a-f]{12}$/.test(bare)) return null;
   return bare.match(/.{2}/g).join(':');
+}
+
+// Extract a clean 32-hex-char Victron encryption key from possibly-noisy input.
+// Copy-pasting the key from a phone photo (macOS Live Text / OCR) frequently
+// captures surrounding text too — a "VE.Direct encryption key" label, a trailing
+// period, inserted spaces/newlines — which silently corrupts the stored key so
+// the firmware's parse_hex_key() rejects it and decode never runs. Rather than
+// trust the raw paste, pull the 32-hex key out of it.
+// Returns { key, error, extracted }:
+//   key ''      → input left blank (keep the existing stored key)
+//   key <32hex> → a clean lowercase key to send (extracted=true if it had to be
+//                 recovered from longer pasted text)
+//   key null    → non-blank input with no recoverable 32-hex key (error is set)
+function extractVictronKey(raw) {
+  if (!raw || raw.trim() === '') return { key: '', error: null, extracted: false };
+  const stripped = raw.replace(/\s+/g, '');
+  if (/^[0-9a-fA-F]{32}$/.test(stripped)) {
+    return { key: stripped.toLowerCase(), error: null, extracted: false };
+  }
+  // A standalone 32-hex run bounded by non-hex (or string edges): handles
+  // "label: <key>", "<key>.", "<key>\n…". A 33+ contiguous hex blob is
+  // ambiguous and deliberately NOT matched (reject rather than guess wrong).
+  const m = stripped.match(/(?:^|[^0-9a-fA-F])([0-9a-fA-F]{32})(?:[^0-9a-fA-F]|$)/);
+  if (m) return { key: m[1].toLowerCase(), error: null, extracted: true };
+  const hexCount = (stripped.match(/[0-9a-fA-F]/g) || []).length;
+  return {
+    key: null,
+    error: `no 32-character key found (${hexCount} hex character${hexCount === 1 ? '' : 's'} in input). ` +
+           `Paste exactly the 32-char key shown in VictronConnect.`,
+    extracted: false,
+  };
+}
+
+// Live feedback under a key input as the user types/pastes. Shows whether a
+// clean 32-hex key was found, or was auto-extracted from noisier pasted text.
+function updateKeyHint(inputId, hintId) {
+  const el = document.getElementById(inputId);
+  const hint = document.getElementById(hintId);
+  if (!el || !hint) return;
+  if (el.value.trim() === '') {
+    hint.textContent = 'Write-only — leave blank to keep the saved key. Extra text (label, spaces) is stripped automatically.';
+    hint.style.color = '';
+    return;
+  }
+  const res = extractVictronKey(el.value);
+  if (res.key === null) {
+    hint.textContent = '✗ ' + res.error;
+    hint.style.color = 'var(--red)';
+  } else if (res.extracted) {
+    hint.textContent = '✓ extracted the 32-char key from pasted text (extra characters ignored)';
+    hint.style.color = 'var(--color-success)';
+  } else {
+    hint.textContent = '✓ 32 hex characters';
+    hint.style.color = 'var(--color-success)';
+  }
 }
 
 async function saveBleSectionSettings() {
@@ -3197,10 +3404,23 @@ async function saveBleSectionSettings() {
   }
 
   // Keys are write-only: blank = keep existing, non-blank = update.
-  ['ble_shunt_key', 'ble_mppt_key'].forEach(key => {
-    const el = document.getElementById('cfg-' + key);
-    cfg[key] = (el && el.value.length > 0) ? el.value : '';
-  });
+  // Extract a clean 32-hex key from the (possibly OCR/photo-pasted) input and
+  // validate before sending, so surrounding text never gets stored as the key.
+  let keyExtracted = false;
+  const keyFields = [
+    ['cfg-ble_shunt_key', 'ble_shunt_key', 'SmartShunt key'],
+    ['cfg-ble_mppt_key',  'ble_mppt_key',  'MPPT key'],
+  ];
+  for (const [id, key, label] of keyFields) {
+    const el = document.getElementById(id);
+    const res = extractVictronKey(el ? el.value : '');
+    if (res.key === null) {
+      if (msg) { msg.className = 'feedback-msg err'; msg.textContent = `${label}: ${res.error}`; }
+      return;
+    }
+    cfg[key] = res.key;
+    if (res.extracted) keyExtracted = true;
+  }
 
   try {
     const r = await apiFetch('/api/config', {
@@ -3216,7 +3436,11 @@ async function saveBleSectionSettings() {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
-      if (msg) { msg.className = 'feedback-msg ok'; msg.textContent = 'Saved. Reboot to apply BLE changes.'; }
+      if (msg) {
+        msg.className = 'feedback-msg ok';
+        msg.textContent = 'Saved. Reboot to apply BLE changes.' +
+          (keyExtracted ? ' (key auto-extracted from pasted text)' : '');
+      }
     } else {
       if (msg) { msg.className = 'feedback-msg err'; msg.textContent = data.error || 'Save failed.'; }
     }
@@ -3239,6 +3463,19 @@ function rssiBarHtml(rssi) {
           <span style="margin-left:6px;font-size:11px;color:var(--text-muted)">${label}</span>`;
 }
 
+// Three-state BSSID pin status shared between the Network page and the Diag
+// WiFi section: "none" (no pin configured — today's behavior, unchanged),
+// "pinned" (a target is configured and currently active/connected), or
+// "fallback" (a target is configured but not currently active — the pinned
+// AP was unreachable and the gateway is running on auto-select so it never
+// gets stuck offline).
+function bssidPinStatus(pinActive) {
+  const target = (g_config && g_config.wifi_bssid) || '';
+  if (!target) return { state: 'none', text: 'Not set (auto-select)' };
+  if (pinActive) return { state: 'pinned', text: `Pinned to ${target} (connected)` };
+  return { state: 'fallback', text: `Pinned to ${target} — unreachable, using auto-select` };
+}
+
 function renderNetworkStatus(d) {
   const root = document.getElementById('net-status-panel');
   if (!root) return;
@@ -3246,10 +3483,13 @@ function renderNetworkStatus(d) {
     root.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Not connected to any WiFi network.</p>';
     return;
   }
+  const pin = bssidPinStatus(d.bssid_pin_active);
   root.innerHTML = `
     <div class="net-kv-grid">
       <div class="net-kv-row"><span>SSID</span><span>${escHtml(d.ssid || '—')}</span></div>
       <div class="net-kv-row"><span>Signal</span><span>${rssiBarHtml(d.rssi || 0)}</span></div>
+      <div class="net-kv-row"><span>BSSID</span><span>${escHtml(d.bssid || '—')}</span></div>
+      <div class="net-kv-row"><span>BSSID pin</span><span style="${pin.state === 'fallback' ? 'color:var(--color-warning)' : ''}">${escHtml(pin.text)}</span></div>
       <div class="net-kv-row"><span>IP Address</span><span>${escHtml(d.ip || '—')}</span></div>
       <div class="net-kv-row"><span>Gateway</span><span>${escHtml(d.gateway || '—')}</span></div>
       <div class="net-kv-row"><span>Netmask</span><span>${escHtml(d.netmask || '—')}</span></div>
@@ -3286,6 +3526,8 @@ async function doWifiScan() {
       list.innerHTML = networks.map(n => `
         <div class="scan-row" onclick="prefillSsid(${JSON.stringify(escHtml(n.ssid))})">
           <span class="scan-ssid">${escHtml(n.ssid)}</span>
+          ${n.bssid ? `<span class="scan-bssid" title="Pin the gateway to this specific AP"
+                 onclick="event.stopPropagation(); pinBssid(${JSON.stringify(escHtml(n.bssid))})">📌 ${escHtml(n.bssid)}</span>` : ''}
           <span class="scan-rssi">${n.rssi} dBm</span>
           <span class="scan-lock">${n.secure
             ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
@@ -3305,6 +3547,75 @@ function prefillSsid(ssid) {
   if (inp) { inp.value = ssid; inp.focus(); }
   const list = document.getElementById('scan-results');
   if (list) list.innerHTML = '';
+}
+
+// Picking a BSSID from scan results only fills the pin field — it does NOT
+// save. The owner still has to click "Save" so a stray click never silently
+// re-pins the gateway.
+function pinBssid(bssid) {
+  const inp = document.getElementById('net-bssid-pin');
+  if (inp) { inp.value = bssid; inp.focus(); }
+  const fb = document.getElementById('bssid-pin-feedback');
+  if (fb) { fb.className = 'feedback-msg'; fb.textContent = `Selected ${bssid} — click Save to pin.`; }
+}
+
+async function saveBssidPin() {
+  const fb = document.getElementById('bssid-pin-feedback');
+  if (fb) { fb.className = 'feedback-msg'; fb.textContent = ''; }
+
+  const inp = document.getElementById('net-bssid-pin');
+  const raw = inp ? inp.value : '';
+  const normalized = normalizeMacInput(raw);
+  if (normalized === null) {
+    if (fb) {
+      fb.className = 'feedback-msg err';
+      fb.textContent = 'Pinned BSSID must be 6 hex bytes, e.g. e3:8d:48:c8:52:b4 — colons and hyphens optional. Leave blank for auto-select.';
+    }
+    return;
+  }
+
+  // g_config may not be loaded yet if the Network page was opened directly
+  // (fetchConfigOnce() is fire-and-forget at app boot) — never POST a partial
+  // config, always work off a freshly-fetched full one.
+  if (!g_config) {
+    try {
+      const r = await apiFetch('/api/config');
+      if (r && r.ok) g_config = await r.json();
+    } catch (_) {}
+  }
+  if (!g_config) {
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = 'Config not loaded yet — try again.'; }
+    return;
+  }
+
+  const cfg = Object.assign({}, g_config);
+  cfg.auth_hash = '';
+  cfg.wifi_bssid = normalized;  // server also normalizes; sending canonical form
+
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    if (!r) return;
+    const data = await r.json();
+    if (r.ok) {
+      g_config = data;
+      if (inp) inp.value = data.wifi_bssid || '';
+      if (fb) {
+        fb.className = 'feedback-msg ok';
+        fb.textContent = normalized
+          ? 'Saved. Takes effect on the next WiFi reconnect (or reboot).'
+          : 'Cleared — auto-select restored.';
+      }
+      fetchNetworkStatus();
+    } else {
+      if (fb) { fb.className = 'feedback-msg err'; fb.textContent = data.error || 'Save failed.'; }
+    }
+  } catch (_) {
+    if (fb) { fb.className = 'feedback-msg err'; fb.textContent = 'Save failed — check connection.'; }
+  }
 }
 
 function confirmWifiConnect() {
@@ -3353,20 +3664,21 @@ async function doWifiConnect(ssid) {
     'You may need to navigate to the new gateway IP address.');
 }
 
-async function renderNetwork() {
-  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
-
-  const root = document.getElementById('page-root');
-  root.innerHTML = `
-    <div class="network-page" style="padding:0">
-      <div class="settings-section card" style="margin-bottom:16px;padding:16px">
+// Network section of Settings (formerly the standalone /network page). g_config
+// is guaranteed loaded here because renderSettings() fetches it before rendering
+// any section, so the BSSID pin field can prefill safely.
+function renderSettingsNetwork() {
+  const c = g_config || {};
+  return `
+    <div class="settings-page">
+      <div class="settings-section">
         <div class="settings-section-title">Current Connection</div>
         <div id="net-status-panel">
           <div class="placeholder-page" style="height:80px"><div class="spinner"></div></div>
         </div>
       </div>
 
-      <div class="settings-section card" style="padding:16px">
+      <div class="settings-section">
         <div class="settings-section-title">Switch to a Different Network</div>
         <div class="form-group">
           <label>SSID</label>
@@ -3388,10 +3700,35 @@ async function renderNetwork() {
           <button class="btn btn-primary" onclick="confirmWifiConnect()">Connect to new network</button>
         </div>
       </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Preferred Access Point (optional)</div>
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">
+          Pin the gateway to one specific AP's BSSID — useful with multiple APs or a mesh
+          sharing one SSID. If the pinned AP becomes unreachable, the gateway automatically
+          falls back to the strongest AP of the same SSID, so it never gets stuck offline.
+          Use the Scan button above and click a network's 📌 BSSID to fill this in, or type
+          one directly.
+        </p>
+        <div class="form-group">
+          <label>Pinned BSSID</label>
+          <input type="text" id="net-bssid-pin" placeholder="Auto-select (no pin)"
+                 value="${escHtml(c.wifi_bssid || '')}">
+        </div>
+        <div id="bssid-pin-feedback" class="feedback-msg"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="saveBssidPin()">Save</button>
+        </div>
+      </div>
     </div>
   `;
+}
 
-  await fetchNetworkStatus();
+// Kick off the 5-s WiFi status refresh for the Network settings section. Stopped
+// by renderSettingsSection() on section switch and by navigate() on leaving Settings.
+function startNetworkStatusPoll() {
+  if (g_network_timer) { clearInterval(g_network_timer); g_network_timer = null; }
+  fetchNetworkStatus();
   g_network_timer = setInterval(fetchNetworkStatus, 5000);
 }
 
@@ -3964,6 +4301,76 @@ function rssiQuality(rssi) {
   return ' (weak)';
 }
 
+// Decode SafetyState.alarm_flags (the value that FEEDS the CAN encoders) into
+// human labels, annotated with the Pylontech 0x359 bit each one drives. Single
+// source of the bit meaning — the firmware sends the raw byte, this decodes it.
+// Mirrors src/safety/runSafety.cpp (flag assignment) and src/can/pylontech.cpp
+// build_0x359() (bit mapping). Keep the two in sync.
+function decodeAlarmFlags(af) {
+  af = af || 0;
+  const out = [];
+  if (af & 0x02) out.push('Overvoltage → 0x359 byte0 bit1');
+  if (af & 0x10) out.push('Undervoltage → 0x359 byte0 bit2');
+  if (af & 0x08) out.push('Temperature stop → 0x359 byte0 bit3/4');
+  if (af & 0x40) out.push('BMS critical alarm → 0x359 byte1 bit3');
+  if (af & 0x80) out.push('No packs online → 0x359 byte1 bit3');
+  if (af & 0x20) out.push('Cell imbalance (UI/MQTT only — no 0x359 bit)');
+  return out;
+}
+function decodeTempAlarm(ta) {
+  ta = ta || 0;
+  const out = [];
+  if (ta & 0x01) out.push('Under-temperature (cold) → 0x359 byte0 bit4');
+  if (ta & 0x02) out.push('Over-temperature (hot) → 0x359 byte0 bit3');
+  return out;
+}
+
+// Per-pack RS485 comms table (id, address, online, last-seen age, poll counts).
+function diagRs485Table(packs) {
+  if (!packs.length) return '<div style="color:var(--text-muted);font-size:12px">No packs configured.</div>';
+  return `<table class="diag-tasks-table">
+    <thead><tr><th>Pack</th><th>Addr</th><th>Online</th><th>Last seen</th>
+      <th>Polls</th><th>OK</th><th>Timeout</th><th>CRC/err</th><th>Success</th></tr></thead>
+    <tbody>${packs.map(p => {
+      const bad = p.polls > 0 && p.success_pct < 90;
+      return `<tr${bad ? ' class="diag-task-low"' : ''}>
+        <td>${p.id}</td>
+        <td>${p.bms_id != null ? p.bms_id : p.id}</td>
+        <td>${p.online ? 'yes' : 'no'}</td>
+        <td>${fmtAgeS(p.last_seen_age_ms != null ? Math.round(p.last_seen_age_ms / 1000) : -1)}</td>
+        <td>${(p.polls||0).toLocaleString()}</td>
+        <td>${(p.ok||0).toLocaleString()}</td>
+        <td>${(p.timeouts||0).toLocaleString()}</td>
+        <td>${(p.errors||0).toLocaleString()}</td>
+        <td>${p.polls ? (p.success_pct||0) + ' %' : '—'}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+// Per-pack Battery/BMS table (cells, drift, SoC/SoH, sysparam limits, alarm bits).
+function diagBatteryTable(packs) {
+  if (!packs.length) return '<div style="color:var(--text-muted);font-size:12px">No packs configured.</div>';
+  return `<table class="diag-tasks-table">
+    <thead><tr><th>Pack</th><th>SoC</th><th>SoH</th><th>Cell min</th><th>Cell max</th>
+      <th>Drift</th><th>CCL</th><th>DCL</th><th>Cell-OV limit</th><th>Alarm bits</th></tr></thead>
+    <tbody>${packs.map(p => {
+      const sp = p.sysparam_valid;
+      const alarmSet = p.alarm_bits && p.alarm_bits !== '0x0000000000000000';
+      return `<tr${alarmSet ? ' class="diag-task-low"' : ''}>
+        <td>${p.id}</td>
+        <td>${p.online ? (p.soc||0) + ' %' : '—'}</td>
+        <td>${p.online ? (p.soh||0) + ' %' : '—'}</td>
+        <td>${p.online ? Number(p.cell_min_v||0).toFixed(3) + ' (#' + (p.cell_min_idx+1) + ')' : '—'}</td>
+        <td>${p.online ? Number(p.cell_max_v||0).toFixed(3) + ' (#' + (p.cell_max_idx+1) + ')' : '—'}</td>
+        <td>${p.online ? (p.drift_mv||0) + ' mV' : '—'}</td>
+        <td>${sp ? Number(p.sys_charge_max_a||0).toFixed(1) + ' A' : '—'}</td>
+        <td>${sp ? Number(p.sys_discharge_max_a||0).toFixed(1) + ' A' : '—'}</td>
+        <td>${sp ? Number(p.sys_cell_high_v||0).toFixed(3) + ' V' : '—'}</td>
+        <td title="Raw 0x44 alarm bitmap">${alarmSet ? p.alarm_bits : 'none'}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
 function renderDiagData(d) {
   const root = document.getElementById('diag-root');
   if (!root) return;
@@ -3975,6 +4382,8 @@ function renderDiagData(d) {
   const sys = d.system || {};
   const pol = d.poller || {};
   const can = d.can    || {};
+  const bat = d.battery || {};
+  const packs = d.packs || [];
   const sn  = d.snapshot_bus || {};
   const mq  = d.mqtt   || {};
   const ntp = d.ntp    || {};
@@ -4028,27 +4437,69 @@ function renderDiagData(d) {
     </div>
 
     <div class="diag-section">
-      <h3>Poller</h3>
+      <h3>Poller / cycle</h3>
       <div class="diag-kv-grid">
         ${kvRow('Cycles', pol.cycles_completed||0)}
         ${kvRow('Cycle avg', (pol.cycle_avg_ms||0) + ' ms')}
         ${kvRow('Cycle max', (pol.cycle_max_ms||0) + ' ms')}
-        ${kvRow('RS485 polls', pol.rs485_polls||0)}
-        ${kvRow('RS485 ok', pol.rs485_ok||0)}
-        ${kvRow('RS485 timeouts', pol.rs485_timeouts||0)}
-        ${kvRow('RS485 parse err', pol.rs485_parse_err||0)}
-        ${kvRow('Alarm polls (ok / err)', (pol.alarm_polls_ok||0) + ' / ' + (pol.alarm_polls_err||0))}
-        ${kvRow('Sysparam polls (ok / err)', (pol.sysparam_polls_ok||0) + ' / ' + (pol.sysparam_polls_err||0),
-                'Sysparam freshness drives the Auto battery-config modes')}
-        ${kvRow('Wrong-address frames', pol.wrong_addr||0,
-                'Checksum-valid frames from a different pack than polled; discarded')}
         ${kvRow('Snapshot bus (pub / read / retry)',
                 (sn.publishes||0) + ' / ' + (sn.reads||0) + ' / ' + (sn.retries||0))}
       </div>
     </div>
 
     <div class="diag-section">
-      <h3>CAN</h3>
+      <h3>RS485 bus</h3>
+      <div class="diag-kv-grid" style="margin-bottom:12px">
+        ${kvRow('Analog polls (ok / timeout / parse err)',
+                (pol.rs485_ok||0) + ' / ' + (pol.rs485_timeouts||0) + ' / ' + (pol.rs485_parse_err||0),
+                'Aggregate 0x42 measurement-frame polls across all packs')}
+        ${kvRow('Alarm polls (ok / err)', (pol.alarm_polls_ok||0) + ' / ' + (pol.alarm_polls_err||0),
+                '0x44 alarm-frame polls')}
+        ${kvRow('Sysparam polls (ok / err)', (pol.sysparam_polls_ok||0) + ' / ' + (pol.sysparam_polls_err||0),
+                '0x47 sysparam polls; freshness drives the Auto battery-config modes')}
+        ${kvRow('Wrong-address frames', pol.wrong_addr||0,
+                'Checksum-valid frames whose responder address ≠ the polled pack; discarded, never mis-attributed')}
+      </div>
+      ${diagRs485Table(packs)}
+    </div>
+
+    <div class="diag-section">
+      <h3>Battery / BMS (per pack)</h3>
+      ${diagBatteryTable(packs)}
+      <div style="color:var(--text-muted);font-size:11px;margin-top:6px">
+        CCL/DCL/Cell-OV limit are the pack's own 0x47 sysparam values (Auto modes). A highlighted
+        row has a non-zero 0x44 alarm bitmap. Aggregated limits sent to the inverter are in the CAN section.
+      </div>
+    </div>
+
+    <div class="diag-section">
+      <h3>CAN → inverter</h3>
+      <div class="diag-kv-grid" style="margin-bottom:12px">
+        ${kvRow('Active protocol', (can.protocol||'—').toUpperCase())}
+        ${kvRow('Modules on CAN (0x359 byte4)', bat.packs_online != null ? bat.packs_online : '—',
+                'Packs reported online to the inverter; should match the RS485 online count above')}
+        ${kvRow('Charge voltage limit CVL (0x351)', bat.has_data ? Number(bat.cvl_volts||0).toFixed(2) + ' V' : '—')}
+        ${kvRow('Charge current limit CCL (0x351)', bat.has_data ? Number(bat.ccl_amps||0).toFixed(1) + ' A' : '—')}
+        ${kvRow('Discharge current limit DCL (0x351)', bat.has_data ? Number(bat.dcl_amps||0).toFixed(1) + ' A' : '—')}
+        ${kvRow('Discharge voltage limit DVL (0x351)', bat.has_data ? Number(bat.dvl_volts||0).toFixed(2) + ' V' : '—')}
+        ${kvRow('Charge enable (0x35C bit7)', bat.has_data ? ((bat.ccl_amps||0) >= 0.1 ? 'yes' : 'NO') : '—',
+                'Derived exactly as the encoder: ccl ≥ 0.1 A')}
+        ${kvRow('Discharge enable (0x35C bit6)', bat.has_data ? ((bat.dcl_amps||0) >= 0.1 ? 'yes' : 'NO') : '—',
+                'Derived exactly as the encoder: dcl ≥ 0.1 A. \"NO\" here is why an inverter stops discharging.')}
+        ${kvRow('Force charge (0x35C bit5)', bat.has_data ? (((bat.alarm_flags||0) & 0x10) ? 'yes' : 'no') : '—',
+                'Requested on undervolt only')}
+        ${kvRow('Protection lockout', bat.has_data ? (function() {
+            const lk = bat.lockout_flags || 0;
+            const parts = [];
+            if (lk & 0x01) parts.push('charge: ' + lockoutReason(0x01, bat.alarm_flags, bat.temp_alarm));
+            if (lk & 0x02) parts.push('discharge: ' + lockoutReason(0x02, bat.alarm_flags, bat.temp_alarm));
+            return parts.join(' | ') || 'none';
+          })() : '—',
+            'Direction-aware: over-voltage blocks charge only, under-voltage blocks discharge only')}
+        ${kvRow('Active alarms (0x359)', bat.has_data ? (decodeAlarmFlags(bat.alarm_flags).join('; ') || 'none') : '—')}
+        ${(bat.has_data && (bat.temp_alarm||0)) ? kvRow('Temperature direction', decodeTempAlarm(bat.temp_alarm).join('; ')) : ''}
+        ${bat.has_data && bat.sys_message ? kvRow('Safety message', bat.sys_message) : ''}
+      </div>
       <div class="diag-kv-grid">
         ${kvRow('TX ok', can.tx_ok||0)}
         ${kvRow('TX fail', can.tx_fail||0)}
@@ -4110,6 +4561,7 @@ function renderDiagData(d) {
       <div class="diag-kv-grid">
         ${kvRow('Configured MPPT MAC', dbg.configured_mac || '—')}
         ${kvRow('MAC valid', dbg.mppt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Key valid', dbg.mppt_key_valid ? 'yes' : 'NO — re-enter encryption key')}
         ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
                 (dbg.victron_total||0) + ' -> ' + (dbg.mppt_type_match||0) + ' -> ' +
                 (dbg.mppt_mac_match||0) + ' -> ' + (dbg.mppt_decrypt_ok||0))}
@@ -4129,6 +4581,32 @@ function renderDiagData(d) {
 
     <div class="diag-section">
       <h3>WiFi</h3>
+      <div class="diag-kv-grid" style="margin-bottom:12px">
+        ${(function() {
+          const stateLabels = {
+            connected:    'Connected',
+            reconnecting: 'Reconnecting…',
+            backoff_wait: 'Waiting to retry (backoff)',
+            failed:       'Failed',
+            ap_active:    'AP mode',
+            off:          'Off',
+          };
+          const st = ble.wifi_state || 'off';
+          const outageActive = (ble.wifi_outage_duration_s||0) > 0;
+          const fmtMs = ms => (ms >= 1000) ? (ms/1000).toFixed(0) + ' s' : ms + ' ms';
+          return `
+        ${kvRow('State', stateLabels[st] || st,
+                'Connectivity keeps retrying forever once it has connected at least once — '
+                + 'this never permanently gives up, unlike pre-V3.2 firmware')}
+        ${outageActive ? kvRow('Current outage duration', formatUptime(ble.wifi_outage_duration_s),
+                'Time since the last successful connection; RS485/CAN battery monitoring is unaffected') : ''}
+        ${outageActive ? kvRow('Reconnect attempts (this outage)', ble.wifi_reconnect_attempts||0) : ''}
+        ${(st === 'backoff_wait') ? kvRow('Next attempt in', fmtMs(ble.wifi_backoff_ms||0)) : ''}
+        ${kvRow('Reconnect attempts (total since boot)', ble.wifi_reconnect_attempts_total||0)}
+        ${(ble.wifi_last_outage_duration_s||0) > 0 ? kvRow('Last completed outage', formatUptime(ble.wifi_last_outage_duration_s)) : ''}
+          `;
+        })()}
+      </div>
       <div class="diag-kv-grid">
         ${kvRow('SSID', ble.wifi_ssid || '—')}
         ${kvRow('IP', ble.wifi_ip || '—')}
@@ -4137,7 +4615,7 @@ function renderDiagData(d) {
         ${kvRow('Disconnects', ble.wifi_disconnects||0)}
         ${kvRow('BSSID', ble.wifi_bssid || '—')}
         ${kvRow('RSSI', ble.wifi_rssi != null ? ble.wifi_rssi + ' dBm' + rssiQuality(ble.wifi_rssi) : '—')}
-        ${kvRow('BSSID lock', ble.wifi_bssid_pin_active ? 'active' : 'off')}
+        ${kvRow('BSSID pin', bssidPinStatus(ble.wifi_bssid_pin_active).text)}
       </div>
     </div>
 
@@ -4158,12 +4636,25 @@ function renderDiagData(d) {
       <h3>Shunt</h3>
       ${shunt.enabled ? `
       <div class="diag-kv-grid">
+        ${kvRow('Configured Shunt MAC', dbg.configured_shunt_mac || '—')}
+        ${kvRow('MAC valid', dbg.shunt_mac_valid ? 'yes' : 'no')}
+        ${kvRow('Key valid', dbg.shunt_key_valid ? 'yes' : 'NO — re-enter encryption key')}
+        ${kvRow('Filter funnel (Victron -> type -> MAC -> decrypt)',
+                (dbg.victron_total||0) + ' -> ' + (dbg.shunt_type_match||0) + ' -> ' +
+                (dbg.shunt_mac_match||0) + ' -> ' + (dbg.shunt_decrypt_ok||0))}
+        ${(dbg.shunt_mac_match||0) > 0 && (dbg.shunt_decrypt_ok||0) === 0 ? kvRow(
+                'Last matched ad (diagnosing decrypt failure)',
+                (dbg.shunt_last_mfg_len||0) + ' bytes, ' + (dbg.shunt_last_new_fmt ? 'new format' : 'old format') +
+                ' (needs ≥ ' + (dbg.shunt_last_new_fmt ? '25' : '12') + ' bytes)') : ''}
         ${kvRow('Last seen', fmtAgeS(shunt.last_seen_s))}
         ${kvRow('Current', fmtF(shunt.current_a, 3) + ' A')}
         ${kvRow('BMS total current (cross-check)', fmtF(ble.bms_current_a, 3) + ' A')}
         ${kvRow('Voltage', fmtF(shunt.voltage_v, 2) + ' V')}
-        ${kvRow('SOC', fmtF(shunt.soc_pct, 1) + ' %')}
-      </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — coming in v3.2</div>`}
+        ${kvRow('SOC', shunt.soc_valid === false ? 'Not synced (raw sentinel)' : fmtF(shunt.soc_pct, 1) + ' %')}
+        ${kvRow('Consumed Ah (shunt counter, reference only)', shunt.consumed_ah_valid === false ? 'Not available (raw sentinel)' : fmtF(shunt.consumed_ah, 1) + ' Ah')}
+        ${kvRow('BMS SOC avg (cross-check)', fmtF(g_live && g_live.safety && g_live.safety.soc_avg, 0) + ' %')}
+        ${kvRow('Active source (bank SOC)', ((g_live && g_live.sources && g_live.sources.battery_soc_src) || 'bms').toUpperCase())}
+      </div>` : `<div style="color:var(--text-muted);font-size:12px">Shunt disabled — enable in Settings &rarr; Bluetooth LE</div>`}
     </div>`;
     })()}
 
@@ -5061,13 +5552,17 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     const numsTitle = hasBand ? (c.d5min + '-' + c.d5max + ' mV over 5 days') : '';
 
     const tagHtml = (ffWin && ci === pack.ff_mode_idx)
-      ? '<span class="drift-cell-tag">fills first</span>' : '';
+      ? '<div class="drift-cell-tag-line"><span class="drift-cell-tag">fills first</span></div>' : '';
 
+    // The tag is a row-level element (not inside the fixed-width 22px label)
+    // so it reflows onto its own line under the bar instead of overflowing the
+    // label box and clipping/overlapping the track.
     rows += '<div class="drift-cell-row' + (isOutlier(ci) ? '' : ' dim') + '">' +
-      '<div class="drift-cell-lbl">C' + (ci + 1) + tagHtml + '</div>' +
+      '<div class="drift-cell-lbl">C' + (ci + 1) + '</div>' +
       '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
       '<div class="drift-cell-nums"' +
         (numsTitle ? ' title="' + numsTitle + '"' : '') + '>' + numsStr + '</div>' +
+      tagHtml +
       '</div>';
   }
 

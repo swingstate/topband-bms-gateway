@@ -29,6 +29,10 @@ struct EntityDef {
   const char* unit;           // unit_of_measurement (nullptr = none)
   const char* state_class;    // "measurement" | "total_increasing" | nullptr
   const char* icon;           // optional icon override (nullptr = default)
+  uint16_t    expire_after = 0; // HA expire_after seconds (0 = never expire).
+                              // For sources published intermittently (solar/MPPT),
+                              // lets HA mark the entity unavailable on publish
+                              // timeout instead of us posting a literal string.
 };
 
 // Each entity uses its own individual plain-text topic (no value_template needed).
@@ -63,15 +67,33 @@ static constexpr size_t N_SYSTEM = sizeof(SYSTEM_ENTITIES) / sizeof(SYSTEM_ENTIT
 // and are intentionally omitted.
 // "output_*" names the MPPT's output terminal — not "battery" — because with
 // Solar-Passthrough the energy may go directly to the load, not the battery.
+// expire_after (60 s) lets HA auto-mark these unavailable on a publish timeout.
+// Publish cadence is ~10 s (see housekeeping solar block), so 60 s is 6x margin:
+// healthy operation never falsely expires, and a real MPPT dropout resolves to
+// "Unavailable" in HA without us ever posting a literal placeholder string
+// (which throws ValueError on numeric device-class sensors in HA's MQTT layer).
 static const EntityDef SOLAR_ENTITIES[] = {
-  { "solar_pv_power",       "/solar/pv_power",       "Victron MPPT \xe2\x80\x94 PV Power",                    "power",   "W",   "measurement",      "mdi:solar-power"         },
-  { "solar_output_voltage", "/solar/output_voltage", "Victron MPPT \xe2\x80\x94 Charger Output Voltage",      "voltage", "V",   "measurement",      nullptr                   },
-  { "solar_output_current", "/solar/output_current", "Victron MPPT \xe2\x80\x94 Charger Output Current",      "current", "A",   "measurement",      nullptr                   },
-  { "solar_output_power",   "/solar/output_power",   "Victron MPPT \xe2\x80\x94 Charger Output Power",        "power",   "W",   "measurement",      nullptr                   },
-  { "solar_yield_today",    "/solar/yield_today",    "Victron MPPT \xe2\x80\x94 Yield Today",                 "energy",  "kWh", "total_increasing", "mdi:solar-power"         },
-  { "solar_charger_state",  "/solar/charger_state",  "Victron MPPT \xe2\x80\x94 Charger State",               nullptr,   nullptr, nullptr,          "mdi:battery-charging"    },
+  { "solar_pv_power",       "/solar/pv_power",       "Victron MPPT \xe2\x80\x94 PV Power",                    "power",   "W",   "measurement",      "mdi:solar-power",       60 },
+  { "solar_output_voltage", "/solar/output_voltage", "Victron MPPT \xe2\x80\x94 Charger Output Voltage",      "voltage", "V",   "measurement",      nullptr,                 60 },
+  { "solar_output_current", "/solar/output_current", "Victron MPPT \xe2\x80\x94 Charger Output Current",      "current", "A",   "measurement",      nullptr,                 60 },
+  { "solar_output_power",   "/solar/output_power",   "Victron MPPT \xe2\x80\x94 Charger Output Power",        "power",   "W",   "measurement",      nullptr,                 60 },
+  { "solar_yield_today",    "/solar/yield_today",    "Victron MPPT \xe2\x80\x94 Yield Today",                 "energy",  "kWh", "total_increasing", "mdi:solar-power",       60 },
+  { "solar_charger_state",  "/solar/charger_state",  "Victron MPPT \xe2\x80\x94 Charger State",               nullptr,   nullptr, nullptr,          "mdi:battery-charging",  60 },
 };
 static constexpr size_t N_SOLAR = sizeof(SOLAR_ENTITIES) / sizeof(SOLAR_ENTITIES[0]);
+
+// SmartShunt entities (Victron SmartShunt BLE, gated on cfg.ble_shunt_enabled).
+// Bank-level only, read-only cross-check — NOT fused into any dashboard/CAN value.
+// consumed_ah is the shunt's own hardware Coulomb counter (negative = discharged).
+// No HA device_class exists for charge/Ah, so it is a plain numeric sensor with a
+// custom "Ah" unit. Same intermittent-publish contract as the solar entities:
+// housekeeping skips the publish when stale or the raw sentinel is present, and
+// expire_after (60 s, 6x the ~10 s publish cadence) lets HA auto-mark it
+// unavailable on timeout instead of us posting a literal placeholder string.
+static const EntityDef SHUNT_ENTITIES[] = {
+  { "shunt_consumed_ah", "/shunt/consumed_ah", "Victron SmartShunt \xe2\x80\x94 Consumed Ah", nullptr, "Ah", "measurement", "mdi:battery-minus", 60 },
+};
+static constexpr size_t N_SHUNT = sizeof(SHUNT_ENTITIES) / sizeof(SHUNT_ENTITIES[0]);
 
 // Per-pack entity suffixes appended as "pack_{n}_{key}"
 // Published at PerCell level (state_topic = JSON cells topic, needs value_template).
@@ -85,6 +107,7 @@ struct PackEntityDef {
 static const PackEntityDef PACK_ENTITIES[] = {
   { "voltage",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Voltage", "voltage",  "V"  },
   { "current",   "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Current", "current",  "A"  },
+  { "power",     "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Power",   "power",    "W"  },
   { "soc",       "TopBand BMS Gateway %s Pack %u \xe2\x80\x94 SOC",     "battery",  "%"  },
   { "alarm_bits","TopBand BMS Gateway %s Pack %u \xe2\x80\x94 Alarms",  nullptr,    nullptr },
 };
@@ -201,6 +224,7 @@ static void publish_system_entity(const EntityDef& ent,
   if (ent.unit)         s_disc_doc["unit_of_measurement"] = ent.unit;
   if (ent.state_class)  s_disc_doc["state_class"]         = ent.state_class;
   if (ent.icon)         s_disc_doc["icon"]                = ent.icon;
+  if (ent.expire_after) s_disc_doc["expire_after"]        = ent.expire_after;
   build_device_block(s_disc_doc, device_uid);
 
   char buf[640];
@@ -443,6 +467,20 @@ void publish_all(const Config& cfg,
     } else {
       char disc_topic[160];
       if (mqtt::topics::build_ha_discovery(device_uid, SOLAR_ENTITIES[i].key,
+                                            disc_topic, sizeof(disc_topic))) {
+        enqueue_disc(disc_topic, nullptr, 0);
+      }
+    }
+  }
+
+  // SmartShunt entities: publish when BLE shunt is enabled; tombstone when
+  // disabled so HA removes stale shunt sensors after the user disables it.
+  for (size_t i = 0; i < N_SHUNT; ++i) {
+    if (cfg.ble_shunt_enabled) {
+      publish_system_entity(SHUNT_ENTITIES[i], device_uid, effective_base);
+    } else {
+      char disc_topic[160];
+      if (mqtt::topics::build_ha_discovery(device_uid, SHUNT_ENTITIES[i].key,
                                             disc_topic, sizeof(disc_topic))) {
         enqueue_disc(disc_topic, nullptr, 0);
       }

@@ -278,6 +278,11 @@ User has a Victron 150/35 MPPT charger. Reading its BLE advertising gives solar 
 
 **Dependencies:** V3.1 shipped (shares BLE infrastructure).
 
+**Status:** SOC fusion (Option C below) implemented on `feature/3.2-shunt-soc-fusion`,
+pending owner hardware verification before merge. See
+`docs/research/v3.2-shunt-soc-fusion.md` for the design options considered and
+`docs/mqtt.md` for the resulting payload fields.
+
 ### Motivation
 
 This is the big one architecturally. Current problem: TopBand BMS only reports current samples every ~90 seconds (confirmed via Frame Spy in V2.65.1 diagnostics). This forces the Hold-Last-Value workaround in V2.66 and causes energy undercounting for low loads.
@@ -286,15 +291,38 @@ SmartShunt provides 1-Hz precision current measurements via BLE. If a SmartShunt
 
 ### Scope
 
-- **SmartShunt BLE module** (extends `ble_victron.cpp` with SmartShunt protocol variant)
-- **Data fusion module** (`data_fusion.cpp`): priority-based source selection
-  - Current: SmartShunt (if online) > BMS aggregate
-  - SOC: SmartShunt (if online) > BMS reported
-  - Cell voltages, temps, alarms: BMS (always)
-  - Pack voltage: BMS (always)
-- **Dashboard UX**: show "Source: SmartShunt" badge next to current reading when active
-- **MQTT**: extra fields for shunt-derived values
-- **Victron CAN TX**: uses SmartShunt data for Pylontech/Victron current/SOC if available (more accurate inverter-side display)
+- **SmartShunt BLE module** (extends `ble_victron.cpp` with SmartShunt protocol variant) — shipped V3.1/V3.2.
+- **Data fusion** (`sources::Aggregator`): consolidated "Battery Value Sources" policy —
+  shipped (`Config::BatterySourcePolicy` Auto/Manual + per-metric `Config::MetricSource`
+  for voltage/current/soc, replacing the earlier separate `ShuntCurrentMode`/`SocMode`
+  fields). Auto: SmartShunt leads whenever online & fresh, BMS is the fallback, applied
+  uniformly to voltage/current/bank-SOC via `Aggregator::fuse_bank_voltage/current/soc()`.
+  Manual: BMS/Shunt picked independently per metric. Per-pack SOC/voltage/temp/alarms stay
+  BMS-only always — the shunt cannot see individual packs.
+- **Dashboard UX**: "Source: SmartShunt"/"Source: BMS avg" badges on the SOC/Voltage/Current
+  tiles, driven by the same fused value shown — shipped.
+- **MQTT**: `soc_display` + `soc_source` added to the `/data` JSON blob; `{base}/soc`
+  now carries the fused value — shipped, see `docs/mqtt.md`.
+- **CAN TX SOC**: RESOLVED (V3.2.0-preview.2). The SOC reported over CAN now follows
+  the dashboard's "Combined SOC" — the Battery Value Sources fused value (shunt-led
+  when fresh, BMS fallback otherwise) via `can_tx_soc()` — in all three protocol
+  builders (Victron 0x355, Pylontech 0x355, SMA 0x355). This reverses the earlier
+  interim BMS-only default; the owner confirmed CAN TX should match the displayed SOC.
+  SOH stays BMS-only (the shunt does not measure state of health). This is a
+  display/reporting choice only: the charge-taper safety logic (`runSafety.cpp`)
+  remains strictly on raw BMS `soc_avg` and is unaffected — the two are deliberately
+  distinct and must not be unified.
+- **CAN TX current**: RESOLVED (V3.2.0-preview.5). The instantaneous current reported
+  over CAN (0x356) now follows the dashboard's "Combined Current" — the Battery Value
+  Sources fused value (shunt-led when fresh, BMS `pack_current_total` fallback
+  otherwise) via `can_tx_current()` — in all three protocol builders (Victron 0x356,
+  Pylontech 0x356, SMA 0x356). The current analogue of the CAN TX SOC change above:
+  the earlier SOC work was scoped to SOC only, leaving 0x356 current on raw BMS
+  current, so a battery idling at -0.8 A showed "Strom 0,0 A" on the inverter (the
+  BMS is blind below ~0.5 A) while the dashboard's shunt saw the real current. This
+  is a reporting choice only: the CCL/DCL limits (0x351), the charge/discharge-enable
+  bits and the charge-taper logic all stay strictly on raw BMS fields and are
+  unaffected. Voltage/temperature in 0x356 stay on the raw BMS aggregates.
 
 ### Architectural upside
 
@@ -305,7 +333,25 @@ SmartShunt provides 1-Hz precision current measurements via BLE. If a SmartShunt
 ### Open questions
 
 - Do we notify user if shunt goes offline during runtime? Alert, or silent fallback?
+  Resolved for SOC: silent fallback with a persistent source badge (no popup/alert) —
+  the badge flips from "SHUNT" to "BMS" on the dashboard/Battery page the cycle the
+  shunt reading goes stale/unavailable. No alert queue entry is raised for this
+  transition; revisit if the owner wants one after field experience.
 - SmartShunt-derived SOC can disagree with BMS-reported SOC — how to surface the delta in UI without being confusing?
+  Resolved: side-by-side "Combined SOC" (fused) vs. "SmartShunt SOC" boxes on the
+  Battery page, plus a BMS `soc_avg` cross-check row on the diagnostics page —
+  both values stay visible rather than only showing the winner.
+- **Follow-up, not yet scoped:** the "Voltage — Last 2h" dashboard history
+  chart (`history_task.cpp`'s `make_fine_point()`) still records a raw
+  average of `BmsSystemSnapshot.pack[].pack_voltage`, independent of the
+  Battery Value Sources fusion the live "Pack Voltage" tile uses. Its chart
+  badge (added in the same pass as the Cell Drift badge) is a static, honest
+  "BMS" label reflecting that reality rather than a live source indicator.
+  Making the chart itself follow the active source would need
+  `history_task.cpp` to gain a read path to `SafetyState.voltage_display`/
+  `voltage_source_shunt` (currently it only reads the raw `BmsSystemSnapshot`
+  off `snapshot_bus`) — a small but real cross-task data-flow addition,
+  deliberately deferred rather than folded into a labeling fix.
 
 ---
 

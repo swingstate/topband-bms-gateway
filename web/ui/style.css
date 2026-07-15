@@ -223,8 +223,8 @@ a { text-decoration: none; color: inherit; }
 }
 .pill-bms       { background: var(--color-success); color: #fff; }
 .pill-bms.alarm { background: var(--brand-coral);   color: #fff; }
-.pill-can { background: var(--brand-teal);    color: var(--brand-aubergine); }
-.pill-can.alarm { background: var(--brand-coral); color: #fff; }
+.pill-can       { background: var(--color-success); color: #fff; }
+.pill-can.alarm { background: var(--brand-coral);   color: #fff; }
 .pill-mqtt { background: var(--color-success); color: #fff; }
 .pill-mqtt.alarm { background: var(--brand-coral); color: #fff; }
 /* WiFi signal quality */
@@ -238,7 +238,7 @@ a { text-decoration: none; color: inherit; }
 .pill-mppt.off,
 .pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
 .pill-mppt  { background: var(--color-success); color: #fff; }
-.pill-shunt { background: #7c6fcd;             color: #fff; }
+.pill-shunt { background: var(--color-success); color: #fff; }
 
 /* ── Card source indicator (inline pill, used in metric-footer row) ───────────── */
 .card-src {
@@ -855,6 +855,9 @@ a { text-decoration: none; color: inherit; }
   padding: 14px 16px;
 }
 .chart-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
@@ -935,9 +938,7 @@ a { text-decoration: none; color: inherit; }
   padding: 4px 0;
 }
 
-/* ── Network page ───────────────────────────────────────────────────────────── */
-.network-page { max-width: 680px; margin: 0 auto; }
-
+/* ── Network (Settings section) ─────────────────────────────────────────────── */
 .net-kv-grid {
   display: grid;
   grid-template-columns: 160px 1fr;
@@ -991,6 +992,14 @@ a { text-decoration: none; color: inherit; }
 .scan-row:last-child { border-bottom: none; }
 .scan-row:hover { background: var(--bg-card-hover); }
 .scan-ssid { font-weight: 600; color: var(--text-primary); flex: 1; }
+.scan-bssid {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.scan-bssid:hover { color: var(--brand-teal); }
 .scan-rssi { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .scan-lock { color: var(--text-muted); flex-shrink: 0; }
 
@@ -1143,7 +1152,6 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   .packs-grid { grid-template-columns: 1fr; }
 
   /* Subpage wrappers: full-width on mobile */
-  .network-page { max-width: 100%; }
   .settings-page { max-width: 100%; }
 
   /* Net kv grid: narrower label column */
@@ -1314,24 +1322,28 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 .drift-cell-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin-bottom: 5px;
 }
 /* Non-outlier rows are dimmed so the defining cells stand out (review 2.5) */
 .drift-cell-row.dim { opacity: 0.55; }
 
-/* Tag on the repeated first-full cell's row */
+/* Indicator marking the repeated first-full cell. The wrapper is a flex child
+   with flex-basis:100%, forcing it onto its own line below the bar at every
+   viewport width (deterministic — not dependent on how the track flex-grows),
+   indented to the track start (22px label + 8px gap) so it reads as belonging
+   to that row. Styled as understated inline text (no box/border/background) to
+   match the "worst cell C4" sub-label convention used in the KPI tiles. */
+.drift-cell-tag-line {
+  flex-basis: 100%;
+  margin-left: 30px;
+}
 .drift-cell-tag {
-  font-size: 8px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-warning);
-  border: 1px solid var(--color-warning);
-  border-radius: 3px;
-  padding: 0 3px;
-  margin-left: 4px;
-  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-muted);
 }
 
 /* Band legend under the scale axis */

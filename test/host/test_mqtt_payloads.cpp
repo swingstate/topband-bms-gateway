@@ -40,6 +40,8 @@ static SafetyState make_safety() {
   ss.dcl_amps            = 80.0f;
   ss.cvl_volts           = 56.0f;
   ss.soc_avg             = 75.0f;
+  ss.soc_display         = 73.0f;
+  ss.soc_source_shunt    = true;
   ss.soh_avg             = 98.0f;
   ss.pack_voltage_avg    = 52.0f;
   ss.pack_current_total  = 10.0f;
@@ -67,6 +69,8 @@ TEST_CASE("build_data: produces valid JSON with required fields") {
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"ts_ms\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"uptime_s\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc_avg\""));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc_display\":73"));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc_source\":\"shunt\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"pack_voltage_avg\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"pack_current_total\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"pack_power_w\""));
@@ -119,6 +123,27 @@ TEST_CASE("build_cells: produces valid JSON with cells_v array") {
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"alarm_bits\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"cell_count\""));
   REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"bms_id\""));
+}
+
+// Regression: the per-cell-level HA discovery PACK_ENTITIES (Pack N
+// Voltage/Current/SOC) read value_json.{voltage,current,soc} from this same
+// Cells JSON. If those keys go missing the entities show "Unknown" in HA while
+// Pack N Alarms (value_json.alarm_bits) keeps working. Guard all three keys
+// with the exact names the value_templates expect, plus their values.
+TEST_CASE("build_cells: includes pack voltage/current/power/soc for HA value_templates") {
+  BmsSystemSnapshot snap = make_snap(1);
+  const BmsPackSnapshot& pack = snap.pack[0];  // voltage 52.0, current 5.0, soc 75
+
+  char buf[1024];
+  size_t n = mqtt::payloads::build_cells(pack, 2000000ULL, buf, sizeof(buf));
+  REQUIRE(n > 0);
+
+  std::string s(buf, n);
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"voltage\":52"));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"current\":5"));
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"soc\":75"));
+  // power = voltage * current = 52.0 * 5.0 = 260; feeds Pack N Power entity.
+  REQUIRE_THAT(s, Catch::Matchers::ContainsSubstring("\"power\":260"));
 }
 
 TEST_CASE("build_cells: fits in 1024 bytes for 16 cells") {

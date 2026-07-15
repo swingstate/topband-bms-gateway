@@ -13,6 +13,7 @@
 //   [pylontech]           Property tests: manufacturer ID, signed current, enable flags
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <cstring>
 #include <cstdint>
 
@@ -88,13 +89,16 @@ TEST_CASE("Pylontech 0x356: idle 4 packs", "[pylontech][frames]") {
 TEST_CASE("Pylontech 0x359: idle no alarms", "[pylontech][frames]") {
   auto s = make_state(52.5f, 100.0f, 100.0f, 72.0f, 98.0f, 400.0f,
                       52.1f, 0.0f, 25.0f, 0x00);
+  s.packs_online = 4;
   uint8_t out[8];
   can::pylontech::build_0x359(s, out);
 
-  REQUIRE(out[0] == 0x00);  // no protection bits
-  REQUIRE(out[1] == 0x00);  // no warning bits
-  REQUIRE(out[2] == 0x00);  // no fault bits
-  for (int i = 3; i < 8; ++i) REQUIRE(out[i] == 0x00);
+  REQUIRE(out[0] == 0x00);  // no protection alarms
+  REQUIRE(out[1] == 0x00);  // no protection alarms 2
+  REQUIRE(out[2] == 0x00);  // no warnings
+  REQUIRE(out[3] == 0x00);  // no warnings 2
+  REQUIRE(out[4] == 4);     // module count = packs online
+  for (int i = 5; i < 8; ++i) REQUIRE(out[i] == 0x00);
 }
 
 TEST_CASE("Pylontech 0x35C: idle, both enabled", "[pylontech][frames]") {
@@ -103,8 +107,9 @@ TEST_CASE("Pylontech 0x35C: idle, both enabled", "[pylontech][frames]") {
   uint8_t out[8];
   can::pylontech::build_0x35C(s, out);
 
-  // ccl=100 > 0.1 → charge enable (bit7); dcl=100 > 0.1 → discharge enable (bit5)
-  REQUIRE(out[0] == (0x80 | 0x20));
+  // ccl=100 > 0.1 → charge enable (bit7); dcl=100 > 0.1 → discharge enable (bit6).
+  // No undervolt alarm → force-charge (bit5) clear.
+  REQUIRE(out[0] == (0x80 | 0x40));
   for (int i = 1; i < 8; ++i) REQUIRE(out[i] == 0x00);
 }
 
@@ -155,15 +160,16 @@ TEST_CASE("Pylontech 0x356: discharging negative current", "[pylontech][frames]"
   REQUIRE(enc == -600);
 }
 
-TEST_CASE("Pylontech 0x359: undervolt alarm sets UVP bit", "[pylontech][frames]") {
+TEST_CASE("Pylontech 0x359: undervolt alarm sets under-voltage bit", "[pylontech][frames]") {
   auto s = make_state(52.5f, 100.0f, 80.0f, 15.0f, 97.0f, 400.0f,
                       49.8f, -60.0f, 28.0f, 0x10);
   uint8_t out[8];
   can::pylontech::build_0x359(s, out);
 
-  // alarm_flags 0x10 → byte0 bit1 (cell UVP)
-  REQUIRE((out[0] & 0x02) != 0);
-  // alarm_flags 0x10 → byte0 bit6 force-charge; no charge OCP (ccl=100 > 0.1)
+  // alarm_flags 0x10 → byte0 bit2 (under voltage, OpenDTU LSB0)
+  REQUIRE((out[0] & 0x04) != 0);
+  // NOT over-voltage (bit1) and NOT under-temperature (bit4)
+  REQUIRE((out[0] & 0x02) == 0);
   REQUIRE((out[0] & 0x10) == 0);
 }
 
@@ -173,10 +179,10 @@ TEST_CASE("Pylontech 0x35C: undervolt, force-charge bit set", "[pylontech][frame
   uint8_t out[8];
   can::pylontech::build_0x35C(s, out);
 
-  // charge enable (bit7) + force charge on undervolt (bit6) + discharge enable (bit5)
+  // charge enable (bit7) + discharge enable (bit6, dcl=80 > 0.1) + force charge (bit5, undervolt)
   REQUIRE((out[0] & 0x80) != 0);  // charge enable
-  REQUIRE((out[0] & 0x40) != 0);  // force charge (undervolt)
-  REQUIRE((out[0] & 0x20) != 0);  // discharge enable (dcl=80 > 0.1)
+  REQUIRE((out[0] & 0x40) != 0);  // discharge enable (dcl=80 > 0.1)
+  REQUIRE((out[0] & 0x20) != 0);  // force charge (undervolt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,21 +191,22 @@ TEST_CASE("Pylontech 0x35C: undervolt, force-charge bit set", "[pylontech][frame
 // volt=54.2  curr=0.0  temp=45.0  alarm=0x02|0x08 (overvolt+temp stop)
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST_CASE("Pylontech 0x359: overvolt + temp stop sets protection bits", "[pylontech][frames]") {
+TEST_CASE("Pylontech 0x359: overvolt + hot temp stop sets correct protection bits", "[pylontech][frames]") {
   auto s = make_state(52.5f, 0.0f, 0.0f, 100.0f, 98.0f, 400.0f,
                       54.2f, 0.0f, 45.0f, 0x02 | 0x08);
+  s.temp_alarm = 0x02;  // over-temperature (hot) — runSafety sets this alongside 0x08
   uint8_t out[8];
   can::pylontech::build_0x359(s, out);
 
-  // 0x02 overvolt → byte0 bit0 (cell OVP)
-  REQUIRE((out[0] & 0x01) != 0);
-  // 0x08 temp stop → byte0 bit2 (charge OTP) and bit3 (discharge OTP)
-  REQUIRE((out[0] & 0x04) != 0);
+  // 0x02 overvolt → byte0 bit1 (over voltage)
+  REQUIRE((out[0] & 0x02) != 0);
+  // hot temp stop → byte0 bit3 (over temperature)
   REQUIRE((out[0] & 0x08) != 0);
-  // ccl=0 < 0.1 → byte0 bit4 (charge OCP proxy)
-  REQUIRE((out[0] & 0x10) != 0);
-  // dcl=0 < 0.1 → byte0 bit5 (discharge OCP proxy)
-  REQUIRE((out[0] & 0x20) != 0);
+  // NOT under-temperature (bit4) — the old bug set this from ccl=0
+  REQUIRE((out[0] & 0x10) == 0);
+  // CCL/DCL at zero must NOT fabricate any over-current bits (proxies removed)
+  REQUIRE((out[0] & 0x80) == 0);  // no discharge over-current
+  REQUIRE((out[1] & 0x01) == 0);  // no charge over-current
 }
 
 TEST_CASE("Pylontech 0x35C: CCL+DCL zeroed means no enable bits", "[pylontech][frames]") {
@@ -210,10 +217,10 @@ TEST_CASE("Pylontech 0x35C: CCL+DCL zeroed means no enable bits", "[pylontech][f
 
   // ccl < 0.1 → bit7 (charge enable) not set
   REQUIRE((out[0] & 0x80) == 0);
-  // dcl < 0.1 → bit5 (discharge enable) not set
-  REQUIRE((out[0] & 0x20) == 0);
-  // no undervolt alarm → force charge bit not set
+  // dcl < 0.1 → bit6 (discharge enable) not set
   REQUIRE((out[0] & 0x40) == 0);
+  // no undervolt alarm → force charge (bit5) not set
+  REQUIRE((out[0] & 0x20) == 0);
   REQUIRE(out[0] == 0x00);
 }
 
@@ -239,20 +246,26 @@ TEST_CASE("Pylontech 0x356 negative current encoded as signed 16-bit LE", "[pylo
   REQUIRE(out[3] == 0xFF);
 }
 
-TEST_CASE("Pylontech 0x359 imbalance alarm maps to warning byte, not protection byte", "[pylontech]") {
+TEST_CASE("Pylontech 0x359 imbalance alarm sets no 0x359 bit (no standard slot)", "[pylontech]") {
+  // Cell drift / imbalance (alarm_flags 0x20) has no standard Pylontech 0x359
+  // field. It must NOT be fabricated onto an unrelated bit; it is surfaced via
+  // the gateway UI/MQTT instead. All alarm/warning bytes stay clear.
   SafetyState s{};
   s.alarm_flags  = 0x20;  // imbalance only
   s.ccl_amps     = 100.0f;
   s.dcl_amps     = 100.0f;
+  s.packs_online = 3;
   uint8_t out[8];
   can::pylontech::build_0x359(s, out);
 
-  REQUIRE(out[0] == 0x00);         // no protection bits
-  REQUIRE((out[1] & 0x40) != 0);  // byte1 bit6 = cell drift warning
-  REQUIRE(out[2] == 0x00);
+  REQUIRE(out[0] == 0x00);  // no protection alarms
+  REQUIRE(out[1] == 0x00);  // no protection alarms 2
+  REQUIRE(out[2] == 0x00);  // no warnings
+  REQUIRE(out[3] == 0x00);  // no warnings 2
+  REQUIRE(out[4] == 3);     // module count unaffected
 }
 
-TEST_CASE("Pylontech 0x359 BMS-reported alarm maps to byte2 and byte0 AFE bit", "[pylontech]") {
+TEST_CASE("Pylontech 0x359 BMS-reported alarm maps to BMS-internal bit", "[pylontech]") {
   SafetyState s{};
   s.alarm_flags = 0x40;  // BMS-reported critical alarm
   s.ccl_amps    = 100.0f;
@@ -260,15 +273,265 @@ TEST_CASE("Pylontech 0x359 BMS-reported alarm maps to byte2 and byte0 AFE bit", 
   uint8_t out[8];
   can::pylontech::build_0x359(s, out);
 
-  REQUIRE((out[0] & 0x80) != 0);  // byte0 bit7 = AFE/critical
-  REQUIRE((out[2] & 0x01) != 0);  // byte2 bit0 = pack-level fault
+  REQUIRE((out[1] & 0x08) != 0);  // byte1 bit3 = BMS internal / system error
+  REQUIRE(out[0] == 0x00);        // no byte0 alarms fabricated
 }
 
-TEST_CASE("Pylontech 0x351 bytes 6-7 always zero", "[pylontech]") {
+TEST_CASE("Pylontech 0x359 byte4 carries battery module count = packs online", "[pylontech]") {
+  // OpenDTU-onBattery reads data[4] directly as "Module Count" ("Batteriemodule").
+  // A healthy 3-pack system must report 3, not 0 and not packs*cells.
+  SafetyState s{};
+  s.packs_online     = 3;
+  s.packs_configured = 3;
+  s.ccl_amps         = 100.0f;
+  s.dcl_amps         = 100.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[4] == 3);
+  // Module count is independent of the alarm/protection bytes.
+  REQUIRE(out[0] == 0x00);
+  REQUIRE(out[1] == 0x00);
+}
+
+TEST_CASE("Pylontech 0x359 module count tracks online, not configured", "[pylontech]") {
+  // One of three configured packs offline → count reflects the two communicating.
+  SafetyState s{};
+  s.packs_online     = 2;
+  s.packs_configured = 3;
+  s.ccl_amps         = 100.0f;
+  s.dcl_amps         = 100.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[4] == 2);
+}
+
+TEST_CASE("Pylontech 0x359 module count is zero when no packs online", "[pylontech]") {
+  SafetyState s{};
+  s.packs_online = 0;
+  s.alarm_flags  = 0x80;  // no packs online
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[4] == 0);
+  REQUIRE((out[1] & 0x08) != 0);  // byte1 bit3 = BMS internal / system fault set
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 0x359 alarm/protection bit AUDIT matrix (V3.2 preview.4).
+// Every bit gets a paired healthy(clear) + genuine-condition(set) case. This is
+// the coverage that was missing when the false under-temperature bug shipped.
+// Bit reference (OpenDTU-onBattery Pylontech provider, getBit LSB0):
+//   byte0: bit1 over-volt, bit2 under-volt, bit3 over-temp, bit4 under-temp,
+//          bit7 discharge over-current
+//   byte1: bit0 charge over-current, bit3 BMS internal
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A realistic healthy reading: 3 packs, 23.9 °C (the owner's reported value),
+// normal voltage/current, NO alarm flags. CCL is deliberately 0 to reproduce the
+// exact false-under-temperature trigger (a full/charge-tapered but healthy pack).
+static SafetyState healthy_state() {
+  SafetyState s{};
+  s.cvl_volts = 53.2f;
+  s.ccl_amps = 0.0f;      // full / tapered — NOT a fault
+  s.dcl_amps = 100.0f;
+  s.soc_avg = 100.0f; s.soc_display = 100.0f; s.soc_display_valid = true;
+  s.soh_avg = 100.0f;
+  s.pack_voltage_avg = 53.1f; s.pack_current_total = 0.0f;
+  s.temp_avg = 23.9f;
+  s.alarm_flags = 0x00;
+  s.temp_alarm = 0x00;
+  s.packs_online = 3; s.packs_configured = 3;
+  return s;
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: healthy 23.9C battery raises NO alarm bit", "[pylontech][audit]") {
+  // The core regression: a healthy battery with CCL driven to 0 must produce a
+  // completely clean alarm frame — no false under-temperature (byte0 bit4), which
+  // is precisely what preview.2/.3 got wrong.
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE(out[0] == 0x00);
+  REQUIRE(out[1] == 0x00);
+  REQUIRE(out[2] == 0x00);
+  REQUIRE(out[3] == 0x00);
+  REQUIRE(out[4] == 3);      // only the module count is non-zero
+  REQUIRE((out[0] & 0x10) == 0);  // explicit: under-temperature CLEAR
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: over-voltage bit1 paired", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x02) == 0);             // healthy: clear
+  s.alarm_flags = 0x02;                       // genuine over-voltage
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x02) != 0);             // set
+  REQUIRE((out[0] & ~0x02) == 0);            // and nothing else in byte0
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: under-voltage bit2 paired", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x04) == 0);
+  s.alarm_flags = 0x10;                       // genuine under-voltage
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x04) != 0);
+  REQUIRE((out[0] & ~0x04) == 0);
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: over-temperature bit3 paired", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x08) == 0);
+  s.alarm_flags = 0x08; s.temp_alarm = 0x02;  // genuine hot stop
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x08) != 0);             // over-temp set
+  REQUIRE((out[0] & 0x10) == 0);             // under-temp NOT set
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: under-temperature bit4 paired", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x10) == 0);             // healthy: clear (the bug case)
+  s.alarm_flags = 0x08; s.temp_alarm = 0x01;  // genuine cold stop
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x10) != 0);             // under-temp set
+  REQUIRE((out[0] & 0x08) == 0);             // over-temp NOT set
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: BMS-internal bit3 paired (0x40 and 0x80)", "[pylontech][audit]") {
+  auto s = healthy_state();
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[1] & 0x08) == 0);
+  s.alarm_flags = 0x40;                       // BMS-reported critical
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[1] & 0x08) != 0);
+  s.alarm_flags = 0x80;                       // no packs online
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[1] & 0x08) != 0);
+}
+
+TEST_CASE("Pylontech 0x359 AUDIT: over-current bits never fabricated from CCL/DCL", "[pylontech][audit]") {
+  // The removed root cause: limits at zero must not synthesize over-current bits.
+  auto s = healthy_state();
+  s.ccl_amps = 0.0f; s.dcl_amps = 0.0f;  // both limits zero, but NO fault
+  uint8_t out[8];
+  can::pylontech::build_0x359(s, out);
+  REQUIRE((out[0] & 0x80) == 0);  // discharge over-current not fabricated
+  REQUIRE((out[1] & 0x01) == 0);  // charge over-current not fabricated
+  REQUIRE((out[0] & 0x10) == 0);  // and definitely not under-temperature
+}
+
+TEST_CASE("Pylontech 0x351 bytes 6-7 carry discharge voltage limit (DVL)", "[pylontech]") {
   SafetyState s{};
   s.cvl_volts = 53.5f;  s.ccl_amps = 120.0f;  s.dcl_amps = 120.0f;
+  s.dvl_volts = 47.5f;  // configured pack low-voltage cutoff
+  uint8_t out[8];
+  can::pylontech::build_0x351(s, out);
+  // dvl=47.5*10=475=0x01DB, LE
+  REQUIRE(out[6] == 0xDB);
+  REQUIRE(out[7] == 0x01);
+}
+
+TEST_CASE("Pylontech 0x351 DVL is zero when unset (regression guard)", "[pylontech]") {
+  // A default-constructed state has dvl_volts=0 → bytes 6-7 zero. runSafety()
+  // always populates dvl_volts from cfg.safe_pack_volt, so 0 only appears here.
+  SafetyState s{};
+  s.cvl_volts = 53.5f;
   uint8_t out[8];
   can::pylontech::build_0x351(s, out);
   REQUIRE(out[6] == 0x00);
   REQUIRE(out[7] == 0x00);
+}
+
+TEST_CASE("Pylontech 0x355 SOC follows fused Combined SOC when valid", "[pylontech]") {
+  // soc_display_valid → CAN uses soc_display (e.g. shunt-led), not soc_avg.
+  SafetyState s{};
+  s.soc_avg = 72.0f;
+  s.soc_display = 88.0f;
+  s.soc_display_valid = true;
+  s.soh_avg = 98.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x355(s, out);
+  REQUIRE(out[0] == 88);  // fused SOC, not soc_avg=72
+  REQUIRE(out[1] == 0x00);
+  REQUIRE(out[2] == 98);  // SOH stays BMS-only
+}
+
+TEST_CASE("Pylontech 0x355 SOC falls back to BMS soc_avg when fused invalid", "[pylontech]") {
+  SafetyState s{};
+  s.soc_avg = 72.0f;
+  s.soc_display = 88.0f;       // stale/garbage
+  s.soc_display_valid = false; // no valid fused value → fall back to BMS
+  uint8_t out[8];
+  can::pylontech::build_0x355(s, out);
+  REQUIRE(out[0] == 72);  // BMS soc_avg fallback
+}
+
+TEST_CASE("Pylontech 0x356 current follows fused Combined Current when valid", "[pylontech][current]") {
+  // current_display_valid → CAN 0x356 uses the shunt-led fused current, not the
+  // raw BMS pack_current_total. Reproduces the field bug: BMS reads 0.0 A (blind
+  // below ~0.5 A) while the shunt sees -0.8 A discharge.
+  SafetyState s{};
+  s.pack_current_total    = 0.0f;    // BMS blind spot
+  s.current_display       = -0.8f;   // shunt-fused Combined Current
+  s.current_display_valid = true;
+  s.pack_voltage_avg      = 52.1f;
+  s.temp_avg              = 25.0f;
+  uint8_t out[8];
+  can::pylontech::build_0x356(s, out);
+  // -0.8 A → int(-0.8*10) = -8 = 0xFFF8 signed 16-bit LE
+  REQUIRE(out[2] == 0xF8);
+  REQUIRE(out[3] == 0xFF);
+}
+
+TEST_CASE("Pylontech 0x356 current falls back to BMS pack_current_total when fused invalid",
+          "[pylontech][current]") {
+  SafetyState s{};
+  s.pack_current_total    = -15.5f;  // BMS current
+  s.current_display       = -0.8f;   // stale/garbage
+  s.current_display_valid = false;   // no valid fused value → fall back to BMS
+  uint8_t out[8];
+  can::pylontech::build_0x356(s, out);
+  // -15.5 A → int(-15.5*10) = -155 = 0xFF65 signed 16-bit LE
+  REQUIRE(out[2] == 0x65);
+  REQUIRE(out[3] == 0xFF);
+}
+
+TEST_CASE("can_tx_current follows fused Combined Current, BMS fallback when invalid",
+          "[pylontech][current]") {
+  // Shared helper: the single source for CAN 0x356 current across all three
+  // protocols and the MQTT {base}/current topic. Mirrors can_tx_soc().
+  SafetyState s{};
+  s.pack_current_total = -15.5f;
+
+  s.current_display_valid = true;
+  s.current_display = -0.8f;  REQUIRE(can_tx_current(s) == Catch::Approx(-0.8f));   // sub-amp shunt read
+  s.current_display = 12.3f;  REQUIRE(can_tx_current(s) == Catch::Approx(12.3f));   // charging
+
+  // Fallback path (fused invalid) uses raw BMS current, preserving sign.
+  s.current_display_valid = false;
+  REQUIRE(can_tx_current(s) == Catch::Approx(-15.5f));
+}
+
+TEST_CASE("can_tx_soc rounds half-up so CAN/MQTT match the dashboard's toFixed(0)", "[pylontech][soc]") {
+  // The reported SOC helper is the single source for the CAN 0x355 SOC and the
+  // MQTT {base}/soc topic. It must round (not truncate) a fractional fused value
+  // the same way the dashboard's toFixed(0) does, so a ~99.6% bank never shows as
+  // 99 on MQTT while the dashboard shows 100.
+  SafetyState s{};
+  s.soc_display_valid = true;
+
+  s.soc_display = 99.6f;  REQUIRE(can_tx_soc(s) == 100);  // was 99 under truncation
+  s.soc_display = 99.4f;  REQUIRE(can_tx_soc(s) == 99);
+  s.soc_display = 99.5f;  REQUIRE(can_tx_soc(s) == 100);  // half rounds up
+  s.soc_display = 50.0f;  REQUIRE(can_tx_soc(s) == 50);   // whole numbers unchanged
+
+  // Fallback path (fused invalid) rounds soc_avg the same way.
+  s.soc_display_valid = false;
+  s.soc_avg = 88.7f;      REQUIRE(can_tx_soc(s) == 89);
 }

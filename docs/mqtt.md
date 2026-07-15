@@ -59,10 +59,10 @@ refreshes every ~5 s.
 
 | Topic | Value type | Example |
 |---|---|---|
-| `{base}/soc` | integer % | `75` |
-| `{base}/voltage` | float V (2 dp) | `52.40` |
-| `{base}/current` | float A (1 dp) | `10.5` |
-| `{base}/power` | integer W | `550` |
+| `{base}/soc` | integer % | `75` (V3.2: shunt-fused bank SOC when `ble_shunt_enabled` and fresh, else BMS mean — see below. Rounded half-up via the shared `can_tx_soc()` helper so MQTT, CAN and the dashboard never disagree by a rounding step) |
+| `{base}/voltage` | float V (2 dp) | `52.40` (V3.2: fused `voltage_display`, same value the dashboard shows, BMS-aggregate fallback when no fused value is valid) |
+| `{base}/current` | float A (1 dp) | `10.5` (V3.2: fused `current_display`, same as dashboard, BMS-aggregate fallback) |
+| `{base}/power` | integer W | `550` (V3.2: fused `voltage_display` × `current_display`, same as dashboard) |
 | `{base}/temperature` | float °C (1 dp) | `25.2` |
 | `{base}/cell_v_min` | float V (3 dp) | `3.324` |
 | `{base}/cell_v_max` | float V (3 dp) | `3.327` |
@@ -102,10 +102,16 @@ Published every 5 s. Topic: `{base}/data`.
   "bms_count_online": 2,
   "bms_count_configured": 2,
   "soc_avg": 75,
+  "soc_display": 73,
+  "soc_source": "shunt",
   "soh_avg": 98,
   "pack_voltage_avg": 52.4,
   "pack_current_total": 10.5,
   "pack_power_w": 550.2,
+  "voltage_display": 52.4,
+  "voltage_source": "bms",
+  "current_display": 10.7,
+  "current_source": "shunt",
   "temp_avg": 25.2,
   "temp_max": 27.1,
   "cell_v_min": 3.324,
@@ -120,6 +126,44 @@ Published every 5 s. Topic: `{base}/data`.
 ```
 
 `cell_v_min/max/drift` and `temp_max` are `null` when no packs are online.
+
+`soc_avg`/`pack_voltage_avg`/`pack_current_total` are the pure BMS figures
+(byte-identical to V2.67 for `soc_avg`). `soc_display`/`voltage_display`/
+`current_display` (V3.2, "Battery Value Sources") are the bank-level values
+actually shown on the dashboard: the SmartShunt reading when the shunt is
+online and fresh (or explicitly selected in Manual mode), else the BMS figure.
+`soc_source`/`voltage_source`/`current_source` are each `"shunt"` or `"bms"`,
+whichever fed the paired `*_display` field this cycle — see Settings → Battery
+→ Battery Value Sources (`Config::battery_source_policy`, `Auto`/`Manual`, plus
+per-metric `Config::voltage_source`/`current_source`/`soc_source` in Manual).
+
+The aggregate plain-text topics `{base}/soc`, `{base}/voltage`, `{base}/current`
+and `{base}/power` (above) all publish these same fused `*_display` values, so a
+shunt-led dashboard tile and its MQTT entity can never disagree. The reported
+integer SOC on `{base}/soc` and on CAN 0x355 come from one shared helper
+(`can_tx_soc()`, round half-up) — the fused Combined SOC when valid, BMS
+`soc_avg` fallback otherwise. The charge-taper safety input and the per-pack
+`pack{N}/*` topics always use the plain BMS value, never any `*_display` field —
+see `docs/research/v3.2-shunt-soc-fusion.md`.
+
+### SmartShunt cross-check topic (when `ble_shunt_enabled`)
+
+| Topic | Value type | Example |
+|---|---|---|
+| `{base}/shunt/consumed_ah` | float Ah (1 dp) | `-3.0` |
+
+Bank-level, retained, published ~10 s. The SmartShunt's own hardware Coulomb
+counter (negative = discharged). Read-only reference only — **not** fused into any
+`*_display`, CAN, or dashboard value.
+
+Published only while the shunt is enabled, fresh (< 30 s), and reporting a real
+counter value. When the shunt is stale or returns its raw "not synchronized"
+sentinel, the publish is skipped and the HA entity carries `expire_after: 60`, so
+Home Assistant marks it *unavailable* rather than the gateway posting a literal
+placeholder string on a numeric topic (same contract as the solar/MPPT topics).
+The matching HA discovery entity is `shunt_consumed_ah` (plain numeric sensor,
+unit `Ah`, `state_class: measurement`, no device class — HA has no charge/Ah
+class). The entity is tombstoned when `ble_shunt_enabled` is turned off.
 
 ### Level 2+ — Alarm topic (not retained)
 
@@ -272,6 +316,22 @@ Each pack gets a sub-device in HA. State topics are `{base}/pack{N}/{field}`.
 
 Individual cell voltage sensors use the JSON cells blob with `value_template`.
 State topic: `{base}/cells/bms{N}` (0-based N).
+
+At Level 4 each pack also gets summary sensors on the **main gateway device**
+(distinct from the Level 3 pack sub-device sensors), read from the same cells
+blob via `value_template`:
+
+| `value_json` key | HA Entity | Device Class | Unit |
+|---|---|---|---|
+| `voltage` | Pack N Voltage | voltage | V |
+| `current` | Pack N Current | current | A |
+| `power` | Pack N Power | power | W |
+| `soc` | Pack N SOC | battery | % |
+| `alarm_bits` | Pack N Alarms | — | — |
+
+`voltage`/`current`/`power`/`soc` are pack-level scalars added to the cells blob
+so these templates resolve (a missing key renders "Unknown" in HA). `power` =
+`voltage × current`. All are BMS-only per-pack values (no shunt fusion).
 
 ---
 

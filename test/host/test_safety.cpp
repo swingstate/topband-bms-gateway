@@ -674,18 +674,27 @@ TEST_CASE("soc: taper skipped when maint_charge_enabled", "[soc]") {
 // Lock-to-zero rule [lock]
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST_CASE("lock: OV flag (0x02) → ccl=dcl=0", "[lock]") {
+// These use Manual mode so CCL and DCL both have a predictable nonzero baseline
+// (count × 30 A × temp_factor) — the direction that STAYS enabled is verified to
+// carry its normal limit, not merely a coincidental zero. (In Auto mode with the
+// synthetic packs' sys_*_max_a = 0, the sysparam branch yields 0 for both
+// directions regardless of any lock, which would mask the direction split.)
+
+TEST_CASE("lock: OV flag (0x02) → blocks CHARGE only, discharge stays available", "[lock]") {
   auto snap = make_system(2, 57.0f, 0.0f, 50, 3.341f, 0.002f, 25.0f);  // pack_v > 56.25
   auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
   auto prev = make_prev_all_online(2);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
   REQUIRE(out.alarm_flags & 0x02);
-  REQUIRE(out.ccl_amps == Catch::Approx(0.0f));
-  REQUIRE(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));           // charging worsens OV → blocked
+  CHECK(out.dcl_amps == Catch::Approx(2 * 30.0f));      // discharging helps → available
+  CHECK((out.lockout_flags & 0x01));                    // charge lockout flagged
+  CHECK_FALSE((out.lockout_flags & 0x02));              // discharge NOT flagged
 }
 
-TEST_CASE("lock: UV flag (0x10) from alarm filter → ccl=dcl=0", "[lock]") {
+TEST_CASE("lock: UV flag (0x10) → blocks DISCHARGE only, charge stays available", "[lock]") {
   // Pack with fresh UV alarm (bit 12) and pack_v=30 below sanity cap
   BmsSystemSnapshot snap{};
   snap.cycle_id              = 1;
@@ -697,17 +706,21 @@ TEST_CASE("lock: UV flag (0x10) from alarm filter → ccl=dcl=0", "[lock]") {
   snap.pack[0].last_alarm_ms = 120000;  // 30s ago → fresh
 
   auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
   auto prev = make_prev_all_online(1);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 150000, out);
 
   REQUIRE(out.alarm_flags & 0x10);
-  REQUIRE(out.ccl_amps == Catch::Approx(0.0f));
-  REQUIRE(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));           // discharging worsens UV → blocked
+  CHECK(out.ccl_amps == Catch::Approx(1 * 30.0f));      // charging helps → available
+  CHECK((out.lockout_flags & 0x02));
+  CHECK_FALSE((out.lockout_flags & 0x01));
 }
 
-TEST_CASE("lock: BMS alarm flag (0x40) → ccl=dcl=0", "[lock]") {
-  // Pack with fresh non-UV critical alarm (bit 4)
+TEST_CASE("lock: BMS critical alarm (0x40) → blocks BOTH (non-directional)", "[lock]") {
+  // Pack with fresh non-UV critical alarm (bit 4) — the 0x44 bitmap is not
+  // decoded per-direction, so the conservative response stays "stop everything".
   BmsSystemSnapshot snap{};
   snap.cycle_id              = 1;
   snap.produced_ms           = 150000;
@@ -718,13 +731,172 @@ TEST_CASE("lock: BMS alarm flag (0x40) → ccl=dcl=0", "[lock]") {
   snap.pack[0].last_alarm_ms = 120000;
 
   auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
   auto prev = make_prev_all_online(1);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 150000, out);
 
   REQUIRE(out.alarm_flags & 0x40);
-  REQUIRE(out.ccl_amps == Catch::Approx(0.0f));
-  REQUIRE(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.lockout_flags == 0x03);                     // both directions flagged
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Direction-aware lockout — comprehensive paired coverage [lockdir]
+// Every condition checks BOTH the direction it should block AND the direction it
+// must leave available. Manual mode → predictable count×30 A baseline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static Config make_cfg_manual() {
+  Config cfg = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  return cfg;
+}
+
+TEST_CASE("lockdir: baseline healthy → both directions full, no lockout", "[lockdir]") {
+  auto snap = make_system(2, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(2);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  CHECK(out.ccl_amps == Catch::Approx(2 * 30.0f));
+  CHECK(out.dcl_amps == Catch::Approx(2 * 30.0f));
+  CHECK(out.lockout_flags == 0x00);
+}
+
+TEST_CASE("lockdir: cell over-voltage → charge 0, discharge full", "[lockdir]") {
+  // cell_max 3.60 > Manual cell cap (min(safe_cell_volt 3.55, 3.65) = 3.55)
+  auto snap = make_system(2, 50.1f, 0.0f, 50, 3.60f, 0.002f, 25.0f);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(2);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  REQUIRE(out.alarm_flags & 0x02);
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(2 * 30.0f));
+  CHECK((out.lockout_flags & 0x01));
+  CHECK_FALSE((out.lockout_flags & 0x02));
+}
+
+TEST_CASE("lockdir: charge over-temperature → charge 0, discharge full", "[lockdir]") {
+  // 55 C: above charge_temp_max (50) but below discharge_temp_max (60)
+  auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 55.0f);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  REQUIRE(out.factor_charge == Catch::Approx(0.0f));
+  REQUIRE(out.factor_discharge == Catch::Approx(1.0f));
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(1 * 30.0f));
+  CHECK((out.lockout_flags & 0x01));
+  CHECK_FALSE((out.lockout_flags & 0x02));
+  CHECK((out.temp_alarm & 0x02));                       // hot direction
+}
+
+TEST_CASE("lockdir: discharge over-temperature → discharge 0, charge full", "[lockdir]") {
+  // Isolate discharge-over-temp: raise charge_temp_max above discharge_temp_max
+  // so 60 C is in-range for charge but a cutoff for discharge.
+  auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 60.0f);
+  auto cfg  = make_cfg_manual();
+  cfg.charge_temp_max    = 70.0f;
+  cfg.discharge_temp_max = 55.0f;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  REQUIRE(out.factor_charge == Catch::Approx(1.0f));
+  REQUIRE(out.factor_discharge == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.ccl_amps == Catch::Approx(1 * 30.0f));
+  CHECK((out.lockout_flags & 0x02));
+  CHECK_FALSE((out.lockout_flags & 0x01));
+}
+
+TEST_CASE("lockdir: charge low-temperature (cold) → charge 0, discharge full", "[lockdir]") {
+  // 0 C: below charge_temp_min (5) but above discharge_temp_min (-20).
+  // LiFePO4 cold-charge plating protection; discharging cold is fine.
+  auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 0.0f);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  REQUIRE(out.factor_charge == Catch::Approx(0.0f));
+  REQUIRE(out.factor_discharge == Catch::Approx(1.0f));
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(1 * 30.0f));
+  CHECK((out.lockout_flags & 0x01));
+  CHECK_FALSE((out.lockout_flags & 0x02));
+  CHECK((out.temp_alarm & 0x01));                       // cold direction
+}
+
+TEST_CASE("lockdir: cold charge-cutoff at 99% SoC → charge stays 0 (taper cannot re-open)", "[lockdir]") {
+  // Regression for the taper-override bug: at >=99% SoC the SoC taper sets
+  // safe_chg = count*2 A; the protection block must run AFTER and keep it 0, so a
+  // cold pack is never trickle-charged into plating.
+  auto snap = make_system(1, 50.1f, 0.0f, 99, 3.341f, 0.002f, 0.0f);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));           // NOT the 2 A taper trickle
+  CHECK(out.dcl_amps == Catch::Approx(1 * 30.0f));
+  CHECK((out.lockout_flags & 0x01));
+}
+
+TEST_CASE("lockdir: SoC 100% taper → charge 0 but NOT flagged as a lockout", "[lockdir]") {
+  // Battery-full taper zeroes charge, but it is not a protection fault: no
+  // lockout flag, so no banner/alert. Discharge unaffected.
+  auto snap = make_system(2, 50.1f, 0.0f, 100, 3.341f, 0.002f, 25.0f);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(2);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(2 * 30.0f));
+  CHECK(out.lockout_flags == 0x00);                     // taper is not a lockout
+  CHECK(out.alarm_flags == 0x00);
+}
+
+TEST_CASE("lockdir: no packs online → both blocked, both flagged", "[lockdir]") {
+  BmsSystemSnapshot snap{};
+  snap.cycle_id = 1; snap.produced_ms = 10000;
+  snap.pack_count_configured = 2;   // configured but none online
+  snap.pack[0] = make_pack(0, false);
+  snap.pack[1] = make_pack(1, false);
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(2);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 10000, out);
+  REQUIRE(out.alarm_flags & 0x80);
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.lockout_flags == 0x03);
+}
+
+TEST_CASE("lockdir: combination OV + UV → both directions blocked, neither masks the other", "[lockdir]") {
+  // Two mismatched packs: pack0 over-voltage (blocks charge), pack1 carrying a
+  // fresh UV alarm at low voltage (blocks discharge). Each condition must apply
+  // to its own direction. (OV and UV cannot coexist on ONE pack — the UV alarm
+  // filter correctly suppresses UV at a high pack voltage — so they live on
+  // separate packs here.)
+  BmsSystemSnapshot snap{};
+  snap.cycle_id = 1; snap.produced_ms = 150000;
+  snap.pack_count_configured = 2;
+  snap.pack_count_online     = 2;
+  snap.pack[0] = make_pack(0, true, 57.0f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);  // pack OV
+  snap.pack[1] = make_pack(1, true, 30.0f, 0.0f, 30, 2.0f,   0.10f,  25.0f, 25.0f);  // low V
+  snap.pack[1].alarm_bits    = (1ULL << 12);   // UV alarm bit
+  snap.pack[1].last_alarm_ms = 120000;
+  auto cfg  = make_cfg_manual();
+  auto prev = make_prev_all_online(2);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+  REQUIRE(out.alarm_flags & 0x02);   // over-voltage (pack0)
+  REQUIRE(out.alarm_flags & 0x10);   // under-voltage (pack1)
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));
+  CHECK(out.lockout_flags == 0x03);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

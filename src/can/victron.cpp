@@ -24,7 +24,13 @@ void build_0x351(const SafetyState& s, uint8_t out[8]) {
 void build_0x355(const SafetyState& s, uint8_t out[8]) {
   memset(out, 0, 8);
   // V2.67 lines 2334-2335: SOC=int(avgSOC), SOH=int(avgSOH), cap=int(totalCapacity*10)
-  int soc = static_cast<int>(s.soc_avg);
+  // V3.2 (owner-confirmed): the SOC reported over CAN follows the dashboard's
+  // "Combined SOC" — the Battery Value Sources fused value (shunt-led when fresh,
+  // BMS fallback otherwise) via can_tx_soc(). This is the DISPLAY/reporting SOC.
+  // It is intentionally NOT the charge-taper input: the taper stays strictly on
+  // raw BMS soc_avg (see safety/runSafety.cpp) — do not conflate the two.
+  // SOH stays BMS-only (the shunt does not measure state of health).
+  int soc = can_tx_soc(s);
   int soh = static_cast<int>(s.soh_avg);
   int cap = static_cast<int>(s.capacity_total_ah * 10.0f);
   out[0] = static_cast<uint8_t>(soc & 0xFF);  out[1] = static_cast<uint8_t>((soc >> 8) & 0xFF);
@@ -38,8 +44,13 @@ void build_0x356(const SafetyState& s, uint8_t out[8]) {
   // current is signed (negative = discharge per V2.67 convention).
   // Signed 16-bit LE: i & 0xFF is low byte; (i >> 8) & 0xFF is high byte.
   // Arithmetic right-shift on ESP32 Xtensa LX7 is sign-extending, matching Python behavior.
+  // V3.2: current follows the dashboard's Combined Current (Battery Value Sources
+  // fused value, shunt-led when fresh; BMS pack_current_total fallback otherwise)
+  // via can_tx_current() — the current analogue of the can_tx_soc() 0x355 fix, so
+  // the inverter sees the same real sub-0.5 A current the shunt reads and the BMS
+  // is blind to. Voltage/temperature stay on the raw BMS aggregates.
   int v = static_cast<int>(s.pack_voltage_avg   * 100.0f);
-  int i = static_cast<int>(s.pack_current_total * 10.0f);
+  int i = static_cast<int>(can_tx_current(s)    * 10.0f);
   int t = static_cast<int>(s.temp_avg           * 10.0f);
   out[0] = static_cast<uint8_t>(v & 0xFF);  out[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
   out[2] = static_cast<uint8_t>(i & 0xFF);  out[3] = static_cast<uint8_t>((i >> 8) & 0xFF);

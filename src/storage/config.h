@@ -31,7 +31,14 @@
 // v9 → v10: added shunt_current_mode (uint8_t) — user-selectable aggregation rule.
 //            sizeof(Config) grows 880 → 884 B (1 B field + 3 B tail padding).
 //            Migration: Auto (preserves existing behaviour).
-constexpr uint16_t CURRENT_SCHEMA_VERSION = 10;
+// v10 → v11: removed soc_mode/shunt_current_mode (Config::SocMode, Config::ShuntCurrentMode);
+//            replaced by the consolidated Battery Value Sources model:
+//            battery_source_policy (Auto/Manual) + per-metric voltage_source/
+//            current_source/soc_source (Bms/Shunt), display-only, see below.
+//            Migration: derives the new fields from the old soc_mode/shunt_current_mode
+//            values so upgraded devices keep equivalent behaviour (see
+//            migrate_v10_to_v11 / derive_battery_source_fields in config.cpp).
+constexpr uint16_t CURRENT_SCHEMA_VERSION = 11;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // Single struct replacing ~80 V2.67 globals. Serialized as one CRC-protected
@@ -90,10 +97,6 @@ struct Config {
   float temp_soft_zone;
   enum class TempMode : uint8_t { Hottest = 0, Average = 1 };
   TempMode temp_mode;
-
-  // ── SOC source selection ────────────────────────────────────────────────────
-  enum class SocMode : uint8_t { Calculated = 0, RawBms = 1, Hybrid = 2 };
-  SocMode soc_mode;
 
   // ── Setup mode ──────────────────────────────────────────────────────────────
   // Replaces V2.67 expert/easy/setupd/auto_applied flags (see architecture §5.2).
@@ -253,18 +256,31 @@ struct Config {
   // Display-only — no control sent to the DTU/inverter. Read-only monitoring.
   char mqtt_solar_passthrough_topic[64];
 
-  // ── Shunt current aggregation mode (v10) ─────────────────────────────────────
-  // Controls which source provides TOTAL_CURRENT when SmartShunt is enabled.
-  //   Auto       — BMS leads; shunt takes over below 0.5 A (BMS dead-zone).
-  //   ShuntLeads — SmartShunt always leads; BMS is fallback when shunt unavailable.
-  //   BmsLeads   — BMS always leads; shunt reading is supplementary/display only.
-  enum class ShuntCurrentMode : uint8_t {
-    Auto       = 0,
-    ShuntLeads = 1,
-    BmsLeads   = 2,
-  };
-  ShuntCurrentMode shunt_current_mode;
-  // sizeof(Config) = 884 B (880 + 1 field + 3 B tail padding)
+  // ── Battery Value Sources (v11) ───────────────────────────────────────────────
+  // Consolidates the former separate soc_mode / shunt_current_mode selectors into
+  // one policy for every metric the shunt can supply: bank voltage, total current,
+  // bank SOC. DISPLAY/dashboard/MQTT purposes only — see the hard invariant below.
+  //
+  //   Auto   — for each metric above, the shunt leads whenever it's online and its
+  //            reading is fresh (ReadingStatus::Valid); BMS is the fallback
+  //            (shunt disabled/absent/stale). Applies uniformly to all three
+  //            metrics, no per-metric picking. Default.
+  //   Manual — voltage_source / current_source / soc_source below are read
+  //            individually, each independently BMS or Shunt.
+  //
+  // Per-pack values (voltage, SOC, temp per pack) stay BMS-only always, in both
+  // modes — the shunt is bank-level only. See sources::Aggregator.
+  //
+  // PERMANENT SAFETY INVARIANT: charge-taper (runSafety.cpp) and CAN TX always
+  // use the BMS soc_avg, never any value influenced by this policy, in Auto or
+  // Manual mode. There is no configuration surface for that — see runSafety.cpp
+  // and can/victron.cpp / can/pylontech.cpp / can/sma.cpp.
+  enum class BatterySourcePolicy : uint8_t { Auto = 0, Manual = 1 };
+  enum class MetricSource : uint8_t { Bms = 0, Shunt = 1 };
+  BatterySourcePolicy battery_source_policy;
+  MetricSource voltage_source;   // Manual mode only; ignored in Auto
+  MetricSource current_source;   // Manual mode only; ignored in Auto
+  MetricSource soc_source;       // Manual mode only; ignored in Auto
 };
 
 // ── Default config ─────────────────────────────────────────────────────────────

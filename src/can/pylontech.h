@@ -16,28 +16,34 @@
 
 namespace can::pylontech {
 
-// 0x351 — CVL / CCL / DCL limits (same encoding as Victron)
-// cvl×10 LE bytes 0-1, ccl×10 LE bytes 2-3, dcl×10 LE bytes 4-5, bytes 6-7 zero
+// 0x351 — CVL / CCL / DCL / DVL limits
+// cvl×10 LE bytes 0-1, ccl×10 LE bytes 2-3, dcl×10 LE bytes 4-5,
+// dvl×10 LE bytes 6-7 (discharge voltage limit = configured pack low-voltage cutoff)
 void build_0x351(const SafetyState& state, uint8_t out[8]);
 
-// 0x355 — SOC / SOH / Total Capacity (same encoding as Victron)
-// SOC-int LE bytes 0-1, SOH-int LE bytes 2-3, capacity×10 LE bytes 4-5, bytes 6-7 zero
+// 0x355 — SOC / SOH / Total Capacity
+// SOC-int LE bytes 0-1 (fused Combined SOC via can_tx_soc()), SOH-int LE bytes 2-3
+// (BMS-only), capacity×10 LE bytes 4-5, bytes 6-7 zero
 void build_0x355(const SafetyState& state, uint8_t out[8]);
 
 // 0x356 — Pack Voltage / Pack Current / Average Temperature (same encoding as Victron)
 // voltage×100 LE bytes 0-1, current×10 signed LE bytes 2-3, temp×10 LE bytes 4-5, bytes 6-7 zero
 void build_0x356(const SafetyState& state, uint8_t out[8]);
 
-// 0x359 — Alarm and warning status (spec-derived, Pylontech LV BMS CAN Protocol v1.1)
-// Byte 0: protection bits (OVP/UVP/OTP/OCP flags)
-// Byte 1: warning bits (softer threshold flags)
-// Byte 2: fault status bits
-// Bytes 3-7: zero
+// 0x359 — Alarm / warning / status (standard Pylontech LV layout, LSB0 bits,
+// verified against OpenDTU-onBattery's Pylontech provider)
+// Byte 0 alarms:  bit1 over-volt, bit2 under-volt, bit3 over-temp,
+//                 bit4 under-temp, bit7 discharge over-current
+// Byte 1 alarms:  bit0 charge over-current, bit3 BMS internal / system error
+// Bytes 2-3:      warning-level mirror (unused — no warning thresholds), zero
+// Byte 4:         battery module count = packs online (OpenDTU "Module Count")
+// Bytes 5-7:      zero
 void build_0x359(const SafetyState& state, uint8_t out[8]);
 
 // 0x35C — Charge / discharge enable request (spec-derived, Pylontech LV BMS CAN Protocol v1.1)
-// Byte 0 bit 7 = charge enable, bit 6 = force charge (undervolt), bit 5 = discharge enable
+// Byte 0 bit 7 = charge enable, bit 6 = discharge enable, bit 5 = request force charge (undervolt)
 // Bytes 1-7: zero
+// (V3.2: bit6/bit5 were previously swapped — see build_0x35C() in pylontech.cpp.)
 void build_0x35C(const SafetyState& state, uint8_t out[8]);
 
 // 0x35E — Manufacturer ID

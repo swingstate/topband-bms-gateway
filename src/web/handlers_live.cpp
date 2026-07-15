@@ -14,7 +14,6 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include <ArduinoJson.h>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -103,6 +102,19 @@ esp_err_t handle_live(httpd_req_t* req) {
       pj["cell_drift_v"] = p.cell_drift_v;
       pj["current_held"] = p.current_held;
 
+      // Per-pack charge-limit diagnosability. In Auto/AutoMargin the aggregate
+      // CCL (safety.ccl_amps) is the SUM of these per-pack sysparam limits, and
+      // a per-pack cell-OV lock-to-zero also collapses charge — either way the
+      // aggregate can read ~0 (charge-enable=No) while the average SoC still
+      // looks healthy at ~95%. Exposing sys_charge_max_a / sys_cell_high_v here
+      // lets the operator see WHICH pack is limiting charge (e.g. one pack near
+      // its cell-OVP threshold or self-tapering its charge current toward 0)
+      // without a separate MQTT round-trip. Display-only; no safety-path effect.
+      pj["sysparam_valid"]   = p.sysparam_valid;
+      pj["sys_charge_max_a"] = p.sys_charge_max_a;
+      pj["sys_discharge_max_a"] = p.sys_discharge_max_a;
+      pj["sys_cell_high_v"]  = p.sys_cell_high_v;
+
       JsonArray cells = pj["cells"].to<JsonArray>();
       for (uint8_t c = 0; c < p.cell_count && c < 16; c++) {
         cells.add(p.cell_v[c]);
@@ -112,15 +124,38 @@ esp_err_t handle_live(httpd_req_t* req) {
 
   JsonObject saf = doc["safety"].to<JsonObject>();
   if (has_safety) {
+    const bool bms_has_data = safety.packs_online > 0;
+
     saf["cvl_volts"]          = safety.cvl_volts;
     saf["ccl_amps"]           = safety.ccl_amps;
     saf["dcl_amps"]           = safety.dcl_amps;
     saf["soc_avg"]            = safety.soc_avg;
-    saf["soh_avg"]            = safety.soh_avg;
-    saf["temp_avg"]           = safety.temp_avg;
+    // *_display fields are the Battery Value Sources fused values that drive
+    // the dashboard/MQTT — honest "no data" (JSON null) when *_display_valid
+    // is false, rather than a bare 0 that looks like a real reading.
+    if (safety.voltage_display_valid) saf["voltage_display"] = safety.voltage_display;
+    else                              saf["voltage_display"] = nullptr;
+    saf["voltage_source_shunt"] = safety.voltage_source_shunt;
+    if (safety.current_display_valid) saf["current_display"] = safety.current_display;
+    else                              saf["current_display"] = nullptr;
+    saf["current_source_shunt"] = safety.current_source_shunt;
+    if (safety.soc_display_valid) saf["soc_display"] = safety.soc_display;
+    else                          saf["soc_display"] = nullptr;
+    saf["soc_source_shunt"]   = safety.soc_source_shunt;
+    // soh_avg / temp_avg have no shunt equivalent — BMS-only, honest "no data"
+    // whenever no pack is currently reporting.
+    if (bms_has_data) saf["soh_avg"] = safety.soh_avg;
+    else              saf["soh_avg"] = nullptr;
+    if (bms_has_data) saf["temp_avg"] = safety.temp_avg;
+    else              saf["temp_avg"] = nullptr;
     saf["pack_voltage_avg"]   = safety.pack_voltage_avg;
     saf["pack_current_total"] = safety.pack_current_total;
     saf["alarm_flags"]        = safety.alarm_flags;
+    // Direction-aware protection lockout (0x01 charge, 0x02 discharge) — drives
+    // the dashboard "charge/discharge disabled" banner. Distinct from a bare
+    // ccl/dcl of 0, which can also mean the benign near-full SoC taper.
+    saf["lockout_flags"]      = safety.lockout_flags;
+    saf["temp_alarm"]         = safety.temp_alarm;
     saf["sys_message"]        = safety.sys_message;
     saf["packs_online"]       = safety.packs_online;
     saf["packs_configured"]   = safety.packs_configured;
@@ -179,29 +214,28 @@ esp_err_t handle_live(httpd_req_t* req) {
 
   // ── Sources (MPPT / Shunt / Solar Passthrough) ────────────────────────────
   {
-    using sources::Metric;
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
 
-    sources::BmsSource*   bms   = sources::bms_source();
     sources::ShuntSource* shunt = sources::shunt_source();
     sources::MpptSource*  mppt  = sources::mppt_source();
 
     JsonObject src = doc["sources"].to<JsonObject>();
 
-    // Expose the configured shunt mode so the UI can show the active policy.
-    src["shunt_current_mode"] = (uint8_t)app::get_config().shunt_current_mode;
+    // Expose the configured Battery Value Sources policy so the UI can show
+    // the active mode without a second /api/config round trip.
+    const Config& cfg = app::get_config();
+    src["battery_source_policy"] = (uint8_t)cfg.battery_source_policy;
+    src["voltage_source"]        = (uint8_t)cfg.voltage_source;
+    src["current_source"]        = (uint8_t)cfg.current_source;
+    src["soc_source"]            = (uint8_t)cfg.soc_source;
 
-    // battery_current_src: mirrors aggregator TOTAL_CURRENT selection rule.
-    // Shunt leads only when |BMS current| < 0.5 A and shunt has a valid reading.
-    const char* cur_src = "bms";
-    if (shunt && shunt->enabled()) {
-      sources::SourceReading bms_r =
-        bms ? bms->reading(Metric::TOTAL_CURRENT) : sources::unavailable_reading("A");
-      sources::SourceReading shunt_r = shunt->reading(Metric::TOTAL_CURRENT);
-      float bms_abs = bms_r.is_usable() ? fabsf(bms_r.value) : 0.0f;
-      if (bms_abs < 0.5f && shunt_r.is_usable()) cur_src = "shunt";
-    }
-    src["battery_current_src"] = cur_src;
+    // battery_voltage_src / battery_current_src / battery_soc_src: the badge
+    // for each card MUST come from the exact same fused result as the number
+    // it's labelling (safety.*_source_shunt), never a separately re-derived
+    // rule — that mismatch was the class of bug this replaces.
+    src["battery_voltage_src"] = has_safety && safety.voltage_source_shunt ? "shunt" : "bms";
+    src["battery_current_src"] = has_safety && safety.current_source_shunt ? "shunt" : "bms";
+    src["battery_soc_src"]     = has_safety && safety.soc_source_shunt     ? "shunt" : "bms";
 
     // MPPT source details
     JsonObject jm = src["mppt"].to<JsonObject>();
@@ -237,6 +271,7 @@ esp_err_t handle_live(httpd_req_t* req) {
       js["current_a"]          = ds.current_a;
       js["voltage_v"]          = ds.voltage_v;
       js["soc_pct"]            = ds.soc_pct;
+      js["soc_valid"]          = ds.soc_valid;
       js["ms_since_last_seen"] = shunt->ms_since_last_seen(now_ms);
     } else {
       js["enabled"] = false;
