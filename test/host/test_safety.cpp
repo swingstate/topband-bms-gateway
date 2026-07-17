@@ -1056,12 +1056,9 @@ TEST_CASE("proto: stale sysparam (>300s) ignored", "[proto]") {
   // tests above) — its intent is "a stale sysparam CCL cap must be ignored,
   // falling back to the configured amps," which Manual reproduces directly.
   // (Auto mode's own path to the same cfg-fallback formula is via
-  // proto_count==0, identical to Manual here — but Auto mode also aggregates
-  // the sysparam temperature window with a freshness gap: it keys off
-  // p.sysparam_valid only, not the same 300s sp_fresh check the CCL/DCL/CVL
-  // caps use, so a sysparam_valid-but-stale pack still feeds calc_factor().
-  // That inconsistency is real but orthogonal to what this test checks;
-  // flagged separately rather than folded in here.)
+  // proto_count==0, identical to Manual here. The sysparam temperature
+  // window aggregation uses this same sp_fresh gate — see "proto: stale
+  // sysparam temp window (>300s) falls back to config" below.)
   auto snap = make_system(1);
   snap.pack[0].sys_charge_max_a = 5.0f;
   snap.pack[0].last_sysparam_ms = 0;
@@ -1071,6 +1068,34 @@ TEST_CASE("proto: stale sysparam (>300s) ignored", "[proto]") {
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 400000, out);
   REQUIRE(out.ccl_amps == Catch::Approx(1 * 30.0f));  // cfg ccl used
+}
+
+TEST_CASE("proto: stale sysparam temp window (>300s) falls back to config, "
+          "matching CCL/DCL/CVL", "[proto]") {
+  // Same staleness bug class as the CCL test directly above, but for the
+  // charge/discharge temperature window instead of CCL/DCL/CVL: previously
+  // this path gated on raw sysparam_valid (sticky — never clears once a pack
+  // has reported one good SYSPARAM frame) instead of the sp_fresh 300s check,
+  // so a pack's frozen manufacturer temp window could silently keep driving
+  // calc_factor() indefinitely after sysparam polling stalled.
+  // Auto mode (default): pack has a once-valid but now-stale (>300s) sysparam
+  // charge window (sys_charge_low_t=20 would force a cutoff at 15 C if
+  // trusted). With sp_fresh gating the aggregation, staleness means
+  // auto_sp_count==0, so the effective window falls back to cfg
+  // (charge_temp_min=5), which permits normal charging at 15 C — the same
+  // fallback behavior CCL/DCL/CVL already apply on staleness.
+  auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 15.0f);
+  snap.pack[0].sys_charge_low_t  = 20.0f;   // would force cutoff at 15C if trusted
+  snap.pack[0].sys_charge_high_t = 60.0f;
+  snap.pack[0].last_sysparam_ms  = 0;
+  auto cfg  = make_cfg();  // Auto mode default; charge_temp_min=5
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  // now_ms=400000 → 400000 - 0 = 400000 > 300000 → stale
+  safety::runSafety(snap, cfg, prev, 400000, out);
+  REQUIRE(out.factor_charge == Catch::Approx(1.0f));  // cfg window used, not stale sysparam
+  REQUIRE(out.ccl_amps == Catch::Approx(1 * 30.0f));
+  REQUIRE_FALSE(out.alarm_flags & 0x08);
 }
 
 TEST_CASE("proto: cvl capped by sys_module_high_v", "[proto]") {
