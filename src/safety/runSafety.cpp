@@ -277,8 +277,16 @@ void runSafety(const BmsSystemSnapshot& snap,
       emit_event(out, SafetyState::PackOvervoltStart, static_cast<uint8_t>(i));
 
     // ── Auto/AutoMargin: accumulate most-conservative sysparam temp limits ───
+    // Gated on sp_fresh (same 300s staleness check as the CCL/DCL/CVL proto
+    // caps above), not raw sysparam_valid, which is sticky and never clears
+    // once a pack has reported one good SYSPARAM frame. Without this, a pack
+    // whose 0x47 polling stalls for hours while analog/alarm keep working
+    // would silently keep driving the temperature safety factor off a frozen
+    // manufacturer window instead of falling back to the config-based
+    // thresholds — the same staleness treatment already applied everywhere
+    // else sysparam feeds a safety limit.
     if ((mode == Config::BatteryConfigMode::Auto ||
-         mode == Config::BatteryConfigMode::AutoMargin) && p.sysparam_valid) {
+         mode == Config::BatteryConfigMode::AutoMargin) && sp_fresh) {
       if (p.sys_charge_low_t > auto_chg_t_min)  auto_chg_t_min = p.sys_charge_low_t;
       if (p.sys_charge_high_t < auto_chg_t_max) auto_chg_t_max = p.sys_charge_high_t;
       if (p.sys_discharge_low_t > auto_dis_t_min)  auto_dis_t_min = p.sys_discharge_low_t;
