@@ -1,2 +1,0 @@
-931b67be85e1fa5a88797e4d4d23ed28b6dfafca8c5fa221efe13de8ac38d870  Topband-bms-gateway-ota-v3.3.0-preview.3.bin
-ca17fe57fcc617baff353a1c6fa99fe765f07cde9b1bb21c9d83f5b8bbb5063c  Topband-bms-gateway-factory-v3.3.0-preview.3.bin
