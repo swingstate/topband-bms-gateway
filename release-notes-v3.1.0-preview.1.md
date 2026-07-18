@@ -2,7 +2,7 @@
 
 **Status: TEST / PREVIEW — not for production use**
 
-This is the first pre-release build of the 3.1.0 line. It is intended for hardware evaluation only. Flash it, poke it, break it. The final 3.1.0 release follows after hardware sign-off.
+This is the first pre-release build for v. 3.1.0. It is intended for hardware evaluation only. Flash it, poke it, break it. The final 3.1.0 release follows after hardware sign-off.
 
 Build: `3.1.0-preview.1 (0f3e644)` | Branch: `develop`
 
@@ -10,19 +10,17 @@ Build: `3.1.0-preview.1 (0f3e644)` | Branch: `develop`
 
 ## What's new in 3.1
 
-### Victron BLE integration (MPPT + SmartShunt)
+### Victron BLE integration (MPPT in v3.1,  SmartShunt planned for v3.2)
 
-The gateway can now pull live data directly from Victron SmartShunt and MPPT Solar Charger devices over Bluetooth LE — no additional hardware or Cerbo required. Enable from **Settings > BLE Sources**, enter the device MAC and optional encryption key. Once paired:
+The gateway can now pull live data directly from Victron MPPT Solar Charger devices over Bluetooth LE — no additional hardware or Cerbo required. Enable from **Settings > BLE Sources**, enter the device MAC and optional encryption key. Once paired:
 
-- SmartShunt readings (voltage, current, SoC, power) appear on the Dashboard and Shunt card.
 - MPPT readings (PV power, PV voltage, PV current, yield today, charger state) appear on the Solar page and Dashboard pill.
 - All values are published to MQTT and auto-discovered in Home Assistant.
-
-BLE scanning is coexistence-hardened: the scanner pauses during TLS handshakes, observer-only NimBLE buffers are used (no advertising or connection overhead), and four coexistence fixes were applied to eliminate the WiFi association drops seen in early 3.1 dev builds.
+- v.3.2 SmartShunt readings (voltage, current, SoC, power) appear on the Dashboard and can be used as SOC source (vs. BMS).
 
 ### Solar day-chart
 
-A new **Solar** page shows per-day MPPT output as a bar chart (up to 30 days). Data is stored in a PSRAM-backed ring buffer — survives reboots that don't cut power, zeroes cleanly on cold boot. The chart reuses the same renderer as the existing Cell Voltage chart, with a y-axis that auto-scales from zero.
+The updated  **Solar** page shows todays MPPT output. Data is stored in a PSRAM-backed ring buffer — survives reboots that don't cut power, zeroes cleanly on cold boot. The chart reuses the same renderer as the existing Cell Voltage chart, with a y-axis that auto-scales from zero.
 
 ### Battery Drift Details
 
@@ -32,6 +30,8 @@ Each pack card on the Battery page now has a **Details** panel (collapsible, def
 - **Top-of-charge (ToC) spread** — cell delta observed at the highest SoC in the window (only recorded when pack SoC ≥ 95 %)
 - **Bottom-of-discharge (BoD) spread** — cell delta at the lowest SoC in the window (only recorded when pack SoC ≤ 5 %)
 - **First full / First empty** — timestamp of first ToC / BoD sample in the window
+
+<img width="756" height="565" alt="Bildschirmfoto 2026-06-27 um 13 25 50" src="https://github.com/user-attachments/assets/00ce406e-9816-4a01-b525-410f92837cbf" />
 
 ToC and BoD spreads are SoC-gated so they only capture meaningful imbalance data, not mid-range noise. The 5-day band gives a quick visual of which cells drift high or low over a charge cycle.
 
@@ -44,17 +44,19 @@ The `/diag` page now groups fields into collapsible sections:
 | Bluetooth LE | Scanner state, device presence, connection quality |
 | WiFi | SSID, BSSID, RSSI, channel, IP, reconnect count, BSSID lock status |
 | MPPT | All PV fields, charger state, yield |
-| Shunt | Voltage, current, SoC, power, mode |
+| Shunt v3.2 | Voltage, current, SoC, power, mode |
 
 Several field labels were corrected and two fields were moved to their correct sections (BMS total current moved to Shunt; BSSID lock icon moved into WiFi row).
 
-### WiFi: strongest-AP selection + BSSID pin
+### WiFi: strongest-AP selection
 
-When multiple access points share the same SSID, the gateway now connects to the one with the strongest signal rather than the first one found. A **BSSID pin** option lets you lock to a specific AP if preferred. On disconnect the gateway re-scans and picks the current best AP (or the pinned one).
+When multiple access points share the same SSID, the gateway now connects to the one with the strongest signal rather than the first one found. On disconnect the gateway re-scans and picks the current best AP.
 
-### MPPT Charger Output rename + Solar-Passthrough display
+### MPPT Charger Output rename + Solar-Passthrough display + OpenDTU compatibility
 
-The MQTT topic and HA entity previously named `solar_batt_*` are renamed to `solar_output_*` to accurately reflect that this is the charger's DC output to the bus, not the PV input. A passthrough tile on the Solar page shows instantaneous solar-to-load power with a staleness indicator. Existing HA automations referencing the old entity IDs will need updating (HA ghost-cleanup runs automatically on first boot after upgrade).
+The MQTT topic and HA entity previously named `solar_batt_*` are renamed to `solar_output_*` to accurately reflect that this is the charger's DC output to the bus, not the PV input. 
+For Setups that run on **OpenDTU (onBattery)** -  A passthrough tile on the Solar page shows instantaneous solar-to-load power with a staleness indicator. 
+Existing HA automations referencing the old entity IDs will need updating (HA ghost-cleanup runs automatically on first boot after upgrade).
 
 ### UI improvements
 
@@ -62,12 +64,6 @@ The MQTT topic and HA entity previously named `solar_batt_*` are renamed to `sol
 - **Persistent session cookie** — the login cookie now carries an explicit lifetime so you stay logged in across browser restarts. Previously the session expired whenever the tab closed.
 - **Mobile layout** — single-column grid on narrow viewports, horizontal scroll on landscape, improved subpage centering.
 - **Dashboard** — Battery column and Solar column swapped to match visual priority; MPPT pill turns green when charging.
-
-### Build / developer
-
-- **No build churn** — `UI_VERSION` is now derived from a SHA-256 content hash of the web assets. Rebuilding firmware without touching the web files leaves `ui_provisioner.h` unchanged and the working tree stays git-clean. Previously every `pio run` dirtied the tree.
-- **PSRAM snapshot** — `BmsSystemSnapshot` moved to PSRAM (`EXT_RAM_BSS_ATTR`), freeing ~2 KB of internal DRAM.
-- **TLS regression fixed** — `SPIRAM_MALLOC_ALWAYSINTERNAL` raised back to 16384 (from 8192) to keep the mbedTLS input buffer in internal DRAM. The 8192 value silently moved it to PSRAM and broke TLS on some AP configurations.
 
 ---
 
@@ -93,7 +89,7 @@ The MQTT topic and HA entity previously named `solar_batt_*` are renamed to `sol
 OTA upgrade is supported. Config schema migrates automatically. After upgrading:
 
 1. If you use Home Assistant, trigger a MQTT discovery cycle (restart the gateway or toggle HA MQTT integration) to pick up the renamed `solar_output_*` entities.
-2. The BLE Sources page is new — existing installs have BLE disabled by default; enable only if you have a compatible Victron device.
+2. The BLE Settings Subpage is new — existing installs have BLE disabled by default; enable only if you have a compatible Victron device.
 
 ---
 

@@ -18,7 +18,7 @@ BLE scanning is coexistence-hardened against WiFi: the scanner pauses during TLS
 
 ### Solar page
 
-A dedicated **Solar** page shows a day chart of solar power (up to 30 days, PSRAM-backed ring buffer), the MPPT charger's DC output, and a Solar-Passthrough indicator for setups running OpenDTU-onBattery. The gateway only reads the charger — it never controls it.
+A dedicated **Solar** page shows a day chart of solar power, the MPPT charger's DC output, and a Solar-Passthrough indicator for setups running OpenDTU-onBattery. The gateway only reads the charger — it never controls it.
 
 The MQTT topic and HA entity previously named `solar_batt_*` are renamed to `solar_output_*` to correctly reflect that this is the charger's output to the DC bus, not the PV input. Existing HA automations referencing the old entity IDs will need updating; a ghost-entity cleanup runs automatically on first boot after upgrade.
 
@@ -32,9 +32,9 @@ The panel went through a redesign during the preview cycle to fix a confusing in
 
 The `/diag` page groups fields into collapsible sections — Bluetooth LE, WiFi, MPPT, Shunt — instead of one long flat list. Units are stated honestly (no implied precision the underlying sensor doesn't have), mislabeled and misplaced fields were corrected (BSSID lock indicator moved into the WiFi section, total current moved into Shunt), and the ESP32-S3 CPU temperature was added. Coredump detection now probes once at boot instead of on every `/api/diag` request, and stale coredumps that can't be decoded are erased automatically instead of lingering.
 
-### WiFi: strongest-AP selection + BSSID pin
+### WiFi: strongest-AP selection 
 
-When multiple access points share the same SSID, the gateway connects to the strongest one instead of the first one seen, with an optional BSSID pin to lock to a specific AP. On disconnect it re-scans and reconnects to the current best (or pinned) AP.
+When multiple access points share the same SSID, the gateway connects to the strongest one instead of the first one seen. On disconnect it re-scans and reconnects to the current best AP.
 
 ### RS485 responder-address validation (safety-relevant correctness fix)
 
