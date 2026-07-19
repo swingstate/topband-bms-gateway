@@ -138,6 +138,7 @@ bool start_httpd(const Config& /*cfg*/) {
 
   // ── Config import / MQTT test (iter/config-io-mqtt-test) ──────────────────
   reg_auth(g_server, "/api/restore",   HTTP_POST, handle_restore);
+  reg_auth(g_server, "/api/mqtt_restore", HTTP_POST, handle_mqtt_restore);
   reg_auth(g_server, "/api/mqtt/test", HTTP_POST, handle_mqtt_test_post);
   reg_auth(g_server, "/api/mqtt/test", HTTP_GET,  handle_mqtt_test_get);
 

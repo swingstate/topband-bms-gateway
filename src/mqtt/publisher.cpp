@@ -1,16 +1,20 @@
 #include "mqtt/publisher.h"
 #include "mqtt/topics.h"
 #include "mqtt/ha_discovery.h"
+#include "mqtt/config_backup.h"
 #include "bus/queues.h"
 #include "app/boot.h"
 #include "app/version.h"
+#include "net/ntp.h"
 #include "diag/alerts.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "mqtt_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <ArduinoJson.h>
 #include <cstring>
 #include <cstdio>
 
@@ -58,6 +62,25 @@ static bool     s_passthrough_state      = false;
 static bool     s_passthrough_received   = false;  // true after first message
 static uint32_t s_passthrough_ts_ms      = 0;
 
+// ── Config backup (retained, on-save + daily) ──────────────────────────────
+// Published to {effective_base}/system/config_backup. We also self-subscribe
+// to that same topic so the last retained payload is available in RAM for
+// "Restore from MQTT backup" — the device is the only writer, but after an
+// NVS wipe the broker's retained copy is the sole surviving source of truth.
+static char     s_config_backup_topic[128] = {};   // built once in start()
+static bool     s_backup_publish_requested = false;  // set by request_config_backup_publish(), guarded by s_mux
+static uint32_t s_last_backup_publish_epoch = 0;           // 0 = never published this session
+
+// PSRAM cache of the last-received retained backup payload. Written only from
+// the esp_mqtt internal task (MQTT_EVENT_DATA); read from httpd task via
+// get_config_backup(). s_backup_assembling is touched only from the esp_mqtt
+// task across successive MQTT_EVENT_DATA fragments, so it needs no lock.
+static constexpr size_t CONFIG_BACKUP_CACHE_CAP = 3072;
+static char*    s_backup_cache      = nullptr;  // heap_caps_malloc'd in start()
+static size_t   s_backup_cache_len  = 0;
+static bool     s_backup_received   = false;
+static bool     s_backup_assembling = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static void compute_mac_identifiers(const Config& cfg) {
@@ -86,6 +109,37 @@ static void publish_status_online() {
   } else {
     ESP_LOGI(TAG, "MQTT connected — published %s online", topic);
   }
+}
+
+// Builds and retained-publishes the config-backup payload. Called only from
+// MqttTask context (has s_client) when connected. WiFi/MQTT-broker fields are
+// excluded by mqtt::config_backup::build_json — never published here.
+static void publish_config_backup_now() {
+  if (s_config_backup_topic[0] == '\0') return;
+
+  JsonDocument doc;
+  mqtt::config_backup::build_json(app::get_config(), doc);
+
+  size_t est = measureJson(doc) + 1;
+  char* buf = (char*)heap_caps_malloc(est, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buf) {
+    ESP_LOGW(TAG, "config-backup publish: OOM (%u bytes)", (unsigned)est);
+    return;
+  }
+  size_t n = serializeJson(doc, buf, est);
+
+  int msg_id = esp_mqtt_client_publish(s_client, s_config_backup_topic, buf, (int)n,
+                                        0 /*qos*/, 1 /*retain*/);
+  if (msg_id < 0) {
+    ESP_LOGW(TAG, "config-backup publish failed (topic=%s)", s_config_backup_topic);
+  } else {
+    ESP_LOGI(TAG, "config-backup published — %s (%u bytes, retained)",
+             s_config_backup_topic, (unsigned)n);
+  }
+  free(buf);
+
+  uint32_t now = net::ntp::now_unix_s();
+  if (now > 0) s_last_backup_publish_epoch = now;
 }
 
 // Called from MqttTask context when draining q_mqtt_publish.
@@ -169,6 +223,14 @@ static void mqtt_event_handler(void* /*arg*/, esp_event_base_t /*base*/,
           ESP_LOGI(TAG, "subscribed to solar-passthrough topic: %s", pt);
         }
       }
+      if (s_config_backup_topic[0] != '\0') {
+        int rc = esp_mqtt_client_subscribe(s_client, s_config_backup_topic, 0);
+        if (rc < 0) {
+          ESP_LOGW(TAG, "config-backup subscribe failed (topic=%s)", s_config_backup_topic);
+        } else {
+          ESP_LOGI(TAG, "subscribed to own config-backup topic: %s", s_config_backup_topic);
+        }
+      }
       break;
     }
 
@@ -181,29 +243,68 @@ static void mqtt_event_handler(void* /*arg*/, esp_event_base_t /*base*/,
       break;
 
     case MQTT_EVENT_DATA: {
-      // Handle incoming messages. Currently only the solar-passthrough topic.
-      if (!ev || ev->topic_len == 0) break;
-      char topic_buf[64];
-      size_t tlen = (ev->topic_len < sizeof(topic_buf) - 1) ? (size_t)ev->topic_len
-                                                             : sizeof(topic_buf) - 1;
-      memcpy(topic_buf, ev->topic, tlen);
-      topic_buf[tlen] = '\0';
+      // Handle incoming messages: solar-passthrough (1 byte) and our own
+      // config-backup topic (can span multiple events — see below).
+      if (!ev) break;
 
-      portENTER_CRITICAL(&s_mux);
-      bool is_pt = (s_passthrough_topic[0] != '\0' &&
-                    strncmp(topic_buf, s_passthrough_topic, sizeof(s_passthrough_topic) - 1) == 0);
-      portEXIT_CRITICAL(&s_mux);
+      if (ev->topic_len > 0) {
+        // Start of a new message — the topic is only present on the first
+        // fragment, so this is where we identify which topic it belongs to.
+        char topic_buf[128];
+        size_t tlen = (ev->topic_len < sizeof(topic_buf) - 1) ? (size_t)ev->topic_len
+                                                               : sizeof(topic_buf) - 1;
+        memcpy(topic_buf, ev->topic, tlen);
+        topic_buf[tlen] = '\0';
 
-      if (is_pt && ev->data_len > 0) {
-        // Payload: "1"/"true"/"True" = active; anything else = inactive.
-        char c = ev->data[0];
-        bool active = (c == '1' || c == 't' || c == 'T');
-        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
         portENTER_CRITICAL(&s_mux);
-        s_passthrough_state    = active;
-        s_passthrough_received = true;
-        s_passthrough_ts_ms    = now_ms;
+        bool is_pt = (s_passthrough_topic[0] != '\0' &&
+                      strncmp(topic_buf, s_passthrough_topic, sizeof(s_passthrough_topic) - 1) == 0);
         portEXIT_CRITICAL(&s_mux);
+
+        if (is_pt && ev->data_len > 0) {
+          // Payload: "1"/"true"/"True" = active; anything else = inactive.
+          char c = ev->data[0];
+          bool active = (c == '1' || c == 't' || c == 'T');
+          uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+          portENTER_CRITICAL(&s_mux);
+          s_passthrough_state    = active;
+          s_passthrough_received = true;
+          s_passthrough_ts_ms    = now_ms;
+          portEXIT_CRITICAL(&s_mux);
+        }
+
+        bool is_backup = (s_config_backup_topic[0] != '\0' &&
+                          strncmp(topic_buf, s_config_backup_topic, sizeof(s_config_backup_topic) - 1) == 0);
+        s_backup_assembling = (is_backup && s_backup_cache != nullptr &&
+                               ev->total_data_len > 0 &&
+                               (size_t)ev->total_data_len <= CONFIG_BACKUP_CACHE_CAP);
+        if (is_backup && !s_backup_assembling) {
+          ESP_LOGW(TAG, "config-backup payload too large for cache (%d > %u) — ignoring",
+                   ev->total_data_len, (unsigned)CONFIG_BACKUP_CACHE_CAP);
+        }
+      }
+
+      // Reassemble the config-backup payload, which may arrive across
+      // several MQTT_EVENT_DATA events when it exceeds the client's internal
+      // buffer (current_data_offset/total_data_len track the split).
+      if (s_backup_assembling && ev->data_len > 0 && s_backup_cache) {
+        size_t off = (size_t)ev->current_data_offset;
+        size_t n   = (size_t)ev->data_len;
+        if (off + n <= CONFIG_BACKUP_CACHE_CAP) {
+          memcpy(s_backup_cache + off, ev->data, n);
+          size_t total = (size_t)ev->total_data_len;
+          if (off + n >= total) {
+            portENTER_CRITICAL(&s_mux);
+            s_backup_cache_len = total;
+            s_backup_received  = true;
+            portEXIT_CRITICAL(&s_mux);
+            s_backup_assembling = false;
+            ESP_LOGI(TAG, "cached retained config-backup from broker (%u bytes)", (unsigned)total);
+          }
+        } else {
+          ESP_LOGW(TAG, "config-backup payload overflow — discarding");
+          s_backup_assembling = false;
+        }
       }
       break;
     }
@@ -268,6 +369,24 @@ static void mqtt_task_entry(void* /*arg*/) {
       }
     }
 
+    // Config-backup: edge-triggered on-save publish + once-daily redundant
+    // refresh. Only when connected — no aggressive retry while disconnected,
+    // the daily timer (or next save) catches up naturally.
+    if (connected) {
+      portENTER_CRITICAL(&s_mux);
+      bool requested = s_backup_publish_requested;
+      s_backup_publish_requested = false;
+      portEXIT_CRITICAL(&s_mux);
+
+      uint32_t now = net::ntp::now_unix_s();
+      bool daily_due = (now > 0) &&
+          (s_last_backup_publish_epoch == 0 || (now - s_last_backup_publish_epoch) >= 86400u);
+
+      if (requested || daily_due) {
+        publish_config_backup_now();
+      }
+    }
+
     // Drain publish queue (only when connected)
     if (connected) {
       MqttPublishRequest req;
@@ -320,6 +439,22 @@ bool start(const Config& cfg) {
     ESP_LOGE(TAG, "MQTT: LWT topic too long");
     return false;
   }
+
+  // Build config-backup topic and (re)allocate its PSRAM read-back cache.
+  if (!mqtt::topics::build(s_effective_base, mqtt::topics::SYSTEM_CONFIG_BACKUP,
+                            s_config_backup_topic, sizeof(s_config_backup_topic))) {
+    s_config_backup_topic[0] = '\0';
+    ESP_LOGW(TAG, "config-backup topic too long — feature disabled this session");
+  }
+  if (!s_backup_cache) {
+    s_backup_cache = (char*)heap_caps_malloc(CONFIG_BACKUP_CACHE_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_backup_cache) {
+      ESP_LOGW(TAG, "config-backup cache alloc failed — restore-from-MQTT unavailable this session");
+    }
+  }
+  s_backup_received     = false;
+  s_backup_assembling   = false;
+  s_last_backup_publish_epoch = 0;
 
   // Client ID: "topband-bms-" + last 4 hex MAC chars
   char client_id[32];
@@ -498,6 +633,32 @@ bool get_solar_passthrough(bool& out_state, uint32_t& out_ts_ms) {
   if (!configured || !received) return false;
   out_state  = state;
   out_ts_ms  = ts;
+  return true;
+}
+
+void request_config_backup_publish() {
+  portENTER_CRITICAL(&s_mux);
+  s_backup_publish_requested = true;
+  portEXIT_CRITICAL(&s_mux);
+}
+
+bool get_config_backup(char* out, size_t out_size, size_t* out_len) {
+  if (!out || out_size == 0) return false;
+
+  portENTER_CRITICAL(&s_mux);
+  bool received = s_backup_received;
+  size_t len    = s_backup_cache_len;
+  portEXIT_CRITICAL(&s_mux);
+
+  if (!received || len == 0 || !s_backup_cache || len >= out_size) return false;
+
+  // Copied outside the critical section: s_backup_cache is only overwritten
+  // by a new retained delivery on the esp_mqtt task, which is rare (only
+  // after our own publishes or a reconnect) — an occasional stale read here
+  // is harmless for this non-safety-critical, explicit-user-action feature.
+  memcpy(out, s_backup_cache, len);
+  out[len] = '\0';
+  if (out_len) *out_len = len;
   return true;
 }
 

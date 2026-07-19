@@ -45,4 +45,17 @@ void trigger_ha_discovery();
 // Returns false when no topic is configured or no message has been received yet.
 bool get_solar_passthrough(bool& out_state, uint32_t& out_ts_ms);
 
+// Requests a retained publish of the config-backup payload on MqttTask's next
+// tick. No-op if disconnected — the daily timer or next successful save will
+// retry. Call this from app::update_and_save_config() so every save is
+// reflected (edge-triggered, exactly once per real save).
+void request_config_backup_publish();
+
+// Copies the last-received retained config-backup payload — received via our
+// own self-subscription to {effective_base}/system/config_backup — into out.
+// Returns false if no backup has been received this session, or it doesn't
+// fit in out_size. out is NUL-terminated on success; out_len (if non-null)
+// receives the payload length excluding the terminator.
+bool get_config_backup(char* out, size_t out_size, size_t* out_len);
+
 }  // namespace mqtt::publisher

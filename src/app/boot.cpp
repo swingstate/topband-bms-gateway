@@ -68,6 +68,9 @@ bool update_and_save_config(const Config& new_cfg) {
   // Apply live-settable changes that take effect without reboot.
   sources::aggregator()->set_policy(new_cfg.battery_source_policy, new_cfg.voltage_source,
                                     new_cfg.current_source, new_cfg.soc_source);
+  // Every successful save gets a fresh retained MQTT config-backup (no-op if
+  // disconnected — the daily timer catches up).
+  mqtt::publisher::request_config_backup_publish();
   return true;
 }
 

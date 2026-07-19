@@ -71,6 +71,7 @@ idf_component_register(
     "mqtt/payloads.cpp"
     "mqtt/publisher.cpp"
     "mqtt/ha_discovery.cpp"
+    "mqtt/config_backup.cpp"
     "app/housekeeping.cpp"
     "third_party/microtar/microtar.c"
   EMBED_TXTFILES
