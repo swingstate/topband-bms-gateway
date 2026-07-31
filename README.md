@@ -4,11 +4,23 @@ ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to Victron, Pyl
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-3.2.0-blue)
+![Version](https://img.shields.io/badge/version-3.3.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange)
 
-> **New in V3.2: SmartShunt battery monitor support.** The gateway can now pair with a Victron SmartShunt over Bluetooth LE for a more accurate whole-bank current, voltage, and charge-percentage reading, alongside a batch of correctness fixes to the inverter connection and WiFi reliability. See [What's new in V3.2](#whats-new-in-v32) below, or the full [release notes](release-notes-v3.2.0.md).
+> **New in V3.3: automatic settings backup.** The gateway now backs up its settings over MQTT whenever they change (and once daily), so they can be recovered after a reset — restoring is always a manual, explicit action, never automatic. This release also makes overcurrent lockouts direction-aware like the existing voltage lockouts, fixes the Voltage chart to follow the selected data source, and adds a safety-logic correctness fix plus expanded automated test coverage. See [What's new in V3.3](#whats-new-in-v33) below, or the full [release notes](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.3.0).
+
+## What's new in V3.3
+
+V3.3 builds on V3.2 and adds:
+
+- **Automatic settings backup via MQTT.** The gateway publishes a full backup of its settings whenever they change, and once daily as a redundant refresh, so a config can be recovered after an accidental reset. WiFi and MQTT broker connection details, and the dashboard login username, are never included in the backup, since they're needed just to reach it in the first place. Settings → Maintenance gains a **Restore from MQTT backup** button — restoring is always an explicit, confirmed user action, never automatic.
+- **Direction-aware overcurrent lockout**, mirroring the over-voltage/under-voltage fix from V3.2. A charge overcurrent condition now only blocks charging, and a discharge overcurrent condition now only blocks discharging, instead of a single overcurrent event locking out both directions.
+- **Voltage chart follows the selected data source.** The dashboard's Voltage — Last 2H chart now follows the same Battery Value Sources selection (SmartShunt or BMS) as the rest of the battery readings, instead of always reading the BMS packs.
+- **Safety correctness fix.** The automatic temperature safety limits (Auto battery-config mode) could keep using outdated battery-reported values for hours if the battery stopped sending updates, instead of falling back to your configured limits like the other safety checks already did. Fixed to fall back consistently.
+- **Expanded automated testing**, including a real CI-run test suite on every change, catching more issues before release.
+
+See the full [release notes](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.3.0) for the complete list, including everything from the V3.2 line below.
 
 ## What's new in V3.2
 
@@ -34,7 +46,7 @@ V3.1 builds on V3.0 and adds:
 - **Reworked Diagnostics page.** Bluetooth, WiFi, and MPPT are now in clearly separated sections.
 - **Smaller fixes.** Charts update in place instead of redrawing (no more flicker), the login session stays valid across browser restarts, and internal memory use was reduced.
 
-The CAN output, BMS polling, safety logic, and MQTT/Home Assistant integration are unchanged from V3.0 unless noted above. If you don't use a Victron MPPT or SmartShunt, V3.2 behaves like V3.0.
+The CAN output, BMS polling, safety logic, and MQTT/Home Assistant integration are unchanged from V3.0 unless noted above. If you don't use a Victron MPPT or SmartShunt, V3.3 behaves like V3.0.
 
 ## Architecture
 
@@ -59,13 +71,13 @@ A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it direc
 - **Battery Drift Details** per-cell balance and drift over 5 days, measured at the charge extremes
 - **Energy tracking** rolling today / 7-day / monthly counters
 - **MQTT publishing** with Home Assistant auto-discovery, per-pack and per-cell topics
-- **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis; a voltage lockout only blocks the affected direction (charge or discharge), not both
+- **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis; a voltage or overcurrent lockout only blocks the affected direction (charge or discharge), not both
 - **CAN output** Victron, Pylontech, or SMA protocol — selectable at runtime; reports the SmartShunt-fused current/charge-percentage to the inverter when a shunt is connected
 - **Preferred WiFi access point** optional BSSID pin for multi-AP/mesh networks, with automatic fallback and re-pin
 - **Battery config modes** Auto (from BMS parameters), Auto+Margin, or Manual
 - **OTA firmware updates** with 5-minute self-test and automatic rollback on failure
 - **Telegram notifications** for safety alerts — configurable debounce to prevent alert floods
-- **Settings backup/restore** as JSON
+- **Settings backup/restore** as JSON, plus automatic backup over MQTT on every settings change (and daily), with explicit manual restore
 - **CSV history export**
 - **mDNS** access via `topband-gateway-macID.local`
 - **Cookie-based authentication** with SHA-256 hashed password and rate limiting
@@ -100,10 +112,10 @@ Download the release files from the [Releases page](../../releases).
 
 ```bash
 # macOS / Linux
-esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.2.0.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.3.0.bin
 
 # Windows (adjust COM port)
-esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.2.0.bin
+esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.3.0.bin
 ```
 
 If upgrading from V2.67.x, erase the flash first (new partition layout):
@@ -112,7 +124,7 @@ If upgrading from V2.67.x, erase the flash first (new partition layout):
 esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX erase_flash
 ```
 
-**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.2.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
+**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.3.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
 
 > Upgrading from V2.67.x to V3.x via OTA is not supported. Use the USB factory image. Back up your V2 settings first (General → Maintenance → Export settings in V2), then restore them after V3 first boot.
 
@@ -160,6 +172,7 @@ Navigate to Network → MQTT:
 - Enable HA discovery to register entities automatically
 - Click Send HA discovery to push discovery messages immediately
 - Optional: Configure the SolarPassThrough Topic if you have an OpenDTU Setup and want to see the status in the Dashboard. 
+- While connected, the gateway automatically publishes a retained settings backup on every change (and once daily) — use **Settings → Maintenance → Restore from MQTT backup** to recover settings after a reset. WiFi/MQTT connection details and the dashboard login username are never included, and restoring is always a manual, confirmed action.
 
 ### Telegram Notifications
 
@@ -266,7 +279,7 @@ Factory reset and password reset are done via the web UI: Settings → Factory R
 
 ### OTA Upgrades
 
-OTA upgrades are supported between V3.x releases, including V3.0 through V3.2. The first install of V3.x requires a USB reflash with the factory image (new partition layout). After that, all updates can be done via OTA.
+OTA upgrades are supported between V3.x releases, including V3.0 through V3.3. The first install of V3.x requires a USB reflash with the factory image (new partition layout). After that, all updates can be done via OTA.
 
 ### Home Assistant Entities
 
