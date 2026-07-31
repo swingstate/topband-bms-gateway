@@ -109,6 +109,13 @@ a { text-decoration: none; color: inherit; }
   flex-shrink: 0;
   z-index: 10;
 }
+.sidebar-items { flex: 1; }
+.sidebar-bottom {
+  width: 100%;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 4px;
+  margin-top: 4px;
+}
 
 .sidebar-logo {
   width: 36px;
@@ -124,7 +131,12 @@ a { text-decoration: none; color: inherit; }
   gap: 2px;
   width: 100%;
   padding: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
 }
+.sidebar-items::-webkit-scrollbar { display: none; }
 
 .sidebar-item {
   display: flex;
@@ -211,8 +223,8 @@ a { text-decoration: none; color: inherit; }
 }
 .pill-bms       { background: var(--color-success); color: #fff; }
 .pill-bms.alarm { background: var(--brand-coral);   color: #fff; }
-.pill-can { background: var(--brand-teal);    color: var(--brand-aubergine); }
-.pill-can.alarm { background: var(--brand-coral); color: #fff; }
+.pill-can       { background: var(--color-success); color: #fff; }
+.pill-can.alarm { background: var(--brand-coral);   color: #fff; }
 .pill-mqtt { background: var(--color-success); color: #fff; }
 .pill-mqtt.alarm { background: var(--brand-coral); color: #fff; }
 /* WiFi signal quality */
@@ -222,7 +234,80 @@ a { text-decoration: none; color: inherit; }
 /* Gray/off state shared by wifi + mqtt when not connected / disabled */
 .pill-wifi.off,
 .pill-mqtt.off,
-.pill-can.off    { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-can.off,
+.pill-mppt.off,
+.pill-shunt.off  { background: color-mix(in srgb, var(--text-muted) 25%, var(--bg-card)); color: var(--text-muted); }
+.pill-mppt  { background: var(--color-success); color: #fff; }
+.pill-shunt { background: var(--color-success); color: #fff; }
+
+/* ── Card source indicator (inline pill, used in metric-footer row) ───────────── */
+.card-src {
+  display: inline-block;
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.card-src-bms   {
+  background: color-mix(in srgb, var(--color-success) 14%, var(--bg-card));
+  color: var(--color-success);
+  border: 1px solid color-mix(in srgb, var(--color-success) 28%, transparent);
+}
+.card-src-mppt  {
+  background: color-mix(in srgb, var(--brand-teal) 14%, var(--bg-card));
+  color: color-mix(in srgb, var(--brand-teal) 75%, #000);
+  border: 1px solid color-mix(in srgb, var(--brand-teal) 28%, transparent);
+}
+.card-src-shunt {
+  background: color-mix(in srgb, #7c6fcd 14%, var(--bg-card));
+  color: #8a80c8;
+  border: 1px solid color-mix(in srgb, #7c6fcd 28%, transparent);
+}
+
+/* ── Metric card footer row (sub + src badge side by side) ───────────────────── */
+.metric-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+}
+.metric-footer .metric-sub { flex: 1; min-width: 0; }
+
+/* ── Pack detail chip ─────────────────────────────────────────────────────────── */
+.pack-detail-btn {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 8%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--text-muted) 14%, transparent);
+  border-radius: 5px;
+  padding: 2px 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Inline source badge (kept for label use only) */
+.source-badge {
+  display: inline-block;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 1.5;
+  opacity: 0.8;
+}
+.badge-bms   { background: color-mix(in srgb, var(--color-success) 18%, var(--bg-card)); color: var(--color-success); border: 1px solid color-mix(in srgb, var(--color-success) 30%, transparent); }
+.badge-mppt  { background: color-mix(in srgb, var(--brand-teal) 18%, var(--bg-card));    color: var(--brand-teal);    border: 1px solid color-mix(in srgb, var(--brand-teal) 30%, transparent); }
+.badge-shunt { background: color-mix(in srgb, #7c6fcd 18%, var(--bg-card));              color: #9d92e0;              border: 1px solid color-mix(in srgb, #7c6fcd 30%, transparent); }
 
 .topbar-time { font-size: 13px; font-weight: 600; color: var(--text-muted); min-width: 40px; text-align: right; }
 
@@ -388,6 +473,7 @@ a { text-decoration: none; color: inherit; }
 }
 
 .pack-card { padding: 14px 16px; }
+.battery-overview-card { padding: 14px 16px; }
 
 .pack-header {
   display: flex;
@@ -513,7 +599,7 @@ a { text-decoration: none; color: inherit; }
 }
 
 /* Legacy single-column settings page */
-.settings-page { max-width: 680px; }
+.settings-page { max-width: 680px; margin: 0 auto; }
 .settings-section { margin-bottom: 24px; }
 .settings-section-title {
   font-size: 13px;
@@ -769,6 +855,9 @@ a { text-decoration: none; color: inherit; }
   padding: 14px 16px;
 }
 .chart-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
@@ -849,9 +938,7 @@ a { text-decoration: none; color: inherit; }
   padding: 4px 0;
 }
 
-/* ── Network page ───────────────────────────────────────────────────────────── */
-.network-page { max-width: 680px; }
-
+/* ── Network (Settings section) ─────────────────────────────────────────────── */
 .net-kv-grid {
   display: grid;
   grid-template-columns: 160px 1fr;
@@ -905,6 +992,14 @@ a { text-decoration: none; color: inherit; }
 .scan-row:last-child { border-bottom: none; }
 .scan-row:hover { background: var(--bg-card-hover); }
 .scan-ssid { font-weight: 600; color: var(--text-primary); flex: 1; }
+.scan-bssid {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.scan-bssid:hover { color: var(--brand-teal); }
 .scan-rssi { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .scan-lock { color: var(--text-muted); flex-shrink: 0; }
 
@@ -935,6 +1030,8 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 .diag-tasks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .diag-tasks-table th { text-align: left; padding: 4px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-size: 11px; }
 .diag-tasks-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); }
+/* Task with < 512 B stack headroom — worth a second look */
+.diag-tasks-table tr.diag-task-low td { color: var(--color-warning); font-weight: 600; }
 
 /* ── Settings sub-nav responsive ───────────────────────────────────────────── */
 @media (max-width: 1023px) and (min-width: 768px) {
@@ -965,4 +1062,421 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
     background: color-mix(in srgb, var(--brand-teal) 8%, transparent);
   }
   .settings-content { padding: 16px; }
+}
+
+/* ── Mobile layout (bottom nav) ───────────────────────────────────────────── */
+@media (max-width: 639px) {
+  body { height: 100dvh; }
+
+  /* Sidebar → fixed bottom tab bar */
+  .sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: stretch;
+    border-right: none;
+    border-top: 1px solid rgba(255,255,255,0.10);
+    padding: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 50;
+  }
+  .sidebar-logo { display: none; }
+  .sidebar-items {
+    flex-direction: row;
+    flex: 1;
+    gap: 0;
+    padding: 0;
+    justify-content: space-around;
+    overflow-x: auto;
+  }
+  .sidebar-bottom {
+    width: auto;
+    border-top: none;
+    border-left: 1px solid rgba(255,255,255,0.10);
+    padding: 0;
+    margin: 0;
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+  }
+  .sidebar-item {
+    padding: 7px 4px 5px;
+    border-left: none;
+    border-top: 2px solid transparent;
+    font-size: 9px;
+    flex: 1;
+    min-width: 44px;
+    max-width: 72px;
+    justify-content: center;
+  }
+  .sidebar-item svg { width: 18px; height: 18px; }
+  .sidebar-item.active {
+    border-left-color: transparent;
+    border-top-color: var(--brand-teal);
+    background: rgba(118, 210, 217, 0.08);
+  }
+
+  /* Main area: full width, reserve bottom for tab bar */
+  .main { width: 100%; }
+  .content {
+    padding: 10px;
+    padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Topbar: compact, hide pills that overflow */
+  .topbar { padding: 0 10px; gap: 6px; }
+  .topbar-title { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-time { display: none; }
+  .status-pill { display: none !important; }
+
+  /* Dashboard metric grid: single column on portrait mobile */
+  .metrics-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .metric-value { font-size: 22px; }
+  .metric-card { padding: 10px 12px; }
+  .charging-pill { font-size: 0.65rem; padding: 2px 7px; }
+  .card-src { font-size: 0.55rem; padding: 1px 5px; }
+
+  /* Charts: single column */
+  .charts-row { grid-template-columns: 1fr; }
+
+  /* Pack grid: single column */
+  .packs-grid { grid-template-columns: 1fr; }
+
+  /* Subpage wrappers: full-width on mobile */
+  .settings-page { max-width: 100%; }
+
+  /* Net kv grid: narrower label column */
+  .net-kv-grid { grid-template-columns: 120px 1fr; }
+
+  /* Diag table: allow horizontal scroll */
+  .diag-tasks-table { font-size: 11px; }
+}
+
+/* ── Drift Details section ──────────────────────────────────────────────────── */
+
+/* Collapsible pack card */
+.drift-pack-card {
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+/* Toggle header row */
+.drift-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+.drift-toggle:hover { background: var(--bg-card-hover); }
+
+.drift-pack-name {
+  font-weight: 600;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.drift-summary-items {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.drift-summary-sep {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.drift-chevron {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+}
+.drift-chevron.open { transform: rotate(180deg); }
+
+/* Status pills */
+.drift-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.drift-pill-balanced    { background: rgba(118,210,217,0.18); color: var(--brand-teal); }
+.drift-pill-monitor     { background: rgba(232,156,92,0.18);  color: var(--color-warning); }
+.drift-pill-imbalanced  { background: rgba(226,85,72,0.18);   color: var(--brand-coral); }
+
+.drift-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.drift-meta strong { color: var(--text-primary); }
+
+/* Expanded body */
+.drift-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: 16px;
+}
+
+/* KPI tiles row */
+.drift-kpis {
+  display: flex;
+  gap: 1px;
+  background: var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.drift-kpi {
+  flex: 1;
+  background: var(--bg-card);
+  padding: 10px 8px;
+  text-align: center;
+}
+.drift-kpi-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.drift-kpi-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.drift-kpi-unit {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.drift-kpi-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 2px;
+  font-style: italic;
+}
+
+/* Conditional warning strip: cells at/above 3.60 V right now (review 2.4).
+   Rendered only when the count is nonzero; .crit escalates at 3.65 V (OVP). */
+.drift-warn-strip {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: rgba(232, 156, 92, 0.12);
+  border-left: 3px solid var(--color-warning);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+.drift-warn-strip.crit {
+  background: rgba(226, 85, 72, 0.12);
+  border-left-color: var(--brand-coral);
+}
+
+/* Repeated first-full pattern callout (review 2.3) */
+.drift-repeat-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 12px;
+  display: inline-block;
+}
+
+/* Capability note: whole data region absent on this installation profile */
+.drift-cap-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 12px;
+}
+
+/* Per-cell row */
+.drift-cell-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-bottom: 5px;
+}
+/* Non-outlier rows are dimmed so the defining cells stand out (review 2.5) */
+.drift-cell-row.dim { opacity: 0.55; }
+
+/* Indicator marking the repeated first-full cell. The wrapper is a flex child
+   with flex-basis:100%, forcing it onto its own line below the bar at every
+   viewport width (deterministic — not dependent on how the track flex-grows),
+   indented to the track start (22px label + 8px gap) so it reads as belonging
+   to that row. Styled as understated inline text (no box/border/background) to
+   match the "worst cell C4" sub-label convention used in the KPI tiles. */
+.drift-cell-tag-line {
+  flex-basis: 100%;
+  margin-left: 30px;
+}
+.drift-cell-tag {
+  font-size: 10px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* Band legend under the scale axis */
+.drift-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+.drift-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 6px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.drift-legend-swatch.swatch-at { background: var(--neutral-300); }
+.drift-legend-swatch.swatch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.drift-cell-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  width: 22px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+/* Track: the bar area */
+.drift-track {
+  flex: 1;
+  height: 10px;
+  position: relative;
+  background: var(--bg-page);
+  border-radius: 5px;
+  min-width: 0;
+}
+
+/* Guide lines (voltage thresholds) */
+.drift-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-subtle);
+  opacity: 0.6;
+}
+
+/* All-time band (lighter, behind) */
+.drift-band-at {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 3px;
+  background: var(--neutral-300);
+  opacity: 0.5;
+}
+
+/* 5-day band */
+.drift-band-d5 {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+  opacity: 0.75;
+}
+
+/* Live "now" dot — larger with a contrasting inner ring + outer shadow so it's
+   findable against both the band colour and the track background. */
+.drift-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 0 0 1.5px rgba(0,0,0,0.4);
+}
+
+/* Numeric label */
+.drift-cell-nums {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 76px;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Scale axis labels below the tracks */
+.drift-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.drift-scale-lbl-spacer { width: 22px; flex-shrink: 0; }
+.drift-scale-axis {
+  flex: 1;
+  position: relative;
+  height: 14px;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.drift-scale-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  top: 0;
+  white-space: nowrap;
+}
+.drift-scale-nums-spacer { width: 76px; flex-shrink: 0; }
+
+/* "Building history" placeholder */
+.drift-building {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 10px 0 4px;
+  font-style: italic;
+}
+
+@media (max-width: 600px) {
+  .drift-cell-nums { width: 60px; }
+  .drift-kpi-value { font-size: 15px; }
+  .drift-summary-items { gap: 6px; }
 }
