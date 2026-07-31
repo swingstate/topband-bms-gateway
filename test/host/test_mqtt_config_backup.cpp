@@ -19,6 +19,7 @@ TEST_CASE("config_backup::build_json excludes WiFi SSID and MQTT broker fields",
   cfg.mqtt_port = 8883;
   strncpy(cfg.mqtt_user, "mqttuser", sizeof(cfg.mqtt_user) - 1);
   strncpy(cfg.mqtt_pass_obf, "obfuscated-secret", sizeof(cfg.mqtt_pass_obf) - 1);
+  strncpy(cfg.auth_user, "admin", sizeof(cfg.auth_user) - 1);
 
   JsonDocument doc;
   mqtt::config_backup::build_json(cfg, doc);
@@ -28,6 +29,7 @@ TEST_CASE("config_backup::build_json excludes WiFi SSID and MQTT broker fields",
   REQUIRE_FALSE(doc["mqtt_port"].is<int>());
   REQUIRE_FALSE(doc["mqtt_user"].is<const char*>());
   REQUIRE_FALSE(doc["mqtt_pass_obf"].is<const char*>());
+  REQUIRE_FALSE(doc["auth_user"].is<const char*>());
 }
 
 TEST_CASE("config_backup::build_json keeps everything else, including MQTT detail settings", "[mqtt][config_backup]") {
@@ -54,22 +56,25 @@ TEST_CASE("config_backup::build_json payload round-trips through json_to_config 
   strncpy(source.wifi_ssid, "SourceWifi", sizeof(source.wifi_ssid) - 1);
   strncpy(source.mqtt_host, "broker.example", sizeof(source.mqtt_host) - 1);
   source.mqtt_port = 1883;
+  strncpy(source.auth_user, "sourceadmin", sizeof(source.auth_user) - 1);
   source.bms_count = 7;
 
   JsonDocument doc;
   mqtt::config_backup::build_json(source, doc);
 
   // Simulate the restore path: overlay onto a "live" config that has its own
-  // WiFi/MQTT-broker settings, which must survive untouched.
+  // WiFi/MQTT-broker/auth-username settings, which must survive untouched.
   Config live = DEFAULT_CONFIG;
   strncpy(live.wifi_ssid, "LiveWifi", sizeof(live.wifi_ssid) - 1);
   strncpy(live.mqtt_host, "live-broker.local", sizeof(live.mqtt_host) - 1);
   live.mqtt_port = 8883;
+  strncpy(live.auth_user, "liveadmin", sizeof(live.auth_user) - 1);
 
   web::json_to_config(doc, live);
 
   REQUIRE(std::string(live.wifi_ssid) == "LiveWifi");
   REQUIRE(std::string(live.mqtt_host) == "live-broker.local");
   REQUIRE(live.mqtt_port == 8883);
+  REQUIRE(std::string(live.auth_user) == "liveadmin");
   REQUIRE(live.bms_count == 7);
 }

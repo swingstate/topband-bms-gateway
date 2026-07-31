@@ -10,6 +10,7 @@ void build_json(const Config& cfg, JsonDocument& doc) {
   doc.remove("mqtt_port");
   doc.remove("mqtt_user");
   doc.remove("mqtt_pass_obf");
+  doc.remove("auth_user");
 }
 
 }  // namespace mqtt::config_backup

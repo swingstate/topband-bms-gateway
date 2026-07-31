@@ -469,10 +469,10 @@ esp_err_t handle_restore(httpd_req_t* req) {
 // No body. Applies the last retained config-backup payload this device has
 // received on its own {base}/system/config_backup topic (see mqtt/publisher.cpp).
 // Never automatic — explicit user action only, always behind auth + confirmation
-// in the UI. Only fields present in the payload are touched; WiFi and MQTT-broker
-// connection fields are never in that payload (mqtt::config_backup::build_json
-// omits them) and are additionally force-restored from the live config here as
-// defense in depth.
+// in the UI. Only fields present in the payload are touched; WiFi, MQTT-broker,
+// and local-auth-username fields are never in that payload (mqtt::config_backup::
+// build_json omits them) and are additionally force-restored from the live config
+// here as defense in depth.
 esp_err_t handle_mqtt_restore(httpd_req_t* req) {
   if (mqtt::publisher::get_state() != mqtt::publisher::State::Connected) {
     return send_err_act(req, 409, "MQTT is not connected — cannot read the backup topic");
@@ -509,6 +509,7 @@ esp_err_t handle_mqtt_restore(httpd_req_t* req) {
   new_cfg.mqtt_port = live.mqtt_port;
   memcpy(new_cfg.mqtt_user, live.mqtt_user, sizeof(new_cfg.mqtt_user));
   memcpy(new_cfg.mqtt_pass_obf, live.mqtt_pass_obf, sizeof(new_cfg.mqtt_pass_obf));
+  memcpy(new_cfg.auth_user, live.auth_user, sizeof(new_cfg.auth_user));
 
   // Secrets are never in backups — force-clear regardless (same as /api/restore).
   new_cfg.auth_hash[0]             = '\0';
