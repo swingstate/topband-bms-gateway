@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Automatic config backup via retained MQTT, with explicit (never automatic)
+  restore** (`{base}/system/config_backup`, retained). Published on every
+  successful settings save (edge-triggered) and once daily as a redundant
+  refresh, so a config can be recovered after an accidental reset (e.g. the
+  kind of NVS schema-size bug this project has already hit once) as long as
+  the broker still holds the retained message. Reuses the existing manual
+  JSON backup serializer, but WiFi SSID and MQTT broker host/port/username/
+  password are omitted from the payload entirely — not blanked — since
+  they're needed just to reach this backup in the first place and including
+  them would be circular; everything else (battery/board/safety config,
+  Telegram settings, MQTT detail-level settings, etc.) is included. Only
+  published while connected — no aggressive retry while MQTT is down, the
+  daily timer catches up naturally. Settings → Maintenance gains a "Restore
+  from MQTT backup" button that reads the device's own self-subscribed copy
+  of the retained message, applies only the fields present in it (WiFi/MQTT
+  connection fields are additionally force-preserved from the live config as
+  defense in depth), and reboots after a confirmation dialog. There is no
+  automatic restore on boot, ever — this is an explicit user action only, and
+  the existing manual file-based JSON backup/restore feature is unchanged.
 - **Consumed Ah published over MQTT** (`{base}/shunt/consumed_ah`, HA entity
   `shunt_consumed_ah`). Bank-level, read-only reference: the SmartShunt's own
   hardware Coulomb counter (negative = discharged), already visible on the
@@ -18,6 +37,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Direction-aware overcurrent lockout** (mirrors the earlier over-voltage/
+  under-voltage fix). Charge overcurrent and discharge overcurrent, reported by
+  the BMS as distinct bits, now block only their own direction (`alarm_flags`
+  0x01 / 0x04) instead of falling into the old undifferentiated "BMS critical"
+  bucket that blocked both. See `docs/research/v3.3-oc-direction-aware.md`.
+  **Awaiting owner hardware sign-off before release.**
 - **CAN TX now reports the dashboard's fused Combined SOC** (was interim BMS-only).
   All three protocol builders (Victron 0x355, Pylontech 0x355, SMA 0x355) now take
   their SOC from `can_tx_soc()`, which returns the Battery Value Sources fused value

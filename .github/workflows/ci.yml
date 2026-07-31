@@ -37,7 +37,7 @@ jobs:
         run: pio run -e esp32s3
 
   test:
-    name: Unit tests (native)
+    name: Host unit tests (CMake/ctest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,21 +46,36 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache PlatformIO
+      - name: Cache CMake FetchContent deps
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.platformio/.cache
-            ~/.platformio/packages
-          key: pio-native-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          path: build_host/_deps
+          key: cmake-deps-${{ runner.os }}-${{ hashFiles('test/host/CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -B build_host -S test/host
+
+      - name: Build
+        run: cmake --build build_host -j "$(nproc)"
+
+      - name: Run ctest
+        # --output-on-failure so a real regression is visible in the Actions log.
+        # No `|| true` / continue-on-error: a build or run failure here must fail CI.
+        run: |
+          cd build_host
+          ctest --output-on-failure
 
       - name: Install PlatformIO
         run: |
           python -m pip install --upgrade pip
           pip install platformio
 
-      - name: Run native tests
-        run: pio test -e native
+      - name: Native smoke test (test/native/test_smoke)
+        # Filtered to just the smoke suite: unfiltered `pio test -e native`
+        # also tries to treat test/host/*.cpp (CMake/Catch2 sources, not
+        # PlatformIO Unity suites) as native test suites and errors on all of
+        # them — that's what CI was actually (mis)running before this fix.
+        run: pio test -e native --filter "native/test_smoke"
 
   check:
     name: Static analysis

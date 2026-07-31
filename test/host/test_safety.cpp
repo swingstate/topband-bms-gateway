@@ -11,6 +11,21 @@
 //   [lock]     lock-to-zero rule (OV / UV / BMS alarm)
 //   [proto]    sysparam-derived caps (CVL, CCL, DCL, proto-UV)
 //   [update]   update_prev_state carry-forward
+//
+// RESOLVED (2026-07-15, chore/resolve-shouldfail-tests): the 22 cases
+// previously tagged [!shouldfail] (introduced by chore/ci-real-tests,
+// 2026-07) were root-caused, not blanket-tagged: nearly all of them predate
+// battery_config_mode (d725059, 2026-06-05), which made Auto — sysparam as
+// the PRIMARY source for CCL/DCL/CVL and the temperature window — the
+// zero-value default. These tests were written for the pure cfg-formula
+// (V2.67-equivalent) behavior and never set an explicit mode, so they now
+// need `make_cfg_manual()` / cfg_from_json()'s explicit Manual mode (see
+// those helpers) to exercise the logic they actually test. Two further
+// cases (v267 case_04/case_06, and the "PackOvervoltStart" edge test) had
+// additionally-stale expected values predating the direction-aware OV/UV
+// lockout rework (3630bc3, 2026-07-07): OV/UV now block only the direction
+// that worsens the fault, not both. All fixes were test-only; see the
+// resolve-shouldfail-tests report for the per-test breakdown.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -96,6 +111,15 @@ static Config cfg_from_json(const json& j) {
                                     : Config::TempMode::Average;
   cfg.maint_charge_enabled   = j["maint_charge_enabled"].get<bool>();
   cfg.maint_target_voltage   = j["maint_target_voltage"].get<float>();
+  // v267 fixtures predate battery_config_mode (added d725059, 2026-06-05) and
+  // carry no such field; they capture V2.67's own always-formula-driven
+  // behavior, which Manual mode reproduces exactly (sysparam only as a safe-
+  // direction cap, never a primary source). Leaving this at the zero-value
+  // default (Auto) would make CCL/DCL/CVL and the temperature factor follow
+  // sysparam instead — and since these fixtures don't populate the Auto-only
+  // sys_charge_low_t/high_t fields, that reads as an all-zero temp window and
+  // forces a spurious full temperature cutoff on every case.
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
   return cfg;
 }
 
@@ -228,6 +252,22 @@ static Config make_cfg() {
   return cfg;
 }
 
+// Manual mode: CCL/DCL/CVL and OVP thresholds come directly from cfg (V2.67-
+// equivalent formula), with sysparam only ever applied as a safe-direction
+// cap. Auto (mode 0, the zero-initialised default) instead makes sysparam the
+// PRIMARY source once a pack has valid sysparam, including the charge/
+// discharge temperature window (sys_charge_low_t/high_t etc.) — fields the
+// synthetic packs below and the v267 JSON fixtures never populate, so they
+// read as an all-zero window and calc_factor() sees every positive temp as
+// "above max". Tests that exist to validate the cfg-driven formula (factor
+// bands, SoC taper, V2.67 fixture parity, OV cap) must run in Manual mode to
+// avoid that trap; see cfg_from_json() for the fixture-side equivalent.
+static Config make_cfg_manual() {
+  Config cfg = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  return cfg;
+}
+
 static BmsSystemSnapshot make_system(int n_packs,
                                       float voltage   = 50.1f,
                                       float current   = 0.0f,
@@ -274,7 +314,7 @@ TEST_CASE("v267 case_08 recovering online",     "[v267]") { run_v267_case("08_re
 
 TEST_CASE("factor: charge below minimum (2 C) → ccl=0, alarm 0x08", "[factor]") {
   auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 2.0f);
-  auto cfg  = make_cfg();  // charge_temp_min = 5
+  auto cfg  = make_cfg_manual();  // charge_temp_min = 5
   auto prev = make_prev_all_online(1);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -285,7 +325,7 @@ TEST_CASE("factor: charge below minimum (2 C) → ccl=0, alarm 0x08", "[factor]"
 
 TEST_CASE("factor: charge in low soft zone (7 C) → ccl = count*30*0.2", "[factor]") {
   auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 7.0f);
-  auto cfg  = make_cfg();  // charge_temp_min=5, soft_zone=5 → [5,10) returns 0.2
+  auto cfg  = make_cfg_manual();  // charge_temp_min=5, soft_zone=5 → [5,10) returns 0.2
   auto prev = make_prev_all_online(1);
   prev.prev_factor_charge = 1.0f;  // transition triggers TempChargeStop event
   SafetyState out;
@@ -298,7 +338,7 @@ TEST_CASE("factor: charge in low soft zone (7 C) → ccl = count*30*0.2", "[fact
 
 TEST_CASE("factor: charge in normal range (25 C) → ccl = count*30*1.0", "[factor]") {
   auto snap = make_system(4, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f);
-  auto cfg  = make_cfg();
+  auto cfg  = make_cfg_manual();
   auto prev = make_prev_all_online(4);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -311,7 +351,7 @@ TEST_CASE("factor: charge in normal range (25 C) → ccl = count*30*1.0", "[fact
 
 TEST_CASE("factor: charge in high soft zone (47 C) → ccl = count*30*0.5", "[factor]") {
   auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 47.0f);
-  auto cfg  = make_cfg();  // charge_temp_max=50, soft_zone=5 → (45,50] returns 0.5
+  auto cfg  = make_cfg_manual();  // charge_temp_max=50, soft_zone=5 → (45,50] returns 0.5
   auto prev = make_prev_all_online(1);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -340,7 +380,7 @@ TEST_CASE("factor: discharge below minimum (-25 C) → dcl=0", "[factor]") {
 
 TEST_CASE("factor: discharge in high soft zone (57 C) → dcl = count*30*0.5", "[factor]") {
   auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 57.0f);
-  auto cfg  = make_cfg();  // discharge_temp_max=60, soft_zone=5 → (55,60] returns 0.5
+  auto cfg  = make_cfg_manual();  // discharge_temp_max=60, soft_zone=5 → (55,60] returns 0.5
   auto prev = make_prev_all_online(1);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -380,7 +420,7 @@ TEST_CASE("factor: average mode uses temp_avg_c of last pack", "[factor]") {
   snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 2.0f);
   snap.pack[1] = make_pack(1, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 3.0f, 25.0f);
 
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_manual();
   cfg.temp_mode = Config::TempMode::Average;
   auto prev = make_prev_all_online(2);
   SafetyState out;
@@ -567,7 +607,7 @@ TEST_CASE("edge: TempChargeStop emits on factor transition", "[edge]") {
 }
 
 TEST_CASE("edge: TempChargeResume emits when factor returns to 1.0", "[edge]") {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_manual();
   auto prev = make_prev_all_online(1);
   prev.prev_factor_charge = 0.0f;  // was throttled
 
@@ -586,7 +626,7 @@ TEST_CASE("edge: TempChargeResume emits when factor returns to 1.0", "[edge]") {
 
 TEST_CASE("edge: PackOvervoltStart emitted per-pack and system-level", "[edge]") {
   // cell_max=3.60 > safe_cell_volt=3.55 → OV alarm
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_manual();
   auto prev = make_prev_all_online(1);
   prev.prev_alarm_flags = 0;  // OV bit was clear
 
@@ -602,12 +642,17 @@ TEST_CASE("edge: PackOvervoltStart emitted per-pack and system-level", "[edge]")
   // Per-pack (bms_id=0) + system-level (bms_id=255) = 2
   REQUIRE(ov_start_count == 2);
   REQUIRE(out.alarm_flags & 0x02);
-  REQUIRE(out.ccl_amps == Catch::Approx(0.0f));  // lock to zero
-  REQUIRE(out.dcl_amps == Catch::Approx(0.0f));
+  // Direction-aware lockout (V3.2, see [[project_direction_aware_lockout]]):
+  // OV blocks charge only — discharging LOWERS cell voltage and moves away
+  // from the fault, so it stays available. This predates that rework, which
+  // originally zeroed both directions; updated to match the now-intentional
+  // behavior rather than the old blanket lock-to-zero.
+  REQUIRE(out.ccl_amps == Catch::Approx(0.0f));
+  REQUIRE(out.dcl_amps == Catch::Approx(1 * 30.0f));
 }
 
 TEST_CASE("edge: persistent OV re-fires per-pack event but not system-level", "[edge]") {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_manual();
   auto prev = make_prev_all_online(1);
   prev.prev_alarm_flags = 0x02;  // OV was already flagged last cycle
 
@@ -631,7 +676,7 @@ TEST_CASE("edge: persistent OV re-fires per-pack event but not system-level", "[
 
 TEST_CASE("soc: below 99 → no taper", "[soc]") {
   auto snap = make_system(2, 50.1f, 0.0f, 98);
-  auto cfg  = make_cfg();
+  auto cfg  = make_cfg_manual();
   auto prev = make_prev_all_online(2);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -640,7 +685,7 @@ TEST_CASE("soc: below 99 → no taper", "[soc]") {
 
 TEST_CASE("soc: at 99 → ccl = count * 2", "[soc]") {
   auto snap = make_system(3, 50.1f, 0.0f, 99);
-  auto cfg  = make_cfg();
+  auto cfg  = make_cfg_manual();
   auto prev = make_prev_all_online(3);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -650,7 +695,7 @@ TEST_CASE("soc: at 99 → ccl = count * 2", "[soc]") {
 
 TEST_CASE("soc: at 100 → ccl = 0", "[soc]") {
   auto snap = make_system(2, 50.1f, 0.0f, 100);
-  auto cfg  = make_cfg();
+  auto cfg  = make_cfg_manual();
   auto prev = make_prev_all_online(2);
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 10000, out);
@@ -660,7 +705,7 @@ TEST_CASE("soc: at 100 → ccl = 0", "[soc]") {
 
 TEST_CASE("soc: taper skipped when maint_charge_enabled", "[soc]") {
   auto snap = make_system(1, 50.1f, 0.0f, 100);
-  auto cfg  = make_cfg();
+  auto cfg  = make_cfg_manual();
   cfg.maint_charge_enabled = true;
   cfg.maint_target_voltage = 55.0f;
   auto prev = make_prev_all_online(1);
@@ -719,15 +764,19 @@ TEST_CASE("lock: UV flag (0x10) → blocks DISCHARGE only, charge stays availabl
 }
 
 TEST_CASE("lock: BMS critical alarm (0x40) → blocks BOTH (non-directional)", "[lock]") {
-  // Pack with fresh non-UV critical alarm (bit 4) — the 0x44 bitmap is not
-  // decoded per-direction, so the conservative response stays "stop everything".
+  // Pack with fresh non-UV, non-OC critical alarm (bit 11, short-circuit
+  // protect) — this bit is not decoded per-direction, so the conservative
+  // response stays "stop everything". (Bit 4 used to stand in for "generic
+  // critical" here, but as of V3.3 bit 4 is DISCHARGE_OVER_CURRENT1_PROTECT
+  // and is direction-aware — see the charge/discharge over-current tests
+  // below — so this test now uses a bit that genuinely has no direction.)
   BmsSystemSnapshot snap{};
   snap.cycle_id              = 1;
   snap.produced_ms           = 150000;
   snap.pack_count_configured = 1;
   snap.pack_count_online     = 1;
   snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);
-  snap.pack[0].alarm_bits    = (1ULL << 4);  // critical, not UV/OV
+  snap.pack[0].alarm_bits    = (1ULL << 11);  // SHORT_CIRCUIT_PROTECT: critical, not UV/OV/OC
   snap.pack[0].last_alarm_ms = 120000;
 
   auto cfg  = make_cfg();
@@ -742,17 +791,91 @@ TEST_CASE("lock: BMS critical alarm (0x40) → blocks BOTH (non-directional)", "
   CHECK(out.lockout_flags == 0x03);                     // both directions flagged
 }
 
+TEST_CASE("lock: charge over-current (0x01) → blocks CHARGE only", "[lock]") {
+  // Pack with fresh charge over-current protect bit (bit 2). V3.3 direction-
+  // aware fix: this must block charge only, mirroring OV/UV, not fall into
+  // the old undifferentiated "BMS critical" both-directions bucket.
+  BmsSystemSnapshot snap{};
+  snap.cycle_id              = 1;
+  snap.produced_ms           = 150000;
+  snap.pack_count_configured = 1;
+  snap.pack_count_online     = 1;
+  snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);
+  snap.pack[0].alarm_bits    = (1ULL << 2);  // CHARGE_OVER_CURRENT_PROTECT
+  snap.pack[0].last_alarm_ms = 120000;
+
+  auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+
+  REQUIRE(out.alarm_flags & 0x01);
+  CHECK_FALSE(out.alarm_flags & 0x40);                  // not folded into the generic bucket
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));           // charging worsens charge-OC → blocked
+  CHECK(out.dcl_amps == Catch::Approx(1 * 30.0f));      // discharging unaffected → available
+  CHECK((out.lockout_flags & 0x01));
+  CHECK_FALSE((out.lockout_flags & 0x02));
+}
+
+TEST_CASE("lock: discharge over-current (0x04) → blocks DISCHARGE only", "[lock]") {
+  // Pack with fresh discharge over-current protect bit (bit 4). V3.3
+  // direction-aware fix: this must block discharge only.
+  BmsSystemSnapshot snap{};
+  snap.cycle_id              = 1;
+  snap.produced_ms           = 150000;
+  snap.pack_count_configured = 1;
+  snap.pack_count_online     = 1;
+  snap.pack[0] = make_pack(0, true, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f, 25.0f);
+  snap.pack[0].alarm_bits    = (1ULL << 4);  // DISCHARGE_OVER_CURRENT1_PROTECT
+  snap.pack[0].last_alarm_ms = 120000;
+
+  auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+
+  REQUIRE(out.alarm_flags & 0x04);
+  CHECK_FALSE(out.alarm_flags & 0x40);                  // not folded into the generic bucket
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));           // discharging worsens discharge-OC → blocked
+  CHECK(out.ccl_amps == Catch::Approx(1 * 30.0f));      // charging unaffected → available
+  CHECK((out.lockout_flags & 0x02));
+  CHECK_FALSE((out.lockout_flags & 0x01));
+}
+
+TEST_CASE("lock: charge-OC and under-voltage combined on one pack → both classified independently", "[lock]") {
+  // Regression for the if/else -> independent-classification rewrite: a single
+  // BMS alarm response can report multiple critical bits at once. Both must be
+  // classified, not just the first match (UV) swallowing the OC bit.
+  BmsSystemSnapshot snap{};
+  snap.cycle_id              = 1;
+  snap.produced_ms           = 150000;
+  snap.pack_count_configured = 1;
+  snap.pack_count_online     = 1;
+  snap.pack[0] = make_pack(0, true, 30.0f, 0.0f, 30, 2.0f, 0.10f, 25.0f, 25.0f);
+  snap.pack[0].alarm_bits    = (1ULL << 2) | (1ULL << 12);  // charge-OC + cell UV
+  snap.pack[0].last_alarm_ms = 120000;
+
+  auto cfg  = make_cfg();
+  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  safety::runSafety(snap, cfg, prev, 150000, out);
+
+  REQUIRE(out.alarm_flags & 0x01);   // charge-OC classified
+  REQUIRE(out.alarm_flags & 0x10);   // UV also classified, not swallowed
+  CHECK_FALSE(out.alarm_flags & 0x40);
+  CHECK(out.ccl_amps == Catch::Approx(0.0f));           // OV-path: charge-OC blocks charge
+  CHECK(out.dcl_amps == Catch::Approx(0.0f));           // UV blocks discharge
+  CHECK(out.lockout_flags == 0x03);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Direction-aware lockout — comprehensive paired coverage [lockdir]
 // Every condition checks BOTH the direction it should block AND the direction it
 // must leave available. Manual mode → predictable count×30 A baseline.
 // ─────────────────────────────────────────────────────────────────────────────
-
-static Config make_cfg_manual() {
-  Config cfg = make_cfg();
-  cfg.battery_config_mode = Config::BatteryConfigMode::Manual;
-  return cfg;
-}
 
 TEST_CASE("lockdir: baseline healthy → both directions full, no lockout", "[lockdir]") {
   auto snap = make_system(2, 50.1f, 0.0f, 50, 3.341f, 0.002f, 25.0f);
@@ -904,10 +1027,23 @@ TEST_CASE("lockdir: combination OV + UV → both directions blocked, neither mas
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST_CASE("proto: ccl capped by sys_charge_max_a", "[proto]") {
-  // sys_charge_max_a=20.0 per pack → proto_ccl_cap=40 < cfg 4*30=120
+  // sys_charge_max_a=20.0 per pack → proto_ccl_cap=40 < cfg 4*30=120.
+  // Auto mode (default): sysparam is the PRIMARY CCL source, which is
+  // specifically what this test exercises, so it stays in Auto rather than
+  // switching to Manual like the cfg-formula tests. Auto also aggregates the
+  // sysparam charge/discharge temperature window (sys_charge_low_t/high_t
+  // etc.) for calc_factor(); make_pack()'s defaults leave those at 0/0 (an
+  // always-cutoff window), so give both packs a real wide-open window here
+  // to isolate the CCL-cap behavior under test from that unrelated factor.
   auto snap = make_system(2);
   snap.pack[0].sys_charge_max_a = 20.0f;
   snap.pack[1].sys_charge_max_a = 20.0f;
+  for (int i = 0; i < 2; ++i) {
+    snap.pack[i].sys_charge_low_t     = -20.0f;
+    snap.pack[i].sys_charge_high_t    =  60.0f;
+    snap.pack[i].sys_discharge_low_t  = -20.0f;
+    snap.pack[i].sys_discharge_high_t =  60.0f;
+  }
   auto cfg  = make_cfg();
   auto prev = make_prev_all_online(2);
   SafetyState out;
@@ -916,15 +1052,50 @@ TEST_CASE("proto: ccl capped by sys_charge_max_a", "[proto]") {
 }
 
 TEST_CASE("proto: stale sysparam (>300s) ignored", "[proto]") {
+  // Manual mode: this predates battery_config_mode (like the cfg-formula
+  // tests above) — its intent is "a stale sysparam CCL cap must be ignored,
+  // falling back to the configured amps," which Manual reproduces directly.
+  // (Auto mode's own path to the same cfg-fallback formula is via
+  // proto_count==0, identical to Manual here. The sysparam temperature
+  // window aggregation uses this same sp_fresh gate — see "proto: stale
+  // sysparam temp window (>300s) falls back to config" below.)
   auto snap = make_system(1);
   snap.pack[0].sys_charge_max_a = 5.0f;
   snap.pack[0].last_sysparam_ms = 0;
-  auto cfg  = make_cfg();
+  auto cfg  = make_cfg_manual();
   auto prev = make_prev_all_online(1);
   // now_ms=400000 → 400000 - 0 = 400000 > 300000 → stale
   SafetyState out;
   safety::runSafety(snap, cfg, prev, 400000, out);
   REQUIRE(out.ccl_amps == Catch::Approx(1 * 30.0f));  // cfg ccl used
+}
+
+TEST_CASE("proto: stale sysparam temp window (>300s) falls back to config, "
+          "matching CCL/DCL/CVL", "[proto]") {
+  // Same staleness bug class as the CCL test directly above, but for the
+  // charge/discharge temperature window instead of CCL/DCL/CVL: previously
+  // this path gated on raw sysparam_valid (sticky — never clears once a pack
+  // has reported one good SYSPARAM frame) instead of the sp_fresh 300s check,
+  // so a pack's frozen manufacturer temp window could silently keep driving
+  // calc_factor() indefinitely after sysparam polling stalled.
+  // Auto mode (default): pack has a once-valid but now-stale (>300s) sysparam
+  // charge window (sys_charge_low_t=20 would force a cutoff at 15 C if
+  // trusted). With sp_fresh gating the aggregation, staleness means
+  // auto_sp_count==0, so the effective window falls back to cfg
+  // (charge_temp_min=5), which permits normal charging at 15 C — the same
+  // fallback behavior CCL/DCL/CVL already apply on staleness.
+  auto snap = make_system(1, 50.1f, 0.0f, 50, 3.341f, 0.002f, 15.0f);
+  snap.pack[0].sys_charge_low_t  = 20.0f;   // would force cutoff at 15C if trusted
+  snap.pack[0].sys_charge_high_t = 60.0f;
+  snap.pack[0].last_sysparam_ms  = 0;
+  auto cfg  = make_cfg();  // Auto mode default; charge_temp_min=5
+  auto prev = make_prev_all_online(1);
+  SafetyState out;
+  // now_ms=400000 → 400000 - 0 = 400000 > 300000 → stale
+  safety::runSafety(snap, cfg, prev, 400000, out);
+  REQUIRE(out.factor_charge == Catch::Approx(1.0f));  // cfg window used, not stale sysparam
+  REQUIRE(out.ccl_amps == Catch::Approx(1 * 30.0f));
+  REQUIRE_FALSE(out.alarm_flags & 0x08);
 }
 
 TEST_CASE("proto: cvl capped by sys_module_high_v", "[proto]") {

@@ -7,6 +7,7 @@
 #include "app/solar_day_ring.h"
 #include "app/drift_ring.h"
 #include "sources/registry.h"
+#include "bms/poller.h"
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
@@ -30,6 +31,9 @@ static constexpr uint32_t FINE_PER_COARSE   =
 // EXT_RAM_BSS_ATTR: ~8 KB moved from DRAM BSS to PSRAM. CPU-only read from
 // snapshot_bus::read(); never DMA. Must NOT be a task local (H1 lesson).
 static EXT_RAM_BSS_ATTR BmsSystemSnapshot s_snap;
+// ~256 B — small enough to stay in internal DRAM, unlike s_snap above (H1 lesson
+// only applies to the multi-KB structs; matches housekeeping.cpp's s_safety).
+static SafetyState s_safety;
 
 // Fine-sample accumulator for downsampling to coarse (FINE_PER_COARSE = 30 slots).
 // Each slot includes drift_mv; make_coarse_point averages it from these directly.
@@ -40,7 +44,15 @@ static uint32_t s_fine_total     = 0;   // total fine points appended ever
 // ── Build a HistoryFinePoint from the current snapshot ───────────────────────
 // drift_mv is computed here and stored directly in the returned struct so it
 // is persisted to LittleFS alongside the other metrics (format v2).
-static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap) {
+// fused_v/fused_v_valid: SafetyState.voltage_display/voltage_display_valid —
+// same Battery Value Sources fused value (shunt-led when fresh, else BMS
+// fallback) the dashboard's Pack Voltage tile uses. Falls back to the raw
+// BMS pack-average computed below when not valid, mirroring the
+// voltage_display_valid ? voltage_display : pack_voltage_avg idiom used for
+// the MQTT aggregate topics (housekeeping.cpp). drift_mv is always raw
+// per-cell BMS data — the shunt is bank-level only and has no drift signal.
+static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap,
+                                         bool fused_v_valid, float fused_v) {
   HistoryFinePoint pt = {};
   float total_power_w = 0.0f;
   float sum_voltage   = 0.0f;
@@ -66,8 +78,9 @@ static HistoryFinePoint make_fine_point(const BmsSystemSnapshot& snap) {
 
   if (online > 0) {
     float inv = 1.0f / (float)online;
+    float voltage_avg = sum_voltage * inv;   // raw BMS average — fallback only
     pt.power_w      = (int16_t)(total_power_w + 0.5f);
-    pt.voltage_x100 = (int16_t)((sum_voltage * inv) * 100.0f + 0.5f);
+    pt.voltage_x100 = (int16_t)((fused_v_valid ? fused_v : voltage_avg) * 100.0f + 0.5f);
     pt.soc_x10      = (int16_t)((sum_soc * inv) * 10.0f + 0.5f);
     pt.temp_x10     = (int16_t)((sum_temp * inv) * 10.0f + 0.5f);
     pt.drift_mv     = (sys_cell_max > sys_cell_min)
@@ -149,7 +162,12 @@ static void history_task_entry(void* /*arg*/) {
 
     // ── Build fine point when BMS data is available ───────────────────────────
     if (has_bms) {
-      HistoryFinePoint fp = make_fine_point(s_snap);
+      // Same fused Battery Value Sources voltage the dashboard's Pack Voltage
+      // tile shows (shunt-led when fresh, else BMS fallback) — see header
+      // comment on read_safety_state() in bms/poller.h for the freshness rule.
+      bool have_safety = bms::poller::read_safety_state(s_safety);
+      bool fused_v_valid = have_safety && s_safety.voltage_display_valid;
+      HistoryFinePoint fp = make_fine_point(s_snap, fused_v_valid, s_safety.voltage_display);
 
       // Compute t_offset_s: offset from epoch_base stored in fine ring header.
       uint32_t base = storage::history_store::fine_epoch_base();

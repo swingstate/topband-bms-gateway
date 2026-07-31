@@ -1,5 +1,6 @@
 #include "bus/snapshot_bus.h"
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 
 #ifndef NATIVE_BUILD

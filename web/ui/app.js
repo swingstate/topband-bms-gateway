@@ -410,6 +410,7 @@ function updateLiveUI() {
   if (p === '/' || p === '/dashboard') {
     updateDashboardCards();
     updatePackCards();
+    updateChartBadges();
   } else if (p === '/battery') {
     updateBatteryOverviewCards();
     updateDriftNow();
@@ -1057,13 +1058,11 @@ function renderPackCard(card, p) {
 // chartSrc: which source badge (if any) to show next to the chart title.
 // - drift is always BMS: the shunt is bank-level only and can't inform
 //   per-cell drift, so this is a hard fact, not a live-updating label.
-// - voltage's history ring (history_task.cpp make_fine_point()) is a raw
-//   average of BmsSystemSnapshot.pack[].pack_voltage — it does NOT (yet)
-//   follow the Battery Value Sources fusion the live "Pack Voltage"
-//   dashboard tile uses, so its badge is a static, honest "BMS" label
-//   rather than a live indicator. Making it follow the active source would
-//   need history_task.cpp to read SafetyState.voltage_display, which it
-//   currently has no path to (deferred; flagged as a follow-up).
+// - voltage's history ring (history_task.cpp make_fine_point()) now records
+//   the same fused Battery Value Sources value (SafetyState.voltage_display)
+//   the "Pack Voltage" dashboard tile uses, so its badge is a live indicator
+//   too — see chartLiveSrc() below. chartSrc here is just the initial/
+//   fallback label before the first live poll lands.
 // power/soc/temp/solar have no chart-title badge (unset = hidden).
 const SERIES_DEFS = {
   power:   { label: 'Power',      color: '#76D2D9', dec: 0, unit: 'W' },
@@ -1073,6 +1072,39 @@ const SERIES_DEFS = {
   drift:   { label: 'Cell Drift', color: '#5DC264', dec: 0, unit: 'mV', chartSrc: 'bms' },
   solar:   { label: 'PV Power',   color: '#3B82F6', fill: 'rgba(59, 130, 246, 0.18)', dec: 0, unit: 'W' },
 };
+
+// Live badge source for a chart series. voltage follows the exact same fused
+// result (sources.battery_voltage_src) as the Pack Voltage tile — same rule
+// as the aggregate-box badges — so it can never disagree with the dashboard.
+// Every other series keeps its static chartSrc label (drift is hard-BMS;
+// power/soc/temp/solar have no badge).
+function chartLiveSrc(key) {
+  const def = SERIES_DEFS[key];
+  if (!def) return null;
+  if (key === 'voltage') {
+    return (g_live && g_live.sources && g_live.sources.battery_voltage_src) || def.chartSrc;
+  }
+  return def.chartSrc;
+}
+
+// Refresh just the chart-title badges from the latest /api/live poll, without
+// touching the uPlot instances — keeps the badge live (2 s cadence) even
+// though the chart data itself only reloads every 60 s (loadCharts()).
+function updateChartBadges() {
+  const cfg = getChartConfig();
+  [['chart-a-src', cfg.a], ['chart-b-src', cfg.b]].forEach(([badgeId, key]) => {
+    const badgeEl = document.getElementById(badgeId);
+    if (!badgeEl) return;
+    const src = chartLiveSrc(key);
+    if (src) {
+      badgeEl.className = `card-src card-src-${src}`;
+      badgeEl.textContent = src.toUpperCase();
+      badgeEl.style.display = '';
+    } else {
+      badgeEl.style.display = 'none';
+    }
+  });
+}
 
 function getChartConfig() {
   return {
@@ -1216,7 +1248,7 @@ async function loadCharts() {
       if (titleEl) titleEl.textContent = `${SERIES_DEFS[key].label} — last 2 h`;
       const badgeEl = document.getElementById(badgeId);
       if (badgeEl) {
-        const src = SERIES_DEFS[key].chartSrc;
+        const src = chartLiveSrc(key);
         if (src) {
           badgeEl.className = `card-src card-src-${src}`;
           badgeEl.textContent = src.toUpperCase();
@@ -2989,6 +3021,18 @@ function renderSettingsSystem() {
             <button id="restore-import-btn" class="btn btn-secondary" disabled onclick="startRestore()">Import backup</button>
           </div>
           <div id="restore-status" class="feedback-msg" style="margin-top:8px"></div>
+        </div>
+        <div style="margin-top:20px">
+          <div class="settings-section-title" style="font-size:13px;margin-bottom:8px">Restore from MQTT Backup</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            This gateway publishes a full config backup to MQTT (retained) on every save and once
+            daily, so it can be recovered after an accidental reset. WiFi and MQTT connection
+            settings are never included and are never touched by this restore.
+          </p>
+          <div class="btn-row">
+            <button class="btn btn-secondary" onclick="confirmMqttRestore()">Restore from MQTT backup</button>
+          </div>
+          <div id="mqtt-restore-status" class="feedback-msg" style="margin-top:8px"></div>
         </div>
       </div>
       <div class="settings-section">
@@ -5032,6 +5076,53 @@ async function doRestore(includeHardware) {
       setTimeout(pollUntilOnline, 4000);
     } else {
       if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = data.error || 'Import failed.'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── Config restore from MQTT backup (never automatic — explicit action only) ── */
+
+function confirmMqttRestore() {
+  const overlay = document.getElementById('modal-overlay');
+  const confirmBtn = document.getElementById('modal-confirm');
+
+  document.getElementById('modal-title').textContent = 'Restore from MQTT Backup';
+  document.getElementById('modal-body').innerHTML = `
+    <p style="font-size:13px;margin-bottom:10px">
+      This will overwrite your current battery, board, safety, notification, and other settings
+      with the last config backup this gateway published to MQTT, then reboot.
+    </p>
+    <div style="background:color-mix(in srgb,var(--color-warning,#E8A44A) 12%,transparent);border:1px solid color-mix(in srgb,var(--color-warning,#E8A44A) 40%,transparent);border-radius:6px;padding:8px 10px;font-size:12px">
+      WiFi and MQTT connection settings are never included in this backup and will not change —
+      the gateway will still be reachable afterward.
+    </div>
+  `;
+  confirmBtn.textContent = 'Restore & Reboot';
+  confirmBtn.style.display = '';
+  overlay.style.display = 'flex';
+
+  confirmBtn.onclick = () => {
+    overlay.style.display = 'none';
+    doMqttRestore();
+  };
+}
+
+async function doMqttRestore() {
+  const statusEl = document.getElementById('mqtt-restore-status');
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = 'Restoring…'; }
+
+  try {
+    const r = await apiFetch('/api/mqtt_restore', { method: 'POST' });
+    if (!r) return;
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showPageOverlay('Restore successful — rebooting…',
+        'The gateway is applying the MQTT backup. WiFi and MQTT connection settings were not changed.');
+      setTimeout(pollUntilOnline, 4000);
+    } else {
+      if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = data.error || 'Restore failed.'; }
     }
   } catch (e) {
     if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error: ' + e.message; }

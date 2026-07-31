@@ -60,7 +60,8 @@ void build_0x35A(const SafetyState& s, uint8_t out[8]) {
   // V2.67 lines 2344-2345: Victron alarm mapping + SMA charge/discharge enable bits.
   // Alarm bits (identical to Victron):
   uint8_t af = s.alarm_flags;
-  if (af & 0x01) out[4] |= 0x80;  // critical alarm → high-priority alarm
+  if (af & 0x01) out[4] |= 0x80;  // charge over-current (V3.3) → high-priority alarm
+  if (af & 0x04) out[4] |= 0x80;  // discharge over-current (V3.3) → high-priority alarm
   if (af & 0x40) out[4] |= 0x80;  // BMS reported alarm → high-priority alarm
   if (af & 0x02) out[4] |= 0x40;  // overvolt alarm
   if (af & 0x08) out[4] |= 0x20;  // temperature stop

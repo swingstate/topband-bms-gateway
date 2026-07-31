@@ -465,6 +465,82 @@ esp_err_t handle_restore(httpd_req_t* req) {
   return ESP_OK;
 }
 
+// ── POST /api/mqtt_restore ──────────────────────────────────────────────────────
+// No body. Applies the last retained config-backup payload this device has
+// received on its own {base}/system/config_backup topic (see mqtt/publisher.cpp).
+// Never automatic — explicit user action only, always behind auth + confirmation
+// in the UI. Only fields present in the payload are touched; WiFi, MQTT-broker,
+// and local-auth-username fields are never in that payload (mqtt::config_backup::
+// build_json omits them) and are additionally force-restored from the live config
+// here as defense in depth.
+esp_err_t handle_mqtt_restore(httpd_req_t* req) {
+  if (mqtt::publisher::get_state() != mqtt::publisher::State::Connected) {
+    return send_err_act(req, 409, "MQTT is not connected — cannot read the backup topic");
+  }
+
+  static constexpr size_t MQTT_BACKUP_MAX = 3072;
+  char* buf = (char*)malloc(MQTT_BACKUP_MAX);
+  if (!buf) return send_err_act(req, 500, "OOM");
+
+  size_t n = 0;
+  bool have = mqtt::publisher::get_config_backup(buf, MQTT_BACKUP_MAX, &n);
+  if (!have) {
+    free(buf);
+    return send_err_act(req, 409,
+        "No MQTT config backup received yet — save a setting first, or wait for the daily refresh");
+  }
+
+  JsonDocument cfg_doc;
+  DeserializationError derr = deserializeJson(cfg_doc, buf, n);
+  free(buf);
+  if (derr) return send_err_act(req, 500, "Cached MQTT backup payload is corrupt");
+
+  // Defaults-then-overlay: start from current live config, overlay only the
+  // fields present in the backup (mirrors POST /api/restore).
+  Config new_cfg = app::get_config();
+  json_to_config(cfg_doc, new_cfg);
+
+  // Defense in depth: these fields are never in the MQTT backup payload, so
+  // json_to_config() above already left them untouched — restore from live
+  // explicitly anyway in case that guarantee is ever weakened.
+  const Config& live = app::get_config();
+  memcpy(new_cfg.wifi_ssid, live.wifi_ssid, sizeof(new_cfg.wifi_ssid));
+  memcpy(new_cfg.mqtt_host, live.mqtt_host, sizeof(new_cfg.mqtt_host));
+  new_cfg.mqtt_port = live.mqtt_port;
+  memcpy(new_cfg.mqtt_user, live.mqtt_user, sizeof(new_cfg.mqtt_user));
+  memcpy(new_cfg.mqtt_pass_obf, live.mqtt_pass_obf, sizeof(new_cfg.mqtt_pass_obf));
+  memcpy(new_cfg.auth_user, live.auth_user, sizeof(new_cfg.auth_user));
+
+  // Secrets are never in backups — force-clear regardless (same as /api/restore).
+  new_cfg.auth_hash[0]             = '\0';
+  new_cfg.notify_telegram_token[0] = '\0';
+
+  char field_err[64] = {};
+  ValidationError verr = storage::validate(new_cfg, field_err, sizeof(field_err));
+  if (verr != ValidationError::None) {
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Validation failed: %s", field_err);
+    return send_err_act(req, 422, msg);
+  }
+
+  if (!app::update_and_save_config(new_cfg)) {
+    return send_err_act(req, 500, "NVS save failed");
+  }
+
+  ESP_LOGI(TAG, "Config restored via /api/mqtt_restore (%u bytes)", (unsigned)n);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req,
+    "{\"ok\":true,\"message\":\"Restore successful — rebooting to apply\",\"reboot_in_s\":3}");
+
+  xTaskCreate([](void*) {
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    esp_restart();
+  }, "mqtt_rest_rst", 4096, nullptr, 1, nullptr);
+
+  return ESP_OK;
+}
+
 // ── MQTT connection test ──────────────────────────────────────────────────────
 // Runs a throwaway esp_mqtt client against the unsaved form values.
 // The live publisher is never touched.

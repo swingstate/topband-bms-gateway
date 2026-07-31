@@ -8,6 +8,7 @@ constexpr const char* DATA   = "/data";
 constexpr const char* STATUS = "/status";
 constexpr const char* ALARM  = "/alarm";
 constexpr const char* DIAG   = "/diag";
+constexpr const char* SYSTEM_CONFIG_BACKUP = "/system/config_backup";
 
 // Build {base}{suffix} into out. Returns bytes written (0 on overflow).
 size_t build(const char* base, const char* suffix, char* out, size_t out_size);

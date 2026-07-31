@@ -29,6 +29,13 @@ esp_err_t handle_ha_discovery_clear(httpd_req_t* req);
 // Validates backup JSON, merges onto current config per chosen scope, saves, reboots.
 esp_err_t handle_restore(httpd_req_t* req);
 
+// POST /api/mqtt_restore — no body.
+// Applies the last retained config-backup payload received on this device's own
+// MQTT config-backup topic. Only fields present in the payload are touched; WiFi
+// and MQTT-broker connection fields are never affected. Explicit action only —
+// never automatic. Returns 409 if MQTT isn't connected or no backup was received yet.
+esp_err_t handle_mqtt_restore(httpd_req_t* req);
+
 // POST /api/mqtt/test — body: {"host","port","user","pass","base_topic"}
 // Starts a throwaway MQTT client against the unsaved form values (does NOT
 // touch the live MQTT connection). Returns immediately; poll GET for result.

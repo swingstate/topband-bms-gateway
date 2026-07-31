@@ -162,11 +162,37 @@ void runSafety(const BmsSystemSnapshot& snap,
           p.sys_cell_high_v,
           p.sys_module_high_v);
       if (crit_bits != 0) {
+        // Classify independently (not if/else): a single 0x44 response can
+        // combine multiple critical bits (e.g. UV + charge-OC on the same
+        // pack), and each category must route to its own alarm_flags bit
+        // rather than the first match swallowing the rest.
+        uint64_t classified_bits = 0;
         if (crit_bits & filters::UV_ALARM_BITS) {
           out.alarm_flags |= 0x10;
+          classified_bits |= filters::UV_ALARM_BITS;
           if (strcmp(out.sys_message, "OK") == 0)
             set_message(out, "ALARM: PACK UNDERVOLT");
-        } else {
+        }
+        // Direction-aware over-current (V3.3; mirrors the OV/UV fix). The BMS
+        // reports charge and discharge over-current as distinct bits, so each
+        // blocks only its own direction instead of falling into the generic
+        // both-directions 0x40 bucket below.
+        if (crit_bits & filters::OC_CHARGE_ALARM_BITS) {
+          out.alarm_flags |= 0x01;
+          classified_bits |= filters::OC_CHARGE_ALARM_BITS;
+          if (strcmp(out.sys_message, "OK") == 0)
+            set_message(out, "ALARM: CHARGE OVERCURRENT");
+        }
+        if (crit_bits & filters::OC_DISCHARGE_ALARM_BITS) {
+          out.alarm_flags |= 0x04;
+          classified_bits |= filters::OC_DISCHARGE_ALARM_BITS;
+          if (strcmp(out.sys_message, "OK") == 0)
+            set_message(out, "ALARM: DISCHARGE OVERCURRENT");
+        }
+        // Anything left over (OV bits, temp bits, short-circuit, reserved
+        // bits) is a critical condition this project does not decode
+        // per-direction — conservative catch-all: block both.
+        if (crit_bits & ~classified_bits) {
           out.alarm_flags |= 0x40;
           if (strcmp(out.sys_message, "OK") == 0)
             set_message(out, "ALARM: BMS STATUS");
@@ -251,8 +277,16 @@ void runSafety(const BmsSystemSnapshot& snap,
       emit_event(out, SafetyState::PackOvervoltStart, static_cast<uint8_t>(i));
 
     // ── Auto/AutoMargin: accumulate most-conservative sysparam temp limits ───
+    // Gated on sp_fresh (same 300s staleness check as the CCL/DCL/CVL proto
+    // caps above), not raw sysparam_valid, which is sticky and never clears
+    // once a pack has reported one good SYSPARAM frame. Without this, a pack
+    // whose 0x47 polling stalls for hours while analog/alarm keep working
+    // would silently keep driving the temperature safety factor off a frozen
+    // manufacturer window instead of falling back to the config-based
+    // thresholds — the same staleness treatment already applied everywhere
+    // else sysparam feeds a safety limit.
     if ((mode == Config::BatteryConfigMode::Auto ||
-         mode == Config::BatteryConfigMode::AutoMargin) && p.sysparam_valid) {
+         mode == Config::BatteryConfigMode::AutoMargin) && sp_fresh) {
       if (p.sys_charge_low_t > auto_chg_t_min)  auto_chg_t_min = p.sys_charge_low_t;
       if (p.sys_charge_high_t < auto_chg_t_max) auto_chg_t_max = p.sys_charge_high_t;
       if (p.sys_discharge_low_t > auto_dis_t_min)  auto_dis_t_min = p.sys_discharge_low_t;
@@ -452,11 +486,16 @@ void runSafety(const BmsSystemSnapshot& snap,
     //
     //   over-voltage  (0x02)         → block CHARGE    (charging raises V)
     //   under-voltage (0x10)         → block DISCHARGE (discharging lowers V)
+    //   charge over-current (0x01)   → block CHARGE    (V3.3; BMS reports this
+    //     direction distinctly — see filters::OC_CHARGE_ALARM_BITS)
+    //   discharge over-current (0x04)→ block DISCHARGE (V3.3; see
+    //     filters::OC_DISCHARGE_ALARM_BITS)
     //   charge temp cutoff           → block CHARGE    (factor_charge == 0)
     //   discharge temp cutoff        → block DISCHARGE (factor_discharge == 0)
-    //   BMS critical alarm (0x40)    → block BOTH      (non-directional; the BMS
-    //     0x44 bitmap is not decoded per-direction here, so the conservative
-    //     response to any BMS-reported critical fault is to stop everything)
+    //   BMS critical alarm (0x40)    → block BOTH      (non-directional; whatever
+    //     is left in the 0x44 bitmap after UV/OC classification above is not
+    //     decoded per-direction, so the conservative response is to stop
+    //     everything)
     //
     // Temperature is ALREADY direction-separated: factor_charge uses the charge
     // temperature window and factor_discharge the discharge window, and each is
@@ -464,9 +503,11 @@ void runSafety(const BmsSystemSnapshot& snap,
     // block set here just makes that cutoff survive the taper and lets it be
     // reported as a lockout reason. Soft-zone throttling (0.2 / 0.5) is untouched.
     const bool block_charge    = (out.alarm_flags & 0x02) ||
+                                 (out.alarm_flags & 0x01) ||
                                  (out.factor_charge == 0.0f) ||
                                  (out.alarm_flags & 0x40);
     const bool block_discharge = (out.alarm_flags & 0x10) ||
+                                 (out.alarm_flags & 0x04) ||
                                  (out.factor_discharge == 0.0f) ||
                                  (out.alarm_flags & 0x40);
 
