@@ -3022,6 +3022,18 @@ function renderSettingsSystem() {
           </div>
           <div id="restore-status" class="feedback-msg" style="margin-top:8px"></div>
         </div>
+        <div style="margin-top:20px">
+          <div class="settings-section-title" style="font-size:13px;margin-bottom:8px">Restore from MQTT Backup</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            This gateway publishes a full config backup to MQTT (retained) on every save and once
+            daily, so it can be recovered after an accidental reset. WiFi and MQTT connection
+            settings are never included and are never touched by this restore.
+          </p>
+          <div class="btn-row">
+            <button class="btn btn-secondary" onclick="confirmMqttRestore()">Restore from MQTT backup</button>
+          </div>
+          <div id="mqtt-restore-status" class="feedback-msg" style="margin-top:8px"></div>
+        </div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">About</div>
@@ -5064,6 +5076,53 @@ async function doRestore(includeHardware) {
       setTimeout(pollUntilOnline, 4000);
     } else {
       if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = data.error || 'Import failed.'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error: ' + e.message; }
+  }
+}
+
+/* ── Config restore from MQTT backup (never automatic — explicit action only) ── */
+
+function confirmMqttRestore() {
+  const overlay = document.getElementById('modal-overlay');
+  const confirmBtn = document.getElementById('modal-confirm');
+
+  document.getElementById('modal-title').textContent = 'Restore from MQTT Backup';
+  document.getElementById('modal-body').innerHTML = `
+    <p style="font-size:13px;margin-bottom:10px">
+      This will overwrite your current battery, board, safety, notification, and other settings
+      with the last config backup this gateway published to MQTT, then reboot.
+    </p>
+    <div style="background:color-mix(in srgb,var(--color-warning,#E8A44A) 12%,transparent);border:1px solid color-mix(in srgb,var(--color-warning,#E8A44A) 40%,transparent);border-radius:6px;padding:8px 10px;font-size:12px">
+      WiFi and MQTT connection settings are never included in this backup and will not change —
+      the gateway will still be reachable afterward.
+    </div>
+  `;
+  confirmBtn.textContent = 'Restore & Reboot';
+  confirmBtn.style.display = '';
+  overlay.style.display = 'flex';
+
+  confirmBtn.onclick = () => {
+    overlay.style.display = 'none';
+    doMqttRestore();
+  };
+}
+
+async function doMqttRestore() {
+  const statusEl = document.getElementById('mqtt-restore-status');
+  if (statusEl) { statusEl.className = 'feedback-msg'; statusEl.textContent = 'Restoring…'; }
+
+  try {
+    const r = await apiFetch('/api/mqtt_restore', { method: 'POST' });
+    if (!r) return;
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showPageOverlay('Restore successful — rebooting…',
+        'The gateway is applying the MQTT backup. WiFi and MQTT connection settings were not changed.');
+      setTimeout(pollUntilOnline, 4000);
+    } else {
+      if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = data.error || 'Restore failed.'; }
     }
   } catch (e) {
     if (statusEl) { statusEl.className = 'feedback-msg err'; statusEl.textContent = 'Network error: ' + e.message; }

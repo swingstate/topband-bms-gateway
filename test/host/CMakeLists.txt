@@ -339,6 +339,28 @@ target_link_libraries(test_config_json PRIVATE
 )
 catch_discover_tests(test_config_json)
 
+# ── test_mqtt_config_backup ────────────────────────────────────────────────────
+# config_backup.cpp is host-portable: web::config_to_json() + ArduinoJson only.
+add_executable(test_mqtt_config_backup
+  test_mqtt_config_backup.cpp
+  ../../src/storage/config.cpp
+  ../../src/web/config_json.cpp
+  ../../src/mqtt/config_backup.cpp
+)
+
+target_include_directories(test_mqtt_config_backup PRIVATE
+  ../../src
+  ../../include
+)
+
+target_compile_definitions(test_mqtt_config_backup PRIVATE ${HOST_COMPILE_DEFS})
+target_compile_options(test_mqtt_config_backup PRIVATE ${HOST_COMPILE_OPTS})
+target_link_libraries(test_mqtt_config_backup PRIVATE
+  Catch2::Catch2WithMain
+  ArduinoJson
+)
+catch_discover_tests(test_mqtt_config_backup)
+
 # ── test_aggregator ───────────────────────────────────────────────────────────
 # aggregator.cpp is pure logic, but its header pulls in shunt_source.h /
 # mppt_source.h which declare a portMUX_TYPE member — stub out just that IDF
