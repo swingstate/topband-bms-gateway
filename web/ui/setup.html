@@ -218,6 +218,36 @@
       font-size: 13px;
     }
 
+    /* ── Manual entry ── */
+    .manual-toggle {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--brand-teal);
+      cursor: pointer;
+      text-align: center;
+      padding: 8px 0;
+      margin-bottom: 8px;
+      user-select: none;
+    }
+    .manual-toggle:hover { text-decoration: underline; }
+
+    .manual-row {
+      display: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+      background: rgba(118, 210, 217, 0.06);
+    }
+    .manual-row.open { display: block; }
+    .manual-error {
+      font-size: 12px;
+      color: var(--brand-coral);
+      margin: -4px 0 8px;
+      display: none;
+    }
+    .manual-error.show { display: block; }
+
     /* ── Success card ── */
     .success-card { text-align: center; }
     .success-card h2 { color: var(--color-success); margin-bottom: 8px; }
@@ -239,6 +269,15 @@
     <div class="scan-placeholder" id="scan-placeholder">Scanning...</div>
   </div>
 
+  <div class="manual-toggle" id="manual-toggle" onclick="toggleManualEntry()">+ Enter network manually</div>
+  <div class="manual-row" id="manual-row">
+    <input type="text" id="manual-ssid" placeholder="Network name (SSID)" autocomplete="off" maxlength="32">
+    <input type="password" id="manual-pass" placeholder="WiFi password (leave blank for open network)"
+           autocomplete="off" maxlength="63">
+    <div class="manual-error" id="manual-error"></div>
+    <button class="btn-primary" onclick="doManualConnect()">Connect</button>
+  </div>
+
   <div id="status-area"></div>
 </div>
 
@@ -247,6 +286,12 @@
 let selectedSsid = null;
 let selectedPwRow = null;
 let pollTimer = null;
+// Paused while a password field (scan-selected or manual) is open, so the
+// periodic scan refresh can't rebuild the list out from under whatever the
+// user is typing. Resumes on cancel / toggle-off / selecting a different
+// network — same "don't rebuild interactive DOM while it's in use" fix as
+// the dashboard chart-flicker bug.
+let scanPaused = false;
 
 // ── RSSI bars ──────────────────────────────────────────────────────────────
 function rssiToStrength(rssi) {
@@ -297,6 +342,8 @@ function buildScanList(networks) {
 }
 
 function selectNetwork(ssid, item, pwRow) {
+  closeManualEntry();
+
   // Close previously selected.
   if (selectedPwRow && selectedPwRow !== pwRow) {
     selectedPwRow.classList.remove('open');
@@ -308,21 +355,89 @@ function selectNetwork(ssid, item, pwRow) {
     pwRow.classList.remove('open');
     selectedSsid = null;
     selectedPwRow = null;
+    scanPaused = false;
   } else {
     item.classList.add('selected');
     pwRow.classList.add('open');
     selectedSsid = ssid;
     selectedPwRow = pwRow;
+    scanPaused = true;
     // Focus password field.
     const inp = pwRow.querySelector('input');
     if (inp) setTimeout(() => inp.focus(), 50);
   }
 }
 
+// ── Manual entry ──────────────────────────────────────────────────────────
+function toggleManualEntry() {
+  const row = document.getElementById('manual-row');
+  if (row.classList.contains('open')) {
+    closeManualEntry();
+    return;
+  }
+  // Close any open scan selection first — only one password entry point
+  // open at a time.
+  if (selectedPwRow) {
+    selectedPwRow.classList.remove('open');
+    selectedSsid = null;
+    selectedPwRow = null;
+  }
+  document.querySelectorAll('.scan-item').forEach(el => el.classList.remove('selected'));
+
+  row.classList.add('open');
+  document.getElementById('manual-toggle').classList.add('open');
+  document.getElementById('manual-toggle').textContent = '− Enter network manually';
+  scanPaused = true;
+  const inp = document.getElementById('manual-ssid');
+  if (inp) setTimeout(() => inp.focus(), 50);
+}
+
+function closeManualEntry() {
+  const row = document.getElementById('manual-row');
+  const toggle = document.getElementById('manual-toggle');
+  if (row) row.classList.remove('open');
+  if (toggle) {
+    toggle.classList.remove('open');
+    toggle.textContent = '+ Enter network manually';
+  }
+  const err = document.getElementById('manual-error');
+  if (err) { err.classList.remove('show'); err.textContent = ''; }
+  if (!selectedSsid) scanPaused = false;
+}
+
+function setManualError(msg) {
+  const err = document.getElementById('manual-error');
+  if (!err) return;
+  err.textContent = msg;
+  err.classList.add('show');
+}
+
+async function doManualConnect() {
+  const ssidEl = document.getElementById('manual-ssid');
+  const passEl = document.getElementById('manual-pass');
+  const ssid = ssidEl ? ssidEl.value.trim() : '';
+  const pass = passEl ? passEl.value : '';
+
+  if (!ssid) {
+    setManualError('Network name (SSID) is required.');
+    return;
+  }
+  if (pass.length > 0 && pass.length < 8) {
+    setManualError('Password must be at least 8 characters, or blank for an open network.');
+    return;
+  }
+  setManualError('');
+  connectToNetwork(ssid, pass);
+}
+
 // ── Connect ────────────────────────────────────────────────────────────────
 async function doConnect(ssid) {
   const pwId = 'pw-' + escId(ssid);
   const pw = (document.getElementById(pwId) || {value: ''}).value;
+  connectToNetwork(ssid, pw);
+}
+
+async function connectToNetwork(ssid, pw) {
   setStatus('connecting', 'Connecting to ' + escHtml(ssid) + '...');
 
   try {
@@ -396,6 +511,10 @@ function showSuccess(ssid, ip) {
 
 // ── Scan loop ──────────────────────────────────────────────────────────────
 async function doScan() {
+  // Don't rebuild the scan list — and destroy an open, in-progress password
+  // field — while the user has a network selected or is filling in manual
+  // entry. Resumes automatically once they cancel or pick a different network.
+  if (scanPaused) return;
   try {
     const r = await fetch('/api/wifi/scan');
     const nets = await r.json();
