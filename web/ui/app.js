@@ -4565,6 +4565,12 @@ function renderDiagData(d) {
   // Preserve log open/closed state across polls (innerHTML replacement resets it).
   const existingDetails = document.getElementById('diag-log-details');
   if (existingDetails) g_diag_log_open = existingDetails.open;
+  // Likewise the log's scroll position: only follow new lines while the user is
+  // at the bottom; if they scrolled up to read, leave the log where it was.
+  const prevLog = document.getElementById('diag-log');
+  const logFollow = !prevLog || !g_diag_log_open ||
+    prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < 24;
+  const prevLogTop = prevLog ? prevLog.scrollTop : 0;
 
   const sys = d.system || {};
   const pol = d.poller || {};
@@ -4865,9 +4871,7 @@ function renderDiagData(d) {
 
     <details id="diag-log-details" class="diag-section diag-log-details">
       <summary class="diag-log-summary">Log (last ${(d.log_ring||[]).length} lines)</summary>
-      <div class="diag-log-box" id="diag-log">
-        ${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}
-      </div>
+      <div class="diag-log-box" id="diag-log">${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}</div>
     </details>
 
     `;
@@ -4876,12 +4880,17 @@ function renderDiagData(d) {
   const details = document.getElementById('diag-log-details');
   if (details) {
     if (g_diag_log_open) details.open = true;
-    details.addEventListener('toggle', () => { g_diag_log_open = details.open; }, { once: true });
+    details.addEventListener('toggle', () => {
+      g_diag_log_open = details.open;
+      const box = document.getElementById('diag-log');
+      if (box && details.open) box.scrollTop = box.scrollHeight;  // open at newest lines
+    }, { once: true });
   }
 
-  // Scroll log to bottom when visible.
+  // Scroll only the log box itself (never the page): to the newest line while
+  // following, otherwise back to where the user left it.
   const logBox = document.getElementById('diag-log');
-  if (logBox && g_diag_log_open) logBox.scrollTop = logBox.scrollHeight;
+  if (logBox && g_diag_log_open) logBox.scrollTop = logFollow ? logBox.scrollHeight : prevLogTop;
 }
 
 async function renderDiag() {
