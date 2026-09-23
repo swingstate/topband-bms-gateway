@@ -1106,10 +1106,12 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   padding: 8px 10px;
   max-height: 320px;
   overflow-y: auto;
+  overscroll-behavior: contain;  /* a swipe at the log's end must not scroll the page (iOS) */
   font-family: monospace;
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-secondary);
+  white-space: pre-wrap;  /* one log line per line (lines are joined with \n) */
   word-break: break-all;
 }
 .diag-tasks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
