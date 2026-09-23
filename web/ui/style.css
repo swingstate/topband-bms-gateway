@@ -414,6 +414,39 @@ a { text-decoration: none; color: inherit; }
 .metric-unit { font-size: 14px; font-weight: 400; color: var(--text-muted); margin-left: 2px; }
 .metric-sub { font-size: 11px; color: var(--text-muted); }
 
+/* ── Battery page combined tiles (4 in a row) ──────────────────────────────── */
+/* Each tile is a size container so the value font scales with the tile's own
+   width: 28px whenever the tile is wide enough (desktop), shrinking only when
+   "-150.0 A"-class values would otherwise wrap or overflow. The plain 28px
+   line is the fallback for browsers without container query units. */
+.bagg-tile {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 10px;
+  text-align: center;
+  container-type: inline-size;
+}
+.bagg-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.bagg-value {
+  font-size: 28px;
+  font-size: clamp(13px, 25cqi, 28px);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.bagg-unit { font-size: 0.6em; font-weight: 500; margin-left: 0.15em; }
+@media (max-width: 480px) {
+  .bagg-tile { padding: 12px 4px; }
+}
+
 /* ── Bad-value alarm highlighting ──────────────────────────────────────────── */
 .metric-card.alarm {
   border: 2px solid var(--color-alarm);

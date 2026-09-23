@@ -1270,15 +1270,24 @@ async function loadCharts() {
 
 /* ── Battery overview page ──────────────────────────────────────────────────── */
 
-function batteryMBox(label, id, withBadge) {
-  const badge = withBadge
-    ? `<div style="margin-top:4px"><span class="card-src" id="${id}-src">—</span></div>` : '';
+// Combined-metric tile: value and unit are separate spans so the unit can be
+// smaller and the pair never wraps (see .bagg-* in style.css). Updated in place
+// by setBaggValue().
+function batteryMBox(label, id, unit) {
   return `
-    <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
-      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
-      <div id="${id}" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
-      ${badge}
+    <div class="bagg-tile">
+      <div class="bagg-label">${label}</div>
+      <div class="bagg-value" id="${id}"><span class="bagg-num" id="${id}-num">—</span><span class="bagg-unit" id="${id}-unit" hidden>${unit}</span></div>
+      <div style="margin-top:4px"><span class="card-src" id="${id}-src">—</span></div>
     </div>`;
+}
+
+function setBaggValue(id, text, color) {
+  setEl(`${id}-num`, text);
+  const valEl = document.getElementById(id);
+  if (valEl) valEl.style.color = color;
+  const unitEl = document.getElementById(`${id}-unit`);
+  if (unitEl) unitEl.hidden = (text === '—');
 }
 
 function batteryVDiv() {
@@ -1304,17 +1313,13 @@ function renderBattery() {
           <span style="font-size:11px;color:var(--text-muted)" id="combined-fresh-text">—</span>
         </div>
         <div style="display:flex;align-items:center">
-          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
-            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Combined SOC</div>
-            <div id="bagg-soc" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
-            <div style="margin-top:4px"><span class="card-src" id="bagg-soc-src">—</span></div>
-          </div>
+          ${batteryMBox('Combined SOC', 'bagg-soc', '%')}
           ${batteryVDiv()}
-          ${batteryMBox('Pack Voltage', 'bagg-volt', true)}
+          ${batteryMBox('Pack Voltage', 'bagg-volt', 'V')}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Current', 'bagg-curr', true)}
+          ${batteryMBox('Combined Current', 'bagg-curr', 'A')}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Power', 'bagg-pow', true)}
+          ${batteryMBox('Combined Power', 'bagg-pow', 'W')}
         </div>
         <div style="border-top:1px solid var(--border);padding:10px 18px 0;font-size:12px;color:var(--text-muted)">
           <span id="combined-source-sentence">—</span>
@@ -1380,10 +1385,10 @@ function updateBatteryOverviewCards() {
   const cur  = (safety.current_display !== undefined) ? safety.current_display : null;
   const pow  = (cur !== null && volt !== null) ? cur * volt : null;
 
-  setEl('bagg-soc',  soc  !== null ? fmt(soc,  0)  + ' %' : '—', soc  !== null ? socColor(soc)         : 'var(--text-muted)');
-  setEl('bagg-volt', volt !== null ? fmt(volt, 2) + ' V'  : '—', volt !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
-  setEl('bagg-curr', cur  !== null ? fmtA(cur)  + ' A'   : '—', cur  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
-  setEl('bagg-pow',  pow  !== null ? fmt(pow,  0)  + ' W' : '—', pow  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+  setBaggValue('bagg-soc',  soc  !== null ? fmt(soc,  0) : '—', soc  !== null ? socColor(soc)        : 'var(--text-muted)');
+  setBaggValue('bagg-volt', volt !== null ? fmt(volt, 2) : '—', volt !== null ? 'var(--text-primary)' : 'var(--text-muted)');
+  setBaggValue('bagg-curr', cur  !== null ? fmtA(cur)    : '—', cur  !== null ? 'var(--text-primary)' : 'var(--text-muted)');
+  setBaggValue('bagg-pow',  pow  !== null ? fmt(pow,  0) : '—', pow  !== null ? 'var(--text-primary)' : 'var(--text-muted)');
 
   // ── Source badges ── each badge MUST come from the same fused result as the
   // number it's labelling (sources.battery_*_src mirrors safety.*_source_shunt),
