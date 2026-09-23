@@ -357,6 +357,126 @@ function updateStatusBar() {
   }
 }
 
+/* ── Health summary (Dashboard) ─────────────────────────────────────────────
+   Read-only roll-up of state the firmware already reports. Every state is
+   derived from existing /api/live + /api/health fields; nothing here decides
+   anything for safety, and no threshold duplicates one in runSafety. Anything
+   unknown or not yet observed shows 'warn', never 'ok'.
+   Each health*() returns { state: 'ok'|'warn'|'fault', reason }. */
+
+// RS485: pack polling, from bms_count_online / bms_count_configured.
+function healthRs485(live) {
+  if (!live) return { state: 'warn', reason: 'Waiting for data' };
+  const online = live.bms_count_online || 0;
+  const total  = live.bms_count_configured || 0;
+  if (total === 0)     return { state: 'warn',  reason: 'No packs configured' };
+  if (online === 0)    return { state: 'fault', reason: `0 of ${total} packs online` };
+  if (online < total)  return { state: 'warn',  reason: `${online} of ${total} packs online` };
+  return { state: 'ok', reason: `${online} of ${total} packs online` };
+}
+
+// alarm_flags bit -> short label, most significant first. Labels only; the
+// bits themselves are set by runSafety.
+const HEALTH_ALARM_LABELS = [
+  [0x80, 'No packs online'],
+  [0x40, 'BMS alarm'],
+  [0x02, 'Over-voltage'],
+  [0x10, 'Under-voltage'],
+  [0x01, 'Charge over-current'],
+  [0x04, 'Discharge over-current'],
+  [0x08, 'Temperature limit'],
+  [0x20, 'Cell imbalance'],
+];
+
+// Battery: the safety code's own lockout_flags (fault) and alarm_flags (warn).
+function healthBattery(safety) {
+  if (!safety || safety.lockout_flags === undefined)
+    return { state: 'warn', reason: 'Waiting for data' };
+  const lockout = safety.lockout_flags || 0;
+  const flags   = safety.alarm_flags   || 0;
+  const tempA   = safety.temp_alarm    || 0;
+  if (lockout) {
+    const chg = lockoutReason(0x01, flags, tempA);
+    const dis = lockoutReason(0x02, flags, tempA);
+    let reason;
+    if ((lockout & 0x03) === 0x03) reason = chg === dis ? `Charge and discharge off: ${chg}` : 'Charge and discharge disabled';
+    else if (lockout & 0x01)       reason = `Charge disabled: ${chg}`;
+    else                           reason = `Discharge disabled: ${dis}`;
+    return { state: 'fault', reason };
+  }
+  if (flags) {
+    const hit = HEALTH_ALARM_LABELS.find(([bit]) => flags & bit);
+    return { state: 'warn', reason: hit ? hit[1] : 'Alarm active' };
+  }
+  return { state: 'ok', reason: 'No alarms' };
+}
+
+// CAN: the tx counters are totals since boot, so judge activity from how they
+// moved over a recent window rather than from their absolute values (a single
+// failed frame hours ago must not keep the tile red).
+const HEALTH_CAN_WINDOW_S = 5;
+let g_can_samples = [];   // [{ t: uptime_s, ok, fail, busoff }], oldest first
+
+function recordCanSample(live) {
+  const can = live && live.stats && live.stats.can;
+  if (!can || live.uptime_s === undefined) return;
+  const smp = { t: live.uptime_s, ok: can.tx_ok || 0, fail: can.tx_fail || 0, busoff: can.bus_off_count || 0 };
+  const last = g_can_samples[g_can_samples.length - 1];
+  if (last && (smp.t < last.t || smp.ok < last.ok)) g_can_samples = [];  // device rebooted
+  g_can_samples.push(smp);
+  if (g_can_samples.length > 30) g_can_samples.shift();
+}
+
+// cfg: g_config (may be null before it loads). samples: g_can_samples.
+function healthCan(cfg, samples) {
+  if (cfg && !cfg.can_enabled) return { state: 'warn', reason: 'CAN output disabled' };
+  const cur = samples[samples.length - 1];
+  if (!cur) return { state: 'warn', reason: 'Waiting for data' };
+  let base = null;
+  for (let i = samples.length - 2; i >= 0; i--) {
+    if (cur.t - samples[i].t >= HEALTH_CAN_WINDOW_S) { base = samples[i]; break; }
+  }
+  if (!base) return { state: 'warn', reason: 'Checking CAN activity' };
+  if (cur.busoff > base.busoff) return { state: 'fault', reason: 'CAN bus-off, recovering' };
+  if (cur.ok === base.ok)       return { state: 'fault', reason: 'No CAN frames sent' };
+  if (cur.fail > base.fail)     return { state: 'warn',  reason: 'Some CAN frames failing' };
+  return { state: 'ok', reason: 'CAN TX active' };
+}
+
+// WiFi/MQTT: connection states from /api/health. Weak-signal cut-off is the
+// same -75 dBm the top-bar WiFi pill already uses.
+function healthNet(h) {
+  if (!h || !h.wifi) return { state: 'warn', reason: 'Waiting for data' };
+  if (!h.wifi.connected) return { state: 'fault', reason: 'WiFi disconnected' };
+  const mqtt = h.mqtt || {};
+  if (mqtt.enabled && mqtt.state !== 'connected') {
+    const words = { connecting: 'MQTT connecting', disconnected: 'MQTT disconnected', failed: 'MQTT connection failed' };
+    return { state: 'warn', reason: words[mqtt.state] || 'MQTT not connected' };
+  }
+  const rssi = h.wifi.rssi;
+  if (rssi < -75) return { state: 'warn', reason: `Weak WiFi signal (${rssi} dBm)` };
+  return { state: 'ok', reason: mqtt.enabled ? 'WiFi and MQTT connected' : 'WiFi connected' };
+}
+
+const HEALTH_STATE_WORD = { ok: 'OK', warn: 'Warning', fault: 'Fault' };
+
+// Updates the Dashboard health card in place (structure built by renderDashboard).
+function updateHealthCard() {
+  if (!document.getElementById('health-card')) return;
+  const items = {
+    rs485: healthRs485(g_live),
+    batt:  healthBattery(g_live && g_live.safety),
+    can:   healthCan(g_config, g_can_samples),
+    net:   healthNet(g_health),
+  };
+  Object.entries(items).forEach(([key, h]) => {
+    const item = document.getElementById(`health-${key}`);
+    if (item) item.className = `health-item health-${h.state}`;
+    setEl(`health-${key}-state`, HEALTH_STATE_WORD[h.state]);
+    setEl(`health-${key}-reason`, h.reason);
+  });
+}
+
 let g_health = null;
 
 async function fetchHealth() {
@@ -367,6 +487,7 @@ async function fetchHealth() {
       updateWifiIndicator();
       updateMqttIndicator();
       updateAuthBanner();
+      updateHealthCard();
     }
   } catch (_) {}
 }
@@ -404,10 +525,12 @@ function updateMqttIndicator() {
 }
 
 function updateLiveUI() {
+  recordCanSample(g_live);   // every poll, so the CAN window is ready on any page
   updateStatusBar();
   updateAuthBanner();
   const p = window.location.pathname;
   if (p === '/' || p === '/dashboard') {
+    updateHealthCard();
     updateDashboardCards();
     updatePackCards();
     updateChartBadges();
@@ -453,7 +576,21 @@ function cellVColor(v) {
 /* ── Dashboard ─────────────────────────────────────────────────────────────── */
 function renderDashboard() {
   const root = document.getElementById('page-root');
+  const healthItem = (key, label, go) => `
+    <button type="button" class="health-item health-warn" id="health-${key}" onclick="${go}">
+      <span class="health-dot"></span>
+      <span class="health-text">
+        <span class="health-head"><span class="health-label">${label}</span><span class="health-state" id="health-${key}-state">Warning</span></span>
+        <span class="health-reason" id="health-${key}-reason">Waiting for data</span>
+      </span>
+    </button>`;
   root.innerHTML = `
+    <div class="card health-card" id="health-card">
+      ${healthItem('rs485', 'RS485', "navigate('/diag')")}
+      ${healthItem('batt', 'Battery', "navigate('/battery')")}
+      ${healthItem('can', 'CAN', "navigate('/diag')")}
+      ${healthItem('net', 'WiFi / MQTT', "navigate('/settings');showSettingsSection((g_health&&g_health.wifi&&g_health.wifi.connected)?'mqtt':'network')")}
+    </div>
     <div class="metrics-grid" id="metrics-grid"></div>
     <div class="charts-row">
       <div class="card chart-card">
@@ -468,6 +605,7 @@ function renderDashboard() {
     <p class="section-header">Battery Packs</p>
     <div class="packs-grid" id="packs-grid"></div>
   `;
+  updateHealthCard();
   updateDashboardCards();
   updatePackCards();
   loadCharts();
