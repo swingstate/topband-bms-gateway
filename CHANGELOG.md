@@ -7,6 +7,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Health summary card on the Dashboard.** Four indicators (RS485, Battery,
+  CAN, WiFi/MQTT), each OK / Warning / Fault with a short reason such as
+  "3 of 3 packs online" or "MQTT disconnected". Tapping one opens the related
+  page. Read-only: every state comes from values the firmware already reports
+  (pack online count, the safety code's own lockout and alarm flags, CAN TX
+  counters, WiFi and MQTT connection state); anything not yet known shows
+  Warning. Mainly useful on phones, where the top-bar status pills are hidden.
+
+### Fixed
+
+- **Battery page combined tiles wrapped on phones.** On a ~375 px screen
+  values such as "48.43 V" or "+0.5 A" broke onto two lines. The value now
+  scales with the tile width and stays on one line, with a smaller unit.
+  Desktop layout is unchanged.
+- **Diagnostics log jumped back to the bottom every 5 s**, so older lines
+  could not be read. The log now follows new lines only while it is scrolled
+  to the bottom. Scrolling inside the log no longer moves the page on iOS,
+  and each log entry is on its own line (they previously ran together).
+
+## [3.3.1] - 2026-08-01
+
+### Added
+
+- **Manual network entry on the WiFi setup page.** SSID and password can be
+  typed in directly, for hidden networks or when the scan does not list the
+  network.
+
+### Fixed
+
+- **WiFi setup password field closed while typing.** The captive-portal setup
+  page rebuilt the network list every 5 s, which closed the open password
+  field and discarded what had been typed. The refresh now pauses while a
+  password field is open.
+
+### Documentation
+
+- The online interactive demo was brought up to date with the v3.3.0
+  interface (it had not changed since v3.0.0).
+
+## [3.3.0] - 2026-07-31
+
+### Added
+
 - **Automatic config backup via retained MQTT, with explicit (never automatic)
   restore** (`{base}/system/config_backup`, retained). Published on every
   successful settings save (edge-triggered) and once daily as a redundant
@@ -26,14 +69,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   defense in depth), and reboots after a confirmation dialog. There is no
   automatic restore on boot, ever — this is an explicit user action only, and
   the existing manual file-based JSON backup/restore feature is unchanged.
-- **Consumed Ah published over MQTT** (`{base}/shunt/consumed_ah`, HA entity
-  `shunt_consumed_ah`). Bank-level, read-only reference: the SmartShunt's own
-  hardware Coulomb counter (negative = discharged), already visible on the
-  Diagnostics page and `/api/diag`. Published ~10 s while the shunt is enabled and
-  fresh; when stale or not-yet-synced the publish is skipped and HA's
-  `expire_after` (60 s) marks the entity unavailable rather than posting a literal
-  string on a numeric topic (same contract as the solar/MPPT topics). Not fused
-  into any dashboard, CAN, or `*_display` value, and no dashboard tile was added.
+  The web-UI login username (`auth_user`) is also excluded from the payload
+  and preserved from the live config on restore (found in the pre-release
+  secret-field audit, fixed before 3.3.0 shipped).
 
 ### Changed
 
@@ -42,7 +80,126 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the BMS as distinct bits, now block only their own direction (`alarm_flags`
   0x01 / 0x04) instead of falling into the old undifferentiated "BMS critical"
   bucket that blocked both. See `docs/research/v3.3-oc-direction-aware.md`.
-  **Awaiting owner hardware sign-off before release.**
+- **Voltage chart follows the Battery Value Sources setting.** The Voltage
+  (last 2 h) chart now records the same fused voltage as the Pack Voltage
+  tile (SmartShunt when fresh, otherwise BMS), and its badge shows the live
+  source. Cell Drift stays BMS-only.
+- **Development: CI runs the real host test suite.** CI previously ran
+  `pio test -e native`, which could not build the CMake/Catch2 tests. It now
+  runs the CMake/ctest suite and fails on any error. The 22 safety tests that
+  were temporarily marked as expected failures were root-caused (stale test
+  assumptions, not firmware bugs) and fixed.
+
+### Fixed
+
+- **Automatic temperature limits could use hours-old battery values.** In
+  Auto mode the charge/discharge temperature window was taken from the
+  packs' reported limits even after those limits had gone stale, while the
+  current and voltage limits already fell back to the configured values
+  after 5 minutes. The temperature window now uses the same freshness rule.
+
+## [3.2.0] - 2026-07-15
+
+### Added
+
+- **SmartShunt bank-level SOC fusion.** When SmartShunt BLE is enabled
+  (Settings > Bluetooth LE) and its reading is fresh, the shunt's SOC becomes
+  the primary bank-level SOC shown on the dashboard, the Battery page, and
+  published to MQTT `{base}/soc` / `soc_display` — falling back to the BMS
+  average (`soc_avg`) when the shunt is disabled, absent, or stale. A source
+  badge ("SHUNT"/"BMS") discloses which one is active. Per-pack SOC and the
+  charge-taper safety logic are unaffected — they always use the BMS value,
+  never the fused one (CAN TX SOC was later switched to the fused value in
+  this same release, see Changed). Configured in **Settings > Battery >
+  Battery Value Sources** (see Changed). Default-off: behavior is byte-identical to
+  V3.1 until SmartShunt is explicitly enabled. See
+  `docs/research/v3.2-shunt-soc-fusion.md`.
+- **Consumed Ah published over MQTT** (`{base}/shunt/consumed_ah`, HA entity
+  `shunt_consumed_ah`). Bank-level, read-only reference: the SmartShunt's own
+  hardware Coulomb counter (negative = discharged), already visible on the
+  Diagnostics page and `/api/diag`. Published ~10 s while the shunt is enabled and
+  fresh; when stale or not-yet-synced the publish is skipped and HA's
+  `expire_after` (60 s) marks the entity unavailable rather than posting a literal
+  string on a numeric topic (same contract as the solar/MPPT topics). Not fused
+  into any dashboard, CAN, or `*_display` value, and no dashboard tile was added.
+- **Shunt BLE filter funnel on the diagnostics page.** The `Bluetooth LE`
+  diag panel previously only showed the MPPT decode funnel (Victron -> type
+  -> MAC -> decrypt); the shunt path had the exact same funnel internally but
+  zero visibility, making a misconfigured shunt MAC/key indistinguishable
+  from "not receiving any data at all". Diag now shows the configured shunt
+  MAC and its own type/MAC/decrypt counters (`src/sources/ble_scanner.h/.cpp`,
+  `handlers_diag.cpp`, diag page). When the MAC matches but nothing decrypts,
+  Diag also shows the received advertisement length against the length
+  required, to tell a too-short advertisement apart from a wrong key.
+- **Robust BLE encryption-key entry + a "Key valid" diagnostic.** Pasting a
+  Victron encryption key from a phone photo (Live Text / OCR) often captures
+  surrounding text — a label, spaces, a trailing period — which silently
+  corrupted the stored key so decode never ran (no data, no obvious reason).
+  The Settings > Bluetooth LE key fields (both SmartShunt and MPPT) now extract
+  the 32-hex key out of noisy pasted input, validate it live as you type, and
+  reject anything with no recoverable key instead of storing junk. The diag
+  page's BLE section now also shows a **Key valid** row for each device, so a
+  bad key is visible at a glance rather than looking like a dead radio.
+- **Settings UI for the WiFi BSSID pin, plus automatic re-pin after fallback.**
+  The `wifi_bssid` config field, its `mac_normalize` validation, and the
+  connect-time pin-with-fallback logic (`net::wifi::start_sta()`,
+  `WIFI_BSSID_PIN_MAX_RETRY`) already existed since schema v8 (V3.1) but had
+  no Settings UI at all -- it could only be set via a raw `/api/config` POST.
+  The Network page now has a "Preferred Access Point (optional)" section: a
+  BSSID field (validated client-side the same way as the BLE MAC fields),
+  and the existing WiFi scan list now shows each network's BSSID with a
+  one-click "pin this AP" action. The "Current Connection" panel and the
+  Diag WiFi section both now show a clear three-state status (not
+  configured / pinned and connected / pinned but unreachable -- falling
+  back to auto-select) instead of a bare active/off flag. Also closed the
+  one real gap in the existing mechanism: previously, once
+  `WIFI_BSSID_PIN_MAX_RETRY` fallback cleared the pin, the device stayed on
+  auto-select until the next reboot even if the preferred AP came back.
+  `net::wifi.cpp` now re-arms the pin on the next post-connection reconnect
+  cycle (AP hiccup, roam, DHCP-renewal disconnect) instead of a separate
+  timer, reusing the existing fallback machinery. No new Config field, no
+  schema bump -- +8 B static RAM (6-byte MAC + 1 bool, alignment-padded) to
+  remember the pin target across reconnects, flagged rather than claimed as
+  zero.
+- **Energy Today badge now follows the active Battery Value Sources policy.**
+  Energy accumulation (`bms/poller.cpp`) already integrates from the same
+  fused current/voltage as the "Combined Current" dashboard tile (fixed in a
+  prior 3.2 commit); the dashboard's Energy Today tile badge was still
+  hardwired to a static "BMS" label. It now reads the same live
+  `sources.battery_current_src` field the Current/Power tiles use, so the
+  badge matches reality when the shunt is the active source.
+- **Source badges on the Cell Drift and Voltage history charts.** Both
+  history charts previously had no indication of which data source fed them.
+  Cell Drift always shows a "BMS" badge (the shunt is bank-level only and
+  can't inform per-cell drift -- not a live indicator, a hard fact). Voltage
+  shows a "BMS" badge reflecting what its history ring actually plots today
+  (`history_task.cpp`'s fine-point builder averages raw
+  `BmsSystemSnapshot.pack[].pack_voltage`, independent of the live dashboard's
+  Battery Value Sources fusion) -- deliberately not a live-updating badge,
+  since the chart's underlying data doesn't yet follow the active source
+  either. Making it do so would need a new cross-task data path (history_task
+  currently has no access to `SafetyState.voltage_display`) and was scoped out
+  as a follow-up rather than folded into this labeling fix (done in 3.3.0).
+- **Per-pack Power sensor in Home Assistant** ("Pack N Power") on the main
+  gateway device, alongside the existing per-pack Voltage/Current/SOC.
+- **Per-pack charge limits in `/api/live`** (`sysparam_valid`,
+  `sys_charge_max_a`, `sys_discharge_max_a`, `sys_cell_high_v`), so the pack
+  that is limiting charge can be identified. Display only.
+
+### Changed
+
+- **Direction-aware protection lockout.** Over-voltage now blocks charging
+  only, under-voltage blocks discharging only, and the temperature cutoffs
+  block only their own direction. A BMS critical alarm or no packs online
+  still blocks both. Previously over- or under-voltage blocked both
+  directions, so a full pack could not discharge to recover. The dashboard
+  shows which direction is disabled and why, and the Alerts log records when
+  a lockout starts and ends.
+- **Battery Value Sources setting.** The separate SOC and current source
+  selectors were replaced by one section in Settings > Battery: Auto
+  (SmartShunt leads when fresh, BMS otherwise) or Manual (per metric).
+  Config schema v10 -> v11 with automatic migration. Dashboard and Battery
+  page values show "—" instead of 0 when their source has no data.
 - **CAN TX now reports the dashboard's fused Combined SOC** (was interim BMS-only).
   All three protocol builders (Victron 0x355, Pylontech 0x355, SMA 0x355) now take
   their SOC from `can_tx_soc()`, which returns the Battery Value Sources fused value
@@ -64,6 +221,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   only: the CCL/DCL limits (0x351), the charge/discharge-enable bits (0x35C / 0x35A)
   and the charge-taper logic all remain strictly on the raw BMS fields and are
   unaffected. Voltage and temperature in 0x356 stay on the raw BMS aggregates.
+- **MQTT aggregate values match the dashboard.** `{base}/soc`, `voltage`,
+  `current` and `power` now publish the same fused values as the dashboard,
+  and SOC is rounded the same way everywhere (MQTT, CAN, dashboard), so
+  99.6 % reads as 100 in all three instead of 99 on MQTT.
+- **Energy Today/Week/Total now integrate the fused current and voltage**,
+  so the SmartShunt's low-current accuracy also applies to the kWh counters.
+- **Settings reorganized.** CAN/inverter settings have their own page, and
+  the Network page moved into Settings (old `/network` links still work).
+- **Diagnostics page reorganized** into RS485 bus, Battery/BMS (per pack)
+  and CAN-to-inverter sections, including per-pack comms statistics, the
+  decoded CAN enable bits and active alarm bits.
+- **Battery page combined box consolidated.** The duplicate SmartShunt box
+  was removed; the combined box gained a freshness indicator and source
+  badges.
 
 ### Fixed
 
@@ -91,7 +262,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   read as green like its siblings. The healthy `.pill-can` rule now uses
   `--color-success` + white, matching the other pills (alarm = coral, off = grey
   were already correct). CSS-only, no behavior change.
-
 - **Pylontech CAN 0x359 alarm bits were mismapped, causing a false
   "Untertemperatur" (under-temperature) alarm on a healthy battery that disabled
   charging.** `build_0x359()` used an invented bit layout whose numbering was
@@ -196,77 +366,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   purple (`#7c6fcd`) as `.card-src-shunt`; now uses `var(--color-success)`
   (green) like every other pill in that bar. The muted/offline state was
   already correct and unchanged.
-
-### Added
-
-- **Settings UI for the WiFi BSSID pin, plus automatic re-pin after fallback.**
-  The `wifi_bssid` config field, its `mac_normalize` validation, and the
-  connect-time pin-with-fallback logic (`net::wifi::start_sta()`,
-  `WIFI_BSSID_PIN_MAX_RETRY`) already existed since schema v8 (V3.1) but had
-  no Settings UI at all -- it could only be set via a raw `/api/config` POST.
-  The Network page now has a "Preferred Access Point (optional)" section: a
-  BSSID field (validated client-side the same way as the BLE MAC fields),
-  and the existing WiFi scan list now shows each network's BSSID with a
-  one-click "pin this AP" action. The "Current Connection" panel and the
-  Diag WiFi section both now show a clear three-state status (not
-  configured / pinned and connected / pinned but unreachable -- falling
-  back to auto-select) instead of a bare active/off flag. Also closed the
-  one real gap in the existing mechanism: previously, once
-  `WIFI_BSSID_PIN_MAX_RETRY` fallback cleared the pin, the device stayed on
-  auto-select until the next reboot even if the preferred AP came back.
-  `net::wifi.cpp` now re-arms the pin on the next post-connection reconnect
-  cycle (AP hiccup, roam, DHCP-renewal disconnect) instead of a separate
-  timer, reusing the existing fallback machinery. No new Config field, no
-  schema bump -- +8 B static RAM (6-byte MAC + 1 bool, alignment-padded) to
-  remember the pin target across reconnects, flagged rather than claimed as
-  zero.
-- **Energy Today badge now follows the active Battery Value Sources policy.**
-  Energy accumulation (`bms/poller.cpp`) already integrates from the same
-  fused current/voltage as the "Combined Current" dashboard tile (fixed in a
-  prior 3.2 commit); the dashboard's Energy Today tile badge was still
-  hardwired to a static "BMS" label. It now reads the same live
-  `sources.battery_current_src` field the Current/Power tiles use, so the
-  badge matches reality when the shunt is the active source.
-- **Source badges on the Cell Drift and Voltage history charts.** Both
-  history charts previously had no indication of which data source fed them.
-  Cell Drift always shows a "BMS" badge (the shunt is bank-level only and
-  can't inform per-cell drift -- not a live indicator, a hard fact). Voltage
-  shows a "BMS" badge reflecting what its history ring actually plots today
-  (`history_task.cpp`'s fine-point builder averages raw
-  `BmsSystemSnapshot.pack[].pack_voltage`, independent of the live dashboard's
-  Battery Value Sources fusion) -- deliberately not a live-updating badge,
-  since the chart's underlying data doesn't yet follow the active source
-  either. Making it do so would need a new cross-task data path (history_task
-  currently has no access to `SafetyState.voltage_display`) and was scoped out
-  as a follow-up rather than folded into this labeling fix.
-
-- **SmartShunt bank-level SOC fusion.** When SmartShunt BLE is enabled
-  (Settings > Bluetooth LE) and its reading is fresh, the shunt's SOC becomes
-  the primary bank-level SOC shown on the dashboard, the Battery page, and
-  published to MQTT `{base}/soc` / `soc_display` — falling back to the BMS
-  average (`soc_avg`) when the shunt is disabled, absent, or stale. A source
-  badge ("SHUNT"/"BMS") discloses which one is active. Per-pack SOC, charge-
-  taper safety logic, and CAN TX SOC/SOH are unaffected — they always use the
-  BMS value, never the fused one. Selectable via **Battery > Bank SOC Source
-  Mode** (`Config::soc_mode`). Default-off: behavior is byte-identical to
-  V3.1 until SmartShunt is explicitly enabled. See
-  `docs/research/v3.2-shunt-soc-fusion.md`.
-- **Shunt BLE filter funnel on the diagnostics page.** The `Bluetooth LE`
-  diag panel previously only showed the MPPT decode funnel (Victron -> type
-  -> MAC -> decrypt); the shunt path had the exact same funnel internally but
-  zero visibility, making a misconfigured shunt MAC/key indistinguishable
-  from "not receiving any data at all". Diag now shows the configured shunt
-  MAC and its own type/MAC/decrypt counters (`src/sources/ble_scanner.h/.cpp`,
-  `handlers_diag.cpp`, diag page).
-- **Robust BLE encryption-key entry + a "Key valid" diagnostic.** Pasting a
-  Victron encryption key from a phone photo (Live Text / OCR) often captures
-  surrounding text — a label, spaces, a trailing period — which silently
-  corrupted the stored key so decode never ran (no data, no obvious reason).
-  The Settings > Bluetooth LE key fields (both SmartShunt and MPPT) now extract
-  the 32-hex key out of noisy pasted input, validate it live as you type, and
-  reject anything with no recoverable key instead of storing junk. The diag
-  page's BLE section now also shows a **Key valid** row for each device, so a
-  bad key is visible at a glance rather than looking like a dead radio.
+- **Alerts were lost on every power cycle.** The saved alert history was
+  never read back correctly at boot and was overwritten with an empty log.
+  Alerts now survive a restart.
+- **WiFi network scan returned no results** while the gateway was connected
+  to its access point (invalid scan dwell time).
+- **Home Assistant showed "Unknown" for per-pack Voltage/Current/SOC.** The
+  per-pack MQTT payload was missing those values.
+- **Home Assistant logged errors for stale solar values.** Stale MPPT data
+  was published as the text "unavailable" on numeric topics; those topics
+  now use `expire_after` instead.
+- **Charge/discharge pill showed "Idle" at exactly ±0.5 A.**
+- **A near-full charge taper could override a cold-charge cutoff** and
+  request a small charge current into a pack too cold to charge. The
+  temperature cutoff now always wins.
+- **Cell Drift "fills first" label overlapped the cell bar.**
 
 ## [3.1.0] - 2026-07-03
 
