@@ -1450,7 +1450,7 @@ function renderBattery() {
           <div class="pack-status-dot offline" id="combined-fresh-dot" style="flex-shrink:0;width:8px;height:8px"></div>
           <span style="font-size:11px;color:var(--text-muted)" id="combined-fresh-text">—</span>
         </div>
-        <div style="display:flex;align-items:center">
+        <div class="bagg-row">
           ${batteryMBox('Combined SOC', 'bagg-soc', '%')}
           ${batteryVDiv()}
           ${batteryMBox('Pack Voltage', 'bagg-volt', 'V')}
