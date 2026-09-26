@@ -20,7 +20,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - **Battery page combined tiles wrapped on phones.** On a ~375 px screen
   values such as "48.43 V" or "+0.5 A" broke onto two lines. The value now
   scales with the tile width and stays on one line, with a smaller unit.
-  Desktop layout is unchanged.
+  Values and source badges also line up across all four tiles when some
+  labels wrap to two lines. Desktop layout is unchanged.
 - **Diagnostics log jumped back to the bottom every 5 s**, so older lines
   could not be read. The log now follows new lines only while it is scrolled
   to the bottom. Scrolling inside the log no longer moves the page on iOS,
