@@ -471,14 +471,26 @@ a { text-decoration: none; color: inherit; }
    width: 28px whenever the tile is wide enough (desktop), shrinking only when
    "-150.0 A"-class values would otherwise wrap or overflow. The plain 28px
    line is the fallback for browsers without container query units. */
+/* Tiles stretch to the tallest one and each tile is a column whose label area
+   takes up the spare height, label text sitting at its bottom. A label that
+   wraps to two lines (narrow phones) therefore no longer pushes its value and
+   badge below the neighbouring tiles': those rows always line up. When every
+   label fits on one line (desktop) there is no spare height and nothing moves. */
+.bagg-row { display: flex; align-items: stretch; }
 .bagg-tile {
   flex: 1;
   min-width: 0;
   padding: 14px 10px;
   text-align: center;
   container-type: inline-size;
+  display: flex;
+  flex-direction: column;
 }
 .bagg-label {
+  flex: 1 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
