@@ -209,6 +209,7 @@ function chartEmptyMsg() {
 
 /* ── Live data state ────────────────────────────────────────────────────────── */
 let g_live = null;
+let g_live_at = 0;          // Date.now() of the last successful /api/live fetch
 let g_poll_interval = null;
 let g_chart_a = null;
 let g_chart_b = null;
@@ -286,9 +287,12 @@ async function fetchLive() {
     const r = await apiFetch('/api/live');
     if (!r || !r.ok) return;
     g_live = await r.json();
+    g_live_at = Date.now();
     updateLiveUI();
   } catch (e) {
-    /* network error — keep showing last data */
+    /* network error — keep showing last data, except values presented as
+       live (drift "now" column), which blank once they are too old. */
+    if (window.location.pathname === '/battery') updateDriftNow();
   }
 }
 
@@ -5725,6 +5729,26 @@ function driftKpiSub(label, value, sub) {
     '<div class="drift-kpi-value">' + value + '</div>' + subHtml + '</div>';
 }
 
+// Live cell voltages (V) for one pack from the 2-s /api/live snapshot, or null
+// when they must not be presented as current: pack offline, snapshot older
+// than 10 s (same rule as the Battery page freshness line), or /api/live
+// itself not answering for 10 s. The /api/drift payload's own cells[].now is
+// up to 30 s old and is deliberately not used for the number.
+const DRIFT_LIVE_MAX_AGE_MS = 10000;
+function driftLiveCells(packId) {
+  if (!g_live || Date.now() - g_live_at > DRIFT_LIVE_MAX_AGE_MS) return null;
+  const snap = g_live.snapshot || {};
+  if (g_live.uptime_s === undefined || snap.produced_ms === undefined) return null;
+  if (g_live.uptime_s * 1000 - snap.produced_ms > DRIFT_LIVE_MAX_AGE_MS) return null;
+  const lp = (snap.packs || []).find(p => p.bms_id === packId);
+  return (lp && lp.online && lp.cells) ? lp.cells : null;
+}
+
+function driftNowText(cells, ci) {
+  const v = cells ? cells[ci] : undefined;
+  return (typeof v === 'number' && v >= 2 && v <= 5) ? v.toFixed(3) + ' V' : '—';
+}
+
 function buildDriftCellRowsHtml(pack, noHistory) {
   const cells  = pack.cells || [];
   const nc     = Math.min(pack.cell_count || cells.length, 15);
@@ -5751,6 +5775,7 @@ function buildDriftCellRowsHtml(pack, noHistory) {
   const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
 
   const ffWin = driftRepeatWinner(pack.ff_mode_idx, pack.ff_days_won, pack.ff_days_total);
+  const liveCells = driftLiveCells(pack.id);
 
   const isOutlier = ci => {
     if (nc <= 2) return true;  // tiny packs: nothing to dim
@@ -5789,9 +5814,7 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     // the endpoints are already encoded by the band position (review 2.5).
     // Raw endpoints stay available as a tooltip.
     const hasBand = !noHistory && c.d5min && c.d5max;
-    const numsStr = hasBand
-      ? ((c.d5max - c.d5min) + ' mV')
-      : (nowMv ? nowMv + ' mV' : '—');
+    const numsStr = hasBand ? ((c.d5max - c.d5min) + ' mV') : '—';
     const numsTitle = hasBand ? (c.d5min + '-' + c.d5max + ' mV over 5 days') : '';
 
     const tagHtml = (ffWin && ci === pack.ff_mode_idx)
@@ -5803,6 +5826,8 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     rows += '<div class="drift-cell-row' + (isOutlier(ci) ? '' : ' dim') + '">' +
       '<div class="drift-cell-lbl">C' + (ci + 1) + '</div>' +
       '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
+      '<div class="drift-cell-now" id="drift-now-' + pack.id + '-' + ci + '">' +
+        driftNowText(liveCells, ci) + '</div>' +
       '<div class="drift-cell-nums"' +
         (numsTitle ? ' title="' + numsTitle + '"' : '') + '>' + numsStr + '</div>' +
       tagHtml +
@@ -5815,7 +5840,7 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     DRIFT_GUIDES.map(g =>
       '<div class="drift-scale-tick" style="left:' + driftPct(g.mv).toFixed(1) + '%">' + g.label + '</div>'
     ).join('') +
-    '<div class="drift-scale-tick" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
+    '<div class="drift-scale-tick drift-scale-tick-ceil" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
 
   // Band legend: the grey band is all-time at ANY SoC while the colored band
   // is 5-day at extremes only — two gates in one graphic need labels.
@@ -5826,10 +5851,20 @@ function buildDriftCellRowsHtml(pack, noHistory) {
       '<span><span class="drift-legend-swatch swatch-dot" style="background:' + color + '"></span>now</span>' +
     '</div>';
 
-  return rows +
+  // Column headers so the two numbers per row are unambiguous.
+  const headHtml =
+    '<div class="drift-col-head">' +
+      '<div class="drift-scale-lbl-spacer"></div>' +
+      '<div class="drift-col-head-track"></div>' +
+      '<div class="drift-cell-now" title="Cell voltage right now">now</div>' +
+      '<div class="drift-cell-nums" title="Width of the cell\'s 5-day band at charge extremes">5-day span</div>' +
+    '</div>';
+
+  return headHtml + rows +
     '<div class="drift-scale-row">' +
       '<div class="drift-scale-lbl-spacer"></div>' +
       '<div class="drift-scale-axis">' + ticksHtml + '</div>' +
+      '<div class="drift-scale-now-spacer"></div>' +
       '<div class="drift-scale-nums-spacer"></div>' +
     '</div>' +
     legendHtml;
@@ -5868,6 +5903,15 @@ function updateDriftNow() {
   const driftPacks = g_drift_data.packs || [];
 
   driftPacks.forEach(dp => {
+    // "now" numbers: text only, in place; "—" whenever not current.
+    const liveCells = driftLiveCells(dp.id);
+    for (let ci = 0; ci < 16; ci++) {
+      const nowEl = document.getElementById('drift-now-' + dp.id + '-' + ci);
+      if (!nowEl) break;
+      const txt = driftNowText(liveCells, ci);
+      if (nowEl.textContent !== txt) nowEl.textContent = txt;
+    }
+
     const lp = livePacks.find(p => p.bms_id === dp.id);
     if (!lp || !lp.cells) return;
     const spread = Math.round((lp.cell_drift_v || 0) * 1000);

@@ -14,6 +14,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (pack online count, the safety code's own lockout and alarm flags, CAN TX
   counters, WiFi and MQTT connection state); anything not yet known shows
   Warning. Mainly useful on phones, where the top-bar status pills are hidden.
+- **Current cell voltage in Drift Details.** Each cell row now shows its
+  voltage right now (e.g. "3.312 V") next to its 5-day span, with small
+  column headers. Taken from the live status data the page already polls
+  (no firmware change); shows "—" when the pack is offline or the data is
+  more than 10 s old.
 
 ### Fixed
 

@@ -1532,10 +1532,36 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 }
 
 /* Numeric label */
+/* Right-hand number columns share width variables with the header row and
+   the scale-axis spacers so all three stay aligned at every breakpoint. */
+.drift-body { --drift-now-w: 46px; --drift-nums-w: 76px; }
+.drift-cell-now {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  width: var(--drift-now-w);
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+.drift-col-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.drift-col-head-track { flex: 1; min-width: 0; }
+.drift-col-head .drift-cell-now,
+.drift-col-head .drift-cell-nums {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
 .drift-cell-nums {
   font-size: 10px;
   color: var(--text-muted);
-  width: 76px;
+  width: var(--drift-nums-w);
   flex-shrink: 0;
   text-align: right;
   white-space: nowrap;
@@ -1564,7 +1590,8 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
   top: 0;
   white-space: nowrap;
 }
-.drift-scale-nums-spacer { width: 76px; flex-shrink: 0; }
+.drift-scale-now-spacer  { width: var(--drift-now-w);  flex-shrink: 0; }
+.drift-scale-nums-spacer { width: var(--drift-nums-w); flex-shrink: 0; }
 
 /* "Building history" placeholder */
 .drift-building {
@@ -1575,7 +1602,9 @@ details[open].diag-log-details > .diag-log-summary::before { transform: rotate(9
 }
 
 @media (max-width: 600px) {
-  .drift-cell-nums { width: 60px; }
+  .drift-body { --drift-nums-w: 56px; }
+  /* Narrow track: the 3.68 end label would collide with the 3.60 guide label. */
+  .drift-scale-tick-ceil { display: none; }
   .drift-kpi-value { font-size: 15px; }
   .drift-summary-items { gap: 6px; }
 }
