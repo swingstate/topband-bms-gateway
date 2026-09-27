@@ -23,7 +23,7 @@
   let DEMO_ALERTS = [
     {
       severity: 'INFO', severity_n: 0,
-      message: 'System started: TopBand BMS Gateway v3.3.0',
+      message: 'System started: TopBand BMS Gateway v3.4.0',
       source: 'boot',
       ts_epoch: NOW_EPOCH - UPTIME_BASE,
       uptime_s: 0,
@@ -364,7 +364,7 @@
   /* ── Health ──────────────────────────────────────────────────────────────── */
   function makeHealthData() {
     return {
-      version:      '3.3.0',
+      version:      '3.4.0',
       build:        'main-bce8993 2026-07-31',
       ui_version:   'h3b-1',
       uptime_s:     UPTIME_BASE + g_tick * 2,
@@ -618,7 +618,7 @@
     var t = g_tick;
     return {
       system: {
-        fw:                  '3.3.0',
+        fw:                  '3.4.0',
         build:               'main-bce8993 2026-07-31',
         uptime_s:            UPTIME_BASE + t * 2,
         reset_reason:        'Power on',
@@ -794,7 +794,7 @@
         handler_max_ms:  18,
       },
       log_ring: [
-        '[    0.000] I boot: TopBand BMS Gateway v3.3.0 starting',
+        '[    0.000] I boot: TopBand BMS Gateway v3.4.0 starting',
         '[    0.012] I storage: NVS config loaded, schema v6',
         '[    0.034] I wifi: connecting to SSID "HomeNetwork"',
         '[    1.203] I wifi: connected — IP 192.168.1.42, GW 192.168.1.1',
@@ -995,9 +995,11 @@
     // which fails when opened via file:// or a Pages subpath. Use DOM-element
     // presence instead so updates work regardless of URL structure.
     window.updateLiveUI = function () {
+      if (typeof recordCanSample   === 'function') recordCanSample(g_live);
       if (typeof updateStatusBar   === 'function') updateStatusBar();
       if (typeof updateAuthBanner  === 'function') updateAuthBanner();
       if (document.getElementById('metrics-grid')) {
+        if (typeof updateHealthCard     === 'function') updateHealthCard();
         if (typeof updateDashboardCards === 'function') updateDashboardCards();
         if (typeof updatePackCards      === 'function') updatePackCards();
         if (typeof updateChartBadges    === 'function') updateChartBadges();
