@@ -4,72 +4,42 @@ ESP32-S3 firmware that bridges TopBand LiFePO4 BMS battery packs to Victron, Pyl
 
 Compatible with TopBand-based batteries including EET, Power Queen, and others using the TopBand RS485 protocol.
 
-![Version](https://img.shields.io/badge/version-3.3.0-blue)
+![Version](https://img.shields.io/badge/version-3.4.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange)
 
-> **New in V3.3: automatic settings backup.** The gateway now backs up its settings over MQTT whenever they change (and once daily), so they can be recovered after a reset — restoring is always a manual, explicit action, never automatic. This release also makes overcurrent lockouts direction-aware like the existing voltage lockouts, fixes the Voltage chart to follow the selected data source, and adds a safety-logic correctness fix plus expanded automated test coverage. See [What's new in V3.3](#whats-new-in-v33) below, or the full [release notes](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.3.0).
+> **New in V3.4: a health summary on the dashboard and a better phone layout.** A status card at the top of the dashboard shows at a glance whether RS485, the battery, CAN and WiFi/MQTT are OK. The Battery page summary tiles now fit an iPhone screen, the Drift Details show each cell's current voltage, and the Diagnostics log no longer jumps while you read it. No changes to safety logic, CAN output or settings.
 
-## What's new in V3.3
+## What's new in V3.4
 
-V3.3 builds on V3.2 and adds:
+- **Health summary card.** Four indicators at the top of the dashboard (RS485, Battery, CAN, WiFi/MQTT), each shown as OK, Warning or Fault with a short reason such as "3 of 3 packs online" or "MQTT disconnected". Tap an indicator to open the related page. The card only displays what the gateway already reports; it makes no decisions of its own.
+- **Battery page on phones.** The four summary tiles (SOC, pack voltage, current, power) stay on one line on narrow screens, and their values and source badges line up. The desktop layout is unchanged.
+- **Current cell voltage in Drift Details.** Each cell row shows its voltage right now (for example "3.312 V") next to its 5-day span. It shows "—" when the pack is offline or the data is out of date.
+- **Diagnostics log.** The log no longer jumps back to the bottom every few seconds while you scroll up to read it, and each entry is on its own line.
 
-- **Automatic settings backup via MQTT.** The gateway publishes a full backup of its settings whenever they change, and once daily as a redundant refresh, so a config can be recovered after an accidental reset. WiFi and MQTT broker connection details, and the dashboard login username, are never included in the backup, since they're needed just to reach it in the first place. Settings → Maintenance gains a **Restore from MQTT backup** button — restoring is always an explicit, confirmed user action, never automatic.
-- **Direction-aware overcurrent lockout**, mirroring the over-voltage/under-voltage fix from V3.2. A charge overcurrent condition now only blocks charging, and a discharge overcurrent condition now only blocks discharging, instead of a single overcurrent event locking out both directions.
-- **Voltage chart follows the selected data source.** The dashboard's Voltage — Last 2H chart now follows the same Battery Value Sources selection (SmartShunt or BMS) as the rest of the battery readings, instead of always reading the BMS packs.
-- **Safety correctness fix.** The automatic temperature safety limits (Auto battery-config mode) could keep using outdated battery-reported values for hours if the battery stopped sending updates, instead of falling back to your configured limits like the other safety checks already did. Fixed to fall back consistently.
-- **Expanded automated testing**, including a real CI-run test suite on every change, catching more issues before release.
+## Release history
 
-See the full [release notes](https://github.com/swingstate/topband-bms-gateway/releases/tag/v3.3.0) for the complete list, including everything from the V3.2 line below.
-
-## What's new in V3.2
-
-V3.2 builds on V3.1 and adds:
-
-- **Bluetooth LE / Victron SmartShunt.** Pair a SmartShunt battery monitor for a whole-bank current, voltage, and charge-percentage reading, plus a consumed-amp-hours reference value. A **Battery Value Sources** setting (Battery tab) lets you choose whether the shunt or the BMS packs lead on the dashboard, or set it to switch automatically. Charging and discharging decisions always use the BMS packs' own numbers, never the shunt.
-- **More accurate inverter reporting.** When a SmartShunt is connected, the charge percentage and current sent to your inverter follow the same reading shown on the dashboard, instead of the BMS-only value — this fixes very small currents getting rounded down and reported as "no current flowing." Charge/discharge safety limits still come strictly from the BMS packs.
-- **Direction-aware safety lockout.** A cell voltage problem now only blocks the affected direction — for example, a cell that's too full blocks charging but still allows discharging, so the pack can recover on its own — instead of locking out both directions at once.
-- **More reliable WiFi.** The gateway now keeps retrying a lost WiFi connection indefinitely instead of eventually giving up and needing a manual power-cycle. You can also pin the gateway to a specific access point when several share the same network name.
-- **Reorganized Settings and Diagnostics pages**, with inverter/CAN settings now on their own page.
-- **Correctness fixes to the Pylontech CAN output** (used by Deye and other inverters) that could make a perfectly healthy battery appear to refuse charging or discharging, or report the wrong number of connected packs.
-- **Alert history now survives a power cycle**, and a bug that could silently reset all settings to factory defaults during certain updates was fixed.
-
-See the full [release notes](release-notes-v3.2.0.md) for the complete list, including everything from the V3.1 line below.
-
-## What's new in V3.1
-
-V3.1 builds on V3.0 and adds:
-
-- **Bluetooth LE / Victron MPPT.** Read solar charger data (PV power, charger output, yield, charger state) over BLE. No extra wiring — the ESP32-S3 reads the MPPT's advertisements directly.
-- **Solar page.** A dedicated page with a day chart of solar power, the MPPT charger output, and a Solar-Passthrough indicator (for setups running OpenDTU-onBattery). All read-only; the gateway never controls the charger.
-- **Battery Drift Details.** A per-pack, per-cell view of how the cells balance and drift over the last 5 days. Drift is measured where it actually matters on LiFePO4 — near full charge and near empty — instead of the flat middle of the charge curve, where all cells look the same.
-- **Reworked Diagnostics page.** Bluetooth, WiFi, and MPPT are now in clearly separated sections.
-- **Smaller fixes.** Charts update in place instead of redrawing (no more flicker), the login session stays valid across browser restarts, and internal memory use was reduced.
-
-The CAN output, BMS polling, safety logic, and MQTT/Home Assistant integration are unchanged from V3.0 unless noted above. If you don't use a Victron MPPT or SmartShunt, V3.3 behaves like V3.0.
-
-## Architecture
-
-![Architecture Overview](docs/bms_gateway_architecture_3_1.png)
+Changes in every earlier version, from V2.66 through V3.3, are listed in [CHANGELOG.md](CHANGELOG.md). Release notes and downloads for each version are on the [Releases page](https://github.com/swingstate/topband-bms-gateway/releases).
 
 ## Screenshots
 
-![Dashboard v. 3.1](docs/bms_gateway_dashboard_3_1.png)
+![Dashboard v3.4](docs/bms_gateway_dashboard_3_4.png)
 
-Dashboard with live SOC, power, voltage, cell balance bars, and history charts. Glassmorphism UI with light and dark mode.
+Dashboard with the health summary card, live SOC, power, voltage and energy values, and history charts. Light and dark mode.
 
-A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it directly in any browser to preview the dashboard with synthetic data (no hardware needed). Useful for UI previews.
+An interactive demo with synthetic data runs in the browser, no hardware needed: [swingstate.github.io/topband-bms-gateway/demo](https://swingstate.github.io/topband-bms-gateway/demo/).
 
 ## Features
 
 - **Multi-pack support** up to 16 BMS packs on one RS485 bus, with per-pack and per-cell data
 - **Bluetooth LE** read a Victron MPPT solar charger and/or a Victron SmartShunt battery monitor; data flows into the dashboard, MQTT, and energy tracking
 - **Battery Value Sources** choose whether the SmartShunt or the BMS packs lead the dashboard's current/voltage/charge-percentage reading, automatically or manually — charging/discharging decisions always use the BMS packs regardless
-- **Web dashboard** with glassmorphism sidebar UI, light/dark mode, responsive mobile layout
+- **Web dashboard** with light/dark mode and a phone layout with a bottom tab bar
+- **Health summary card** RS485, Battery, CAN and WiFi/MQTT status at a glance, each with a short reason
 - **Live charts** for power, voltage, SOC, temperature, and cell drift — with persistent history (2-hour fine, 7-day coarse)
 - **Solar page** day chart of solar power, MPPT charger output, and Solar-Passthrough status
-- **Battery Drift Details** per-cell balance and drift over 5 days, measured at the charge extremes
-- **Energy tracking** rolling today / 7-day / monthly counters
+- **Battery Drift Details** per-cell balance and drift over 5 days, measured at the charge extremes, with each cell's current voltage
+- **Energy tracking** today / 7-day / monthly / total counters
 - **MQTT publishing** with Home Assistant auto-discovery, per-pack and per-cell topics
 - **Safety logic** cell voltage, drift, temperature cutoffs with hysteresis; a voltage or overcurrent lockout only blocks the affected direction (charge or discharge), not both
 - **CAN output** Victron, Pylontech, or SMA protocol — selectable at runtime; reports the SmartShunt-fused current/charge-percentage to the inverter when a shunt is connected
@@ -78,14 +48,13 @@ A standalone HTML demo is available at `docs/dashboard-demo.html`. Open it direc
 - **OTA firmware updates** with 5-minute self-test and automatic rollback on failure
 - **Telegram notifications** for safety alerts — configurable debounce to prevent alert floods
 - **Settings backup/restore** as JSON, plus automatic backup over MQTT on every settings change (and daily), with explicit manual restore
-- **CSV history export**
-- **mDNS** access via `topband-gateway-macID.local`
-- **Cookie-based authentication** with SHA-256 hashed password and rate limiting
+- **CSV history export** via `/api/history/export.csv`
+- **Cookie-based authentication** with SHA-256 hashed password
 - **Alert log** persisted to flash, with per-event severity and timestamp
 - **Board selector** Waveshare preset or Manual pin entry for any qualifying ESP32-S3 board
 - **Per-BMS communication statistics** polls/ok/timeout/errors
 - **Tiered MQTT detail levels** off / per-pack statistics / per-cell voltages
-- **Diagnostics panel** with gateway self-monitoring counters, stack high-water marks, and coredump capture
+- **Diagnostics page** with RS485, battery and CAN sections, gateway self-monitoring counters, stack high-water marks, and coredump capture
 
 ## Supported Hardware
 
@@ -106,16 +75,19 @@ For custom boards: select `Manual` in Settings → Hardware and enter your GPIO 
 
 ### Pre-built Binary (Recommended)
 
-Download the release files from the [Releases page](../../releases).
+Download the release files from the [Releases page](https://github.com/swingstate/topband-bms-gateway/releases). Each release has two images:
 
-**First install (USB):** write the factory image, which bundles the bootloader, partition table, and firmware in a single file.
+- `Topband-bms-gateway-factory-vX.Y.Z.bin` — bootloader, partition table and firmware in one file, for a first install over USB. Always write it at offset `0x0` (the firmware inside it sits at `0x20000`).
+- `Topband-bms-gateway-ota-vX.Y.Z.bin` — firmware only, for updates through the web UI.
+
+**First install (USB):** write the factory image at offset `0x0`.
 
 ```bash
 # macOS / Linux
-esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.3.0.bin
+esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX write_flash 0x0 Topband-bms-gateway-factory-v3.4.0.bin
 
 # Windows (adjust COM port)
-esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.3.0.bin
+esptool.py --chip esp32s3 --port COM3 write_flash 0x0 Topband-bms-gateway-factory-v3.4.0.bin
 ```
 
 If upgrading from V2.67.x, erase the flash first (new partition layout):
@@ -124,15 +96,15 @@ If upgrading from V2.67.x, erase the flash first (new partition layout):
 esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX erase_flash
 ```
 
-**OTA update (existing V3.x install):** open the web dashboard, go to Settings → OTA Firmware Update, and upload `Topband-bms-gateway-ota-v3.3.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails.
+**OTA update (existing V3.x install):** open the web dashboard, go to Settings → System → Firmware Update, and upload `Topband-bms-gateway-ota-v3.4.0.bin`. The device reboots, runs a 5-minute self-test in the background, and rolls back automatically if the self-test fails. Do not upload the factory image here.
 
 > Upgrading from V2.67.x to V3.x via OTA is not supported. Use the USB factory image. Back up your V2 settings first (General → Maintenance → Export settings in V2), then restore them after V3 first boot.
 
 ### First Boot
 
-1. The device starts a WiFi captive portal (SSID: `Topband-Setup-XXXX`)
+1. The device starts a WiFi captive portal (SSID: `TopBand-Setup-XXXX`)
 2. Connect and configure your WiFi credentials at `192.168.4.1`
-3. Access the dashboard at `http://topband-gateway.local` or via the device IP
+3. Open the dashboard at the device's IP address. You can find it in your router's client list, where the gateway appears as `topband-bms-xxxx` (the last four hex digits of its MAC address).
 4. Go to Settings → Hardware and select your board type
 5. Save and reboot
 
@@ -140,49 +112,59 @@ esptool.py --chip esp32s3 --port /dev/cu.usbserial-XXXX erase_flash
 
 ### Basic Setup
 
-Navigate to the Battery tab and configure:
+Go to Settings → Battery and configure:
 
-- BMS count (1 to 16)
-- Cells per BMS (0 = auto-detect)
+- BMS pack count (1 to 16)
+- Force cell count (0 = auto-detect)
 - Battery config mode (Auto / Auto+Margin / Manual)
-- Charge/discharge current limits
+- Charge/discharge current limits per pack
 - Charge voltage limit (CVL)
-- Safety cutoffs (cell max, pack max, drift)
+- Safety cutoffs (safe pack voltage, safe cell voltage, max cell drift)
 - Temperature ranges for charge and discharge
 
-### Auto-Config from BMS
+### Battery Config Mode
 
-Settings → Battery → Apply auto-config reads the BMS system parameter frame (0x47) and suggests safe values based on the manufacturer's limits. Choose Auto to apply directly, Auto+Margin to apply with a safety margin, or Manual to set all limits yourself.
+The gateway reads each pack's system parameters (BMS frame 0x47), which contain the manufacturer's charge/discharge and temperature limits. In **Auto** mode those limits are used directly. **Auto+Margin** uses them with a safety margin. In **Manual** mode you set all limits yourself in Settings → Battery. If the pack parameters are more than 5 minutes old, the gateway falls back to your configured values.
 
 ### Bluetooth / Victron MPPT and SmartShunt
 
-Navigate to Settings → Bluetooth LE:
+Go to Settings → BLE:
 
 - Enable Bluetooth and enter the device's encryption key (from the VictronConnect app) — MPPT and SmartShunt are configured independently, and you can use either or both
 - Once paired, the MPPT's solar data appears on the Solar page and the dashboard; the SmartShunt's current, voltage, and charge percentage appear on the Battery page and dashboard
 - Both are read-only — the gateway never sends commands to either device
-- With a SmartShunt paired, set **Battery Value Sources** (Battery tab) to choose whether the shunt or the BMS packs lead the dashboard reading — Auto lets the shunt lead whenever its reading is fresh and falls back to the BMS packs otherwise; charging/discharging safety limits always use the BMS packs regardless of this setting
+- With a SmartShunt paired, set **Battery Value Sources** (Settings → Battery) to choose whether the shunt or the BMS packs lead the dashboard reading — Auto lets the shunt lead whenever its reading is fresh and falls back to the BMS packs otherwise; charging/discharging safety limits always use the BMS packs regardless of this setting
+
+### CAN / Inverter
+
+Go to Settings → CAN and select the inverter protocol (Victron, Pylontech, or SMA).
 
 ### MQTT and Home Assistant
 
-Navigate to Network → MQTT:
+Go to Settings → MQTT:
 
 - Enable MQTT, set broker IP, port, credentials, and base topic
 - Set detail level: off / per-pack statistics / per-cell voltages
 - Enable HA discovery to register entities automatically
-- Click Send HA discovery to push discovery messages immediately
-- Optional: Configure the SolarPassThrough Topic if you have an OpenDTU Setup and want to see the status in the Dashboard. 
-- While connected, the gateway automatically publishes a retained settings backup on every change (and once daily) — use **Settings → Maintenance → Restore from MQTT backup** to recover settings after a reset. WiFi/MQTT connection details and the dashboard login username are never included, and restoring is always a manual, confirmed action.
+- Click Re-send HA Discovery to push discovery messages immediately
+- Optional: set the Solar Passthrough (OpenDTU) topic if you run OpenDTU-onBattery and want to see its status on the dashboard
+- While connected, the gateway automatically publishes a retained settings backup on every change (and once daily) — use **Settings → System → Restore from MQTT Backup** to recover settings after a reset. WiFi/MQTT connection details and the dashboard login username are never included, and restoring is always a manual, confirmed action.
 
 ### Telegram Notifications
 
-Navigate to Network → Notifications:
+Go to Settings → Notify:
 
 - Enable Telegram, enter your bot token and chat ID
 - Use the Test button to verify delivery before saving
 - Notifications are sent for safety events (overvoltage, undervoltage, temperature cutoff, imbalance) with configurable debounce to prevent alert floods
 
+### Backup and Restore
+
+Settings → System → Maintenance has Download Backup (a JSON file of all settings) and Import Backup.
+
 ## Architecture
+
+![Architecture Overview](docs/bms_gateway_architecture_3_1.png)
 
 ### Dual-Core Design
 
@@ -195,14 +177,14 @@ BMS snapshots travel from Core 0 to Core 1 through a seqlock double-buffer in PS
 
 ### Storage
 
-- **NVS:** one versioned Config blob (~600 B), CRC-protected. Schema-migrated automatically on upgrade.
+- **NVS:** one versioned Config blob (880 B), CRC-protected. Schema-migrated automatically on upgrade.
 - **LittleFS:** history ring files (2-hour fine / 7-day coarse), persisted alert log, energy counters, and web UI assets.
 - **PSRAM:** large history buffers, the solar day-ring, and per-cell drift history live in PSRAM, keeping internal RAM free.
 - Session tokens are RAM-only and regenerated each boot.
 
 ### Web UI
 
-Static files served from LittleFS via `esp_http_server`. The dashboard polls `/api/live` every 1.5 seconds by default. Charts render client-side and update in place on each poll. All configuration changes go through POST endpoints with CSRF protection.
+Static files served from LittleFS via `esp_http_server`. The dashboard polls `/api/live` every 2 seconds. Values and charts update in place on each poll. All configuration changes go through POST endpoints with CSRF protection.
 
 ### Alert System
 
@@ -210,34 +192,32 @@ Safety events are generated by `runSafety()` — a pure function on Core 0 with 
 
 ## Protocol
 
-Based on reverse-engineering work from [linedot/topbands-bms](https://github.com/linedot/topbands-bms).
+Based on reverse-engineering work from [linedot/topband-bms](https://github.com/linedot/topband-bms).
 
 ### Supported Commands
 
-| CID2 | Function | Used by |
+| CID2 | Function | Polling |
 |---|---|---|
-| 0x42 | Analog data (cell voltages, temperatures, SOC) | Main polling loop |
-| 0x44 | Alarm/status bitmap | Round-robin every 15s |
-| 0x47 | System parameters (limits from manufacturer) | Round-robin every 30s |
-| 0x4F | Manufacturer info (HW/SW version) | Service page |
-| 0xA1 | Historical events | Service page |
-| 0xB1 | Date/time read | Service page |
-| 0xB2 | Date/time write | Service page (manual sync) |
+| 0x42 | Analog data (cell voltages, temperatures, SOC) | Every pack, every 3 s |
+| 0x44 | Alarm/status bitmap | Round-robin, one pack every 3 s, alternating with 0x47 |
+| 0x47 | System parameters (limits from manufacturer) | Round-robin, one pack every 3 s, alternating with 0x44 |
 
 ### CAN Output Frames
 
-| ID | Content | Protocol |
-|---|---|---|
-| 0x351 | Charge/discharge voltage and current limits | Victron |
-| 0x355 | SOC, SOH | Victron |
-| 0x356 | Pack voltage, current, temperature | Victron |
-| 0x359 | Alarm and warning flags | Victron |
-| 0x35A | Protection and alarm bits | Victron |
-| 0x35E | Manufacturer string | Victron |
+| ID | Content | Victron | Pylontech | SMA |
+|---|---|---|---|---|
+| 0x351 | Charge voltage and charge/discharge current limits (Pylontech also sends the discharge voltage limit) | yes | yes | yes |
+| 0x355 | SOC, SOH | yes | yes | yes |
+| 0x356 | Pack voltage, current, temperature | yes | yes | yes |
+| 0x359 | Alarm and warning flags | | yes | |
+| 0x35A | Alarm and warning flags | yes | | yes |
+| 0x35B | Warning flags | | | yes |
+| 0x35C | Charge/discharge enable and force-charge request | | yes | |
+| 0x35E | Manufacturer string | yes | yes | yes |
 
-Pylontech and SMA frame formats are selectable via Settings → Battery → CAN Protocol.
+The protocol is selected in Settings → CAN.
 
-The Victron MPPT is read over Bluetooth, not CAN — it does not use these frames.
+The Victron MPPT and SmartShunt are read over Bluetooth, not CAN — they do not use these frames.
 
 ## Troubleshooting
 
@@ -246,14 +226,14 @@ The Victron MPPT is read over Bluetooth, not CAN — it does not use these frame
 - Check RS485 wiring (A to A, B to B, GND common)
 - Verify 120 ohm termination at both ends of the bus
 - Check BMS address dip switches (addresses 0 to 15)
-- View the Diagnostics panel to see raw RS485 frames and per-BMS poll statistics
+- The RS485 indicator in the dashboard's health card shows how many packs are online; the RS485 bus section of the Diagnostics page shows per-pack poll statistics (ok, timeouts, errors)
 
 ### CAN bus errors
 
 - Check 120 ohm termination at both ends
 - Verify CAN H and CAN L are not swapped
 - Ensure inverter and gateway share ground
-- Check CAN status in the dashboard header pill
+- Check the CAN indicator in the dashboard's health card, and the CAN → inverter section of the Diagnostics page for frame counters and the values being sent
 
 ### Bluetooth / MPPT or SmartShunt not showing data
 
@@ -265,25 +245,26 @@ The Victron MPPT is read over Bluetooth, not CAN — it does not use these frame
 
 ### Safety lockout
 
-- Triggered by cell voltage, pack voltage, drift, or temperature exceeding configured limits
-- A cell voltage problem only blocks the affected direction — over-voltage blocks charging, under-voltage blocks discharging — so the pack can still self-correct in the other direction
+- Triggered by cell voltage, pack voltage, drift, temperature, or a BMS-reported overcurrent exceeding limits
+- A lockout only blocks the affected direction — over-voltage blocks charging, under-voltage blocks discharging, charge or discharge overcurrent blocks only that direction — so the pack can still self-correct in the other direction
+- The Battery indicator in the dashboard's health card turns red and names the reason while a lockout is active
 - Clears automatically once the underlying condition resolves within normal range
 - Check the Alert log for the specific event, direction, and timestamp
-- If limits are triggering incorrectly, review the thresholds in the Battery tab
+- If limits are triggering incorrectly, review the thresholds in Settings → Battery
 
 ### Factory reset / password reset
 
-Factory reset and password reset are done via the web UI: Settings → Factory Reset. If you cannot reach the UI, reflash the factory image via USB — this resets all settings to defaults.
+Factory reset and password reset are done via the web UI: Settings → Reset. If you cannot reach the UI, reflash the factory image via USB — this resets all settings to defaults.
 
 ## Compatibility Notes
 
 ### OTA Upgrades
 
-OTA upgrades are supported between V3.x releases, including V3.0 through V3.3. The first install of V3.x requires a USB reflash with the factory image (new partition layout). After that, all updates can be done via OTA.
+OTA upgrades are supported between V3.x releases, including V3.0 through V3.4. The first install of V3.x requires a USB reflash with the factory image (new partition layout). After that, all updates can be done via OTA.
 
 ### Home Assistant Entities
 
-V3.1 added new MQTT entities for the Victron MPPT (solar power, charger output, yield, charger state). V3.2 adds entities for the Victron SmartShunt (current, voltage, charge percentage, consumed amp-hours) and per-pack current/charge-percentage/power entities. They register automatically via HA discovery. If you're upgrading from an earlier version, use Settings → Send HA Discovery to register any new entities.
+V3.1 added new MQTT entities for the Victron MPPT (solar power, charger output, yield, charger state). V3.2 added entities for the Victron SmartShunt (current, voltage, charge percentage, consumed amp-hours) and per-pack current/charge-percentage/power entities. They register automatically via HA discovery. If you're upgrading from an earlier version, use Settings → MQTT → Re-send HA Discovery to register any new entities.
 
 V3.x MQTT topic names and payload fields differ from V2.67.x. Existing V2 HA dashboards need to be updated.
 

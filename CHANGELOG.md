@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-09-27
+
+A small UI and housekeeping release. No changes to safety logic, CAN output,
+RS485 polling or the settings format, so no reconfiguration is needed after
+updating.
+
 ### Added
 
 - **Health summary card on the Dashboard.** Four indicators (RS485, Battery,
@@ -31,6 +37,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   could not be read. The log now follows new lines only while it is scrolled
   to the bottom. Scrolling inside the log no longer moves the page on iOS,
   and each log entry is on its own line (they previously ran together).
+- **Drift Details scale axis did not line up with the cell bars on phones.**
+
+### Documentation
+
+- README brought up to date with the current UI (menu paths, CAN frame
+  table, flashing instructions); per-release history moved out of the
+  README in favour of this file and the Releases page.
+- The online interactive demo shows the v3.4 interface.
 
 ## [3.3.1] - 2026-08-01
 

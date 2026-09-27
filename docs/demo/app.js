@@ -209,6 +209,7 @@ function chartEmptyMsg() {
 
 /* ── Live data state ────────────────────────────────────────────────────────── */
 let g_live = null;
+let g_live_at = 0;          // Date.now() of the last successful /api/live fetch
 let g_poll_interval = null;
 let g_chart_a = null;
 let g_chart_b = null;
@@ -286,9 +287,12 @@ async function fetchLive() {
     const r = await apiFetch('/api/live');
     if (!r || !r.ok) return;
     g_live = await r.json();
+    g_live_at = Date.now();
     updateLiveUI();
   } catch (e) {
-    /* network error — keep showing last data */
+    /* network error — keep showing last data, except values presented as
+       live (drift "now" column), which blank once they are too old. */
+    if (window.location.pathname === '/battery') updateDriftNow();
   }
 }
 
@@ -357,6 +361,126 @@ function updateStatusBar() {
   }
 }
 
+/* ── Health summary (Dashboard) ─────────────────────────────────────────────
+   Read-only roll-up of state the firmware already reports. Every state is
+   derived from existing /api/live + /api/health fields; nothing here decides
+   anything for safety, and no threshold duplicates one in runSafety. Anything
+   unknown or not yet observed shows 'warn', never 'ok'.
+   Each health*() returns { state: 'ok'|'warn'|'fault', reason }. */
+
+// RS485: pack polling, from bms_count_online / bms_count_configured.
+function healthRs485(live) {
+  if (!live) return { state: 'warn', reason: 'Waiting for data' };
+  const online = live.bms_count_online || 0;
+  const total  = live.bms_count_configured || 0;
+  if (total === 0)     return { state: 'warn',  reason: 'No packs configured' };
+  if (online === 0)    return { state: 'fault', reason: `0 of ${total} packs online` };
+  if (online < total)  return { state: 'warn',  reason: `${online} of ${total} packs online` };
+  return { state: 'ok', reason: `${online} of ${total} packs online` };
+}
+
+// alarm_flags bit -> short label, most significant first. Labels only; the
+// bits themselves are set by runSafety.
+const HEALTH_ALARM_LABELS = [
+  [0x80, 'No packs online'],
+  [0x40, 'BMS alarm'],
+  [0x02, 'Over-voltage'],
+  [0x10, 'Under-voltage'],
+  [0x01, 'Charge over-current'],
+  [0x04, 'Discharge over-current'],
+  [0x08, 'Temperature limit'],
+  [0x20, 'Cell imbalance'],
+];
+
+// Battery: the safety code's own lockout_flags (fault) and alarm_flags (warn).
+function healthBattery(safety) {
+  if (!safety || safety.lockout_flags === undefined)
+    return { state: 'warn', reason: 'Waiting for data' };
+  const lockout = safety.lockout_flags || 0;
+  const flags   = safety.alarm_flags   || 0;
+  const tempA   = safety.temp_alarm    || 0;
+  if (lockout) {
+    const chg = lockoutReason(0x01, flags, tempA);
+    const dis = lockoutReason(0x02, flags, tempA);
+    let reason;
+    if ((lockout & 0x03) === 0x03) reason = chg === dis ? `Charge and discharge off: ${chg}` : 'Charge and discharge disabled';
+    else if (lockout & 0x01)       reason = `Charge disabled: ${chg}`;
+    else                           reason = `Discharge disabled: ${dis}`;
+    return { state: 'fault', reason };
+  }
+  if (flags) {
+    const hit = HEALTH_ALARM_LABELS.find(([bit]) => flags & bit);
+    return { state: 'warn', reason: hit ? hit[1] : 'Alarm active' };
+  }
+  return { state: 'ok', reason: 'No alarms' };
+}
+
+// CAN: the tx counters are totals since boot, so judge activity from how they
+// moved over a recent window rather than from their absolute values (a single
+// failed frame hours ago must not keep the tile red).
+const HEALTH_CAN_WINDOW_S = 5;
+let g_can_samples = [];   // [{ t: uptime_s, ok, fail, busoff }], oldest first
+
+function recordCanSample(live) {
+  const can = live && live.stats && live.stats.can;
+  if (!can || live.uptime_s === undefined) return;
+  const smp = { t: live.uptime_s, ok: can.tx_ok || 0, fail: can.tx_fail || 0, busoff: can.bus_off_count || 0 };
+  const last = g_can_samples[g_can_samples.length - 1];
+  if (last && (smp.t < last.t || smp.ok < last.ok)) g_can_samples = [];  // device rebooted
+  g_can_samples.push(smp);
+  if (g_can_samples.length > 30) g_can_samples.shift();
+}
+
+// cfg: g_config (may be null before it loads). samples: g_can_samples.
+function healthCan(cfg, samples) {
+  if (cfg && !cfg.can_enabled) return { state: 'warn', reason: 'CAN output disabled' };
+  const cur = samples[samples.length - 1];
+  if (!cur) return { state: 'warn', reason: 'Waiting for data' };
+  let base = null;
+  for (let i = samples.length - 2; i >= 0; i--) {
+    if (cur.t - samples[i].t >= HEALTH_CAN_WINDOW_S) { base = samples[i]; break; }
+  }
+  if (!base) return { state: 'warn', reason: 'Checking CAN activity' };
+  if (cur.busoff > base.busoff) return { state: 'fault', reason: 'CAN bus-off, recovering' };
+  if (cur.ok === base.ok)       return { state: 'fault', reason: 'No CAN frames sent' };
+  if (cur.fail > base.fail)     return { state: 'warn',  reason: 'Some CAN frames failing' };
+  return { state: 'ok', reason: 'CAN TX active' };
+}
+
+// WiFi/MQTT: connection states from /api/health. Weak-signal cut-off is the
+// same -75 dBm the top-bar WiFi pill already uses.
+function healthNet(h) {
+  if (!h || !h.wifi) return { state: 'warn', reason: 'Waiting for data' };
+  if (!h.wifi.connected) return { state: 'fault', reason: 'WiFi disconnected' };
+  const mqtt = h.mqtt || {};
+  if (mqtt.enabled && mqtt.state !== 'connected') {
+    const words = { connecting: 'MQTT connecting', disconnected: 'MQTT disconnected', failed: 'MQTT connection failed' };
+    return { state: 'warn', reason: words[mqtt.state] || 'MQTT not connected' };
+  }
+  const rssi = h.wifi.rssi;
+  if (rssi < -75) return { state: 'warn', reason: `Weak WiFi signal (${rssi} dBm)` };
+  return { state: 'ok', reason: mqtt.enabled ? 'WiFi and MQTT connected' : 'WiFi connected' };
+}
+
+const HEALTH_STATE_WORD = { ok: 'OK', warn: 'Warning', fault: 'Fault' };
+
+// Updates the Dashboard health card in place (structure built by renderDashboard).
+function updateHealthCard() {
+  if (!document.getElementById('health-card')) return;
+  const items = {
+    rs485: healthRs485(g_live),
+    batt:  healthBattery(g_live && g_live.safety),
+    can:   healthCan(g_config, g_can_samples),
+    net:   healthNet(g_health),
+  };
+  Object.entries(items).forEach(([key, h]) => {
+    const item = document.getElementById(`health-${key}`);
+    if (item) item.className = `health-item health-${h.state}`;
+    setEl(`health-${key}-state`, HEALTH_STATE_WORD[h.state]);
+    setEl(`health-${key}-reason`, h.reason);
+  });
+}
+
 let g_health = null;
 
 async function fetchHealth() {
@@ -367,6 +491,7 @@ async function fetchHealth() {
       updateWifiIndicator();
       updateMqttIndicator();
       updateAuthBanner();
+      updateHealthCard();
     }
   } catch (_) {}
 }
@@ -404,10 +529,12 @@ function updateMqttIndicator() {
 }
 
 function updateLiveUI() {
+  recordCanSample(g_live);   // every poll, so the CAN window is ready on any page
   updateStatusBar();
   updateAuthBanner();
   const p = window.location.pathname;
   if (p === '/' || p === '/dashboard') {
+    updateHealthCard();
     updateDashboardCards();
     updatePackCards();
     updateChartBadges();
@@ -453,7 +580,21 @@ function cellVColor(v) {
 /* ── Dashboard ─────────────────────────────────────────────────────────────── */
 function renderDashboard() {
   const root = document.getElementById('page-root');
+  const healthItem = (key, label, go) => `
+    <button type="button" class="health-item health-warn" id="health-${key}" onclick="${go}">
+      <span class="health-dot"></span>
+      <span class="health-text">
+        <span class="health-head"><span class="health-label">${label}</span><span class="health-state" id="health-${key}-state">Warning</span></span>
+        <span class="health-reason" id="health-${key}-reason">Waiting for data</span>
+      </span>
+    </button>`;
   root.innerHTML = `
+    <div class="card health-card" id="health-card">
+      ${healthItem('rs485', 'RS485', "navigate('/diag')")}
+      ${healthItem('batt', 'Battery', "navigate('/battery')")}
+      ${healthItem('can', 'CAN', "navigate('/diag')")}
+      ${healthItem('net', 'WiFi / MQTT', "navigate('/settings');showSettingsSection((g_health&&g_health.wifi&&g_health.wifi.connected)?'mqtt':'network')")}
+    </div>
     <div class="metrics-grid" id="metrics-grid"></div>
     <div class="charts-row">
       <div class="card chart-card">
@@ -468,6 +609,7 @@ function renderDashboard() {
     <p class="section-header">Battery Packs</p>
     <div class="packs-grid" id="packs-grid"></div>
   `;
+  updateHealthCard();
   updateDashboardCards();
   updatePackCards();
   loadCharts();
@@ -1270,15 +1412,24 @@ async function loadCharts() {
 
 /* ── Battery overview page ──────────────────────────────────────────────────── */
 
-function batteryMBox(label, id, withBadge) {
-  const badge = withBadge
-    ? `<div style="margin-top:4px"><span class="card-src" id="${id}-src">—</span></div>` : '';
+// Combined-metric tile: value and unit are separate spans so the unit can be
+// smaller and the pair never wraps (see .bagg-* in style.css). Updated in place
+// by setBaggValue().
+function batteryMBox(label, id, unit) {
   return `
-    <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
-      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">${label}</div>
-      <div id="${id}" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
-      ${badge}
+    <div class="bagg-tile">
+      <div class="bagg-label">${label}</div>
+      <div class="bagg-value" id="${id}"><span class="bagg-num" id="${id}-num">—</span><span class="bagg-unit" id="${id}-unit" hidden>${unit}</span></div>
+      <div style="margin-top:4px"><span class="card-src" id="${id}-src">—</span></div>
     </div>`;
+}
+
+function setBaggValue(id, text, color) {
+  setEl(`${id}-num`, text);
+  const valEl = document.getElementById(id);
+  if (valEl) valEl.style.color = color;
+  const unitEl = document.getElementById(`${id}-unit`);
+  if (unitEl) unitEl.hidden = (text === '—');
 }
 
 function batteryVDiv() {
@@ -1303,18 +1454,14 @@ function renderBattery() {
           <div class="pack-status-dot offline" id="combined-fresh-dot" style="flex-shrink:0;width:8px;height:8px"></div>
           <span style="font-size:11px;color:var(--text-muted)" id="combined-fresh-text">—</span>
         </div>
-        <div style="display:flex;align-items:center">
-          <div style="flex:1;min-width:0;padding:14px 10px;text-align:center">
-            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Combined SOC</div>
-            <div id="bagg-soc" style="font-size:28px;font-weight:700;line-height:1;color:var(--text-muted)">—</div>
-            <div style="margin-top:4px"><span class="card-src" id="bagg-soc-src">—</span></div>
-          </div>
+        <div class="bagg-row">
+          ${batteryMBox('Combined SOC', 'bagg-soc', '%')}
           ${batteryVDiv()}
-          ${batteryMBox('Pack Voltage', 'bagg-volt', true)}
+          ${batteryMBox('Pack Voltage', 'bagg-volt', 'V')}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Current', 'bagg-curr', true)}
+          ${batteryMBox('Combined Current', 'bagg-curr', 'A')}
           ${batteryVDiv()}
-          ${batteryMBox('Combined Power', 'bagg-pow', true)}
+          ${batteryMBox('Combined Power', 'bagg-pow', 'W')}
         </div>
         <div style="border-top:1px solid var(--border);padding:10px 18px 0;font-size:12px;color:var(--text-muted)">
           <span id="combined-source-sentence">—</span>
@@ -1380,10 +1527,10 @@ function updateBatteryOverviewCards() {
   const cur  = (safety.current_display !== undefined) ? safety.current_display : null;
   const pow  = (cur !== null && volt !== null) ? cur * volt : null;
 
-  setEl('bagg-soc',  soc  !== null ? fmt(soc,  0)  + ' %' : '—', soc  !== null ? socColor(soc)         : 'var(--text-muted)');
-  setEl('bagg-volt', volt !== null ? fmt(volt, 2) + ' V'  : '—', volt !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
-  setEl('bagg-curr', cur  !== null ? fmtA(cur)  + ' A'   : '—', cur  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
-  setEl('bagg-pow',  pow  !== null ? fmt(pow,  0)  + ' W' : '—', pow  !== null ? 'var(--text-primary)'  : 'var(--text-muted)');
+  setBaggValue('bagg-soc',  soc  !== null ? fmt(soc,  0) : '—', soc  !== null ? socColor(soc)        : 'var(--text-muted)');
+  setBaggValue('bagg-volt', volt !== null ? fmt(volt, 2) : '—', volt !== null ? 'var(--text-primary)' : 'var(--text-muted)');
+  setBaggValue('bagg-curr', cur  !== null ? fmtA(cur)    : '—', cur  !== null ? 'var(--text-primary)' : 'var(--text-muted)');
+  setBaggValue('bagg-pow',  pow  !== null ? fmt(pow,  0) : '—', pow  !== null ? 'var(--text-primary)' : 'var(--text-muted)');
 
   // ── Source badges ── each badge MUST come from the same fused result as the
   // number it's labelling (sources.battery_*_src mirrors safety.*_source_shunt),
@@ -4422,6 +4569,12 @@ function renderDiagData(d) {
   // Preserve log open/closed state across polls (innerHTML replacement resets it).
   const existingDetails = document.getElementById('diag-log-details');
   if (existingDetails) g_diag_log_open = existingDetails.open;
+  // Likewise the log's scroll position: only follow new lines while the user is
+  // at the bottom; if they scrolled up to read, leave the log where it was.
+  const prevLog = document.getElementById('diag-log');
+  const logFollow = !prevLog || !g_diag_log_open ||
+    prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < 24;
+  const prevLogTop = prevLog ? prevLog.scrollTop : 0;
 
   const sys = d.system || {};
   const pol = d.poller || {};
@@ -4722,9 +4875,7 @@ function renderDiagData(d) {
 
     <details id="diag-log-details" class="diag-section diag-log-details">
       <summary class="diag-log-summary">Log (last ${(d.log_ring||[]).length} lines)</summary>
-      <div class="diag-log-box" id="diag-log">
-        ${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}
-      </div>
+      <div class="diag-log-box" id="diag-log">${(d.log_ring||[]).map(l => escHtml(l)).join('\n')}</div>
     </details>
 
     `;
@@ -4733,12 +4884,17 @@ function renderDiagData(d) {
   const details = document.getElementById('diag-log-details');
   if (details) {
     if (g_diag_log_open) details.open = true;
-    details.addEventListener('toggle', () => { g_diag_log_open = details.open; }, { once: true });
+    details.addEventListener('toggle', () => {
+      g_diag_log_open = details.open;
+      const box = document.getElementById('diag-log');
+      if (box && details.open) box.scrollTop = box.scrollHeight;  // open at newest lines
+    }, { once: true });
   }
 
-  // Scroll log to bottom when visible.
+  // Scroll only the log box itself (never the page): to the newest line while
+  // following, otherwise back to where the user left it.
   const logBox = document.getElementById('diag-log');
-  if (logBox && g_diag_log_open) logBox.scrollTop = logBox.scrollHeight;
+  if (logBox && g_diag_log_open) logBox.scrollTop = logFollow ? logBox.scrollHeight : prevLogTop;
 }
 
 async function renderDiag() {
@@ -5573,6 +5729,26 @@ function driftKpiSub(label, value, sub) {
     '<div class="drift-kpi-value">' + value + '</div>' + subHtml + '</div>';
 }
 
+// Live cell voltages (V) for one pack from the 2-s /api/live snapshot, or null
+// when they must not be presented as current: pack offline, snapshot older
+// than 10 s (same rule as the Battery page freshness line), or /api/live
+// itself not answering for 10 s. The /api/drift payload's own cells[].now is
+// up to 30 s old and is deliberately not used for the number.
+const DRIFT_LIVE_MAX_AGE_MS = 10000;
+function driftLiveCells(packId) {
+  if (!g_live || Date.now() - g_live_at > DRIFT_LIVE_MAX_AGE_MS) return null;
+  const snap = g_live.snapshot || {};
+  if (g_live.uptime_s === undefined || snap.produced_ms === undefined) return null;
+  if (g_live.uptime_s * 1000 - snap.produced_ms > DRIFT_LIVE_MAX_AGE_MS) return null;
+  const lp = (snap.packs || []).find(p => p.bms_id === packId);
+  return (lp && lp.online && lp.cells) ? lp.cells : null;
+}
+
+function driftNowText(cells, ci) {
+  const v = cells ? cells[ci] : undefined;
+  return (typeof v === 'number' && v >= 2 && v <= 5) ? v.toFixed(3) + ' V' : '—';
+}
+
 function buildDriftCellRowsHtml(pack, noHistory) {
   const cells  = pack.cells || [];
   const nc     = Math.min(pack.cell_count || cells.length, 15);
@@ -5599,6 +5775,7 @@ function buildDriftCellRowsHtml(pack, noHistory) {
   const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
 
   const ffWin = driftRepeatWinner(pack.ff_mode_idx, pack.ff_days_won, pack.ff_days_total);
+  const liveCells = driftLiveCells(pack.id);
 
   const isOutlier = ci => {
     if (nc <= 2) return true;  // tiny packs: nothing to dim
@@ -5637,9 +5814,7 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     // the endpoints are already encoded by the band position (review 2.5).
     // Raw endpoints stay available as a tooltip.
     const hasBand = !noHistory && c.d5min && c.d5max;
-    const numsStr = hasBand
-      ? ((c.d5max - c.d5min) + ' mV')
-      : (nowMv ? nowMv + ' mV' : '—');
+    const numsStr = hasBand ? ((c.d5max - c.d5min) + ' mV') : '—';
     const numsTitle = hasBand ? (c.d5min + '-' + c.d5max + ' mV over 5 days') : '';
 
     const tagHtml = (ffWin && ci === pack.ff_mode_idx)
@@ -5651,6 +5826,8 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     rows += '<div class="drift-cell-row' + (isOutlier(ci) ? '' : ' dim') + '">' +
       '<div class="drift-cell-lbl">C' + (ci + 1) + '</div>' +
       '<div class="drift-track">' + guideHtml + atHtml + d5Html + dotHtml + '</div>' +
+      '<div class="drift-cell-now" id="drift-now-' + pack.id + '-' + ci + '">' +
+        driftNowText(liveCells, ci) + '</div>' +
       '<div class="drift-cell-nums"' +
         (numsTitle ? ' title="' + numsTitle + '"' : '') + '>' + numsStr + '</div>' +
       tagHtml +
@@ -5663,7 +5840,7 @@ function buildDriftCellRowsHtml(pack, noHistory) {
     DRIFT_GUIDES.map(g =>
       '<div class="drift-scale-tick" style="left:' + driftPct(g.mv).toFixed(1) + '%">' + g.label + '</div>'
     ).join('') +
-    '<div class="drift-scale-tick" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
+    '<div class="drift-scale-tick drift-scale-tick-ceil" style="left:100%;transform:translateX(-100%)">' + (DRIFT_CEIL_MV / 1000).toFixed(2) + '</div>';
 
   // Band legend: the grey band is all-time at ANY SoC while the colored band
   // is 5-day at extremes only — two gates in one graphic need labels.
@@ -5674,10 +5851,20 @@ function buildDriftCellRowsHtml(pack, noHistory) {
       '<span><span class="drift-legend-swatch swatch-dot" style="background:' + color + '"></span>now</span>' +
     '</div>';
 
-  return rows +
+  // Column headers so the two numbers per row are unambiguous.
+  const headHtml =
+    '<div class="drift-col-head">' +
+      '<div class="drift-scale-lbl-spacer"></div>' +
+      '<div class="drift-col-head-track"></div>' +
+      '<div class="drift-cell-now" title="Cell voltage right now">now</div>' +
+      '<div class="drift-cell-nums" title="Width of the cell\'s 5-day band at charge extremes">5-day span</div>' +
+    '</div>';
+
+  return headHtml + rows +
     '<div class="drift-scale-row">' +
       '<div class="drift-scale-lbl-spacer"></div>' +
       '<div class="drift-scale-axis">' + ticksHtml + '</div>' +
+      '<div class="drift-scale-now-spacer"></div>' +
       '<div class="drift-scale-nums-spacer"></div>' +
     '</div>' +
     legendHtml;
@@ -5716,6 +5903,15 @@ function updateDriftNow() {
   const driftPacks = g_drift_data.packs || [];
 
   driftPacks.forEach(dp => {
+    // "now" numbers: text only, in place; "—" whenever not current.
+    const liveCells = driftLiveCells(dp.id);
+    for (let ci = 0; ci < 16; ci++) {
+      const nowEl = document.getElementById('drift-now-' + dp.id + '-' + ci);
+      if (!nowEl) break;
+      const txt = driftNowText(liveCells, ci);
+      if (nowEl.textContent !== txt) nowEl.textContent = txt;
+    }
+
     const lp = livePacks.find(p => p.bms_id === dp.id);
     if (!lp || !lp.cells) return;
     const spread = Math.round((lp.cell_drift_v || 0) * 1000);
